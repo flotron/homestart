@@ -46,7 +46,7 @@ Local runtime data is intentionally not part of releases:
 Clone the repository:
 
 ```sh
-git clone https://github.com/marianoflotron/homestart.git
+git clone https://github.com/flotron/homestart.git
 cd homestart
 ```
 
