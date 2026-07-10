@@ -1,0 +1,73 @@
+{
+  "dashboard": {
+    "title": "HomeStart",
+    "subtitle": "Dashboard",
+    "host": ""
+  },
+  "features": {
+    "docker_actions": true,
+    "file_browser": true,
+    "file_operations": true,
+    "app_uninstall": true
+  },
+  "supported_apps": {
+    "codex": {
+      "home": "",
+      "codex_home": ""
+    }
+  },
+  "file_roots": [
+    "/"
+  ],
+  "services": [
+    "homestart.service",
+    "docker.service"
+  ],
+  "apps": [
+    {
+      "name": "Ookla Speedtest",
+      "app_type": "supported",
+      "kind": "Supported",
+      "status": "Local interface",
+      "url": "/speedtest",
+      "description": "Visual wrapper for the Ookla Speedtest CLI",
+      "requirements": [
+        {
+          "type": "command",
+          "name": "speedtest",
+          "paths": [],
+          "install_hint": "Install the official Ookla Speedtest CLI"
+        }
+      ],
+      "uninstall_command": [
+        "sudo",
+        "apt",
+        "remove",
+        "speedtest"
+      ],
+      "tags": [
+        "Ookla CLI"
+      ]
+    },
+    {
+      "name": "Codex CLI Chat",
+      "app_type": "supported",
+      "kind": "Supported",
+      "status": "Local interface",
+      "url": "/codex",
+      "description": "Chat interface backed by the Codex CLI",
+      "requirements": [
+        {
+          "type": "command",
+          "name": "codex",
+          "paths": [],
+          "install_hint": "Install the Codex CLI"
+        }
+      ],
+      "tags": [
+        "Codex CLI"
+      ]
+    }
+  ],
+  "native_apps": []
+}

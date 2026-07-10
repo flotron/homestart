@@ -1,0 +1,34 @@
+# Local configuration and runtime data
+config.json
+data/
+dist/
+backups/
+.env
+homestart.service
+
+# Databases, logs, and backups
+*.db
+*.sqlite
+*.sqlite-*
+*.log
+*.bak
+*.bak-*
+*.backup
+
+# Python/cache/editor noise
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+
+# Local Codex/plugin runtime directories that must never be published
+.tmp/
+skills/
+goals_*.sqlite*
+logs_*.sqlite*
+memories_*.sqlite*
+state_*.sqlite*
+installation_id

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ookla Speedtest - HomeStart</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="tool-page">
+    <main class="tool-shell">
+      <header class="tool-header">
+        <div>
+          <p class="eyebrow">Supported app</p>
+          <h1>Ookla Speedtest</h1>
+          <p>Run the installed Ookla CLI from HomeStart.</p>
+        </div>
+        <a href="/">Back to HomeStart</a>
+      </header>
+
+      <section class="tool-panel">
+        <div class="tool-actions">
+          <button id="speedtest-run" type="button">Run speedtest</button>
+          <span id="speedtest-status">Ready</span>
+        </div>
+
+        <div class="speedtest-grid">
+          <article>
+            <span>Download</span>
+            <strong id="download">--</strong>
+            <small>Mbps</small>
+          </article>
+          <article>
+            <span>Upload</span>
+            <strong id="upload">--</strong>
+            <small>Mbps</small>
+          </article>
+          <article>
+            <span>Ping</span>
+            <strong id="ping">--</strong>
+            <small>ms</small>
+          </article>
+          <article>
+            <span>Jitter</span>
+            <strong id="jitter">--</strong>
+            <small>ms</small>
+          </article>
+        </div>
+
+        <dl class="tool-details">
+          <div>
+            <dt>ISP</dt>
+            <dd id="isp">--</dd>
+          </div>
+          <div>
+            <dt>Server</dt>
+            <dd id="server">--</dd>
+          </div>
+          <div>
+            <dt>Location</dt>
+            <dd id="location">--</dd>
+          </div>
+          <div>
+            <dt>Result</dt>
+            <dd><a id="result-url" href="#" target="_blank" rel="noreferrer">--</a></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="tool-panel">
+        <div class="section-head">
+          <div>
+            <h2>History</h2>
+            <p>Previous tests stored on this HomeStart install.</p>
+          </div>
+        </div>
+        <div class="speedtest-history">
+          <div class="speedtest-history-row speedtest-history-head">
+            <span>Date</span>
+            <span>Download</span>
+            <span>Upload</span>
+            <span>Ping</span>
+            <span>Server</span>
+          </div>
+          <div id="speedtest-history"></div>
+        </div>
+      </section>
+    </main>
+    <script src="/speedtest.js"></script>
+  </body>
+</html>

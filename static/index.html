@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HomeStart</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <p id="dashboard-subtitle">Dashboard</p>
+          <strong id="dashboard-title">HomeStart</strong>
+        </div>
+        <nav class="nav" aria-label="Main navigation">
+          <button class="nav-item active" type="button" data-view="status">Status</button>
+          <button class="nav-item" type="button" data-view="apps">Apps</button>
+          <button class="nav-item" type="button" data-view="files">File Browser</button>
+          <button class="nav-item" type="button" data-view="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main class="shell">
+        <section class="view active" id="view-status" data-view-panel="status">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">System overview</p>
+              <h1>Status</h1>
+            </div>
+            <button id="refresh-status" type="button">Refresh status</button>
+          </header>
+
+          <section class="monitor" aria-live="polite">
+            <article class="metric">
+              <div>
+                <p>CPU</p>
+                <strong id="cpu-value">--</strong>
+              </div>
+              <div class="meter"><span id="cpu-bar"></span></div>
+            </article>
+            <article class="metric">
+              <div>
+                <p>Memory</p>
+                <strong id="memory-value">--</strong>
+              </div>
+              <div class="meter"><span id="memory-bar"></span></div>
+            </article>
+            <article class="metric">
+              <div>
+                <p>GPU</p>
+                <strong id="gpu-value">--</strong>
+              </div>
+              <div class="meter"><span id="gpu-bar"></span></div>
+              <small id="gpu-detail">Detecting</small>
+              <div id="gpu-list" class="gpu-list"></div>
+            </article>
+          </section>
+
+          <details class="resources-panel" id="resources-panel">
+            <summary>
+              <span>System resources</span>
+              <small>Containers and processes sorted by CPU usage</small>
+            </summary>
+            <div class="resources-body">
+              <div class="resource-summary">
+                <div>
+                  <p>Host</p>
+                  <strong id="resource-host">--</strong>
+                </div>
+                <div>
+                  <p>Uptime</p>
+                  <strong id="resource-uptime">--</strong>
+                </div>
+                <div>
+                  <p>CPU breakdown</p>
+                  <strong id="resource-cpu">--</strong>
+                </div>
+                <div>
+                  <p>Memory</p>
+                  <strong id="resource-memory">--</strong>
+                </div>
+              </div>
+
+              <section class="resource-table-section">
+                <h2>Containers</h2>
+                <div class="resource-table resource-containers">
+                  <div class="resource-row resource-head">
+                    <span>Name</span>
+                    <span>Status</span>
+                    <span>CPU</span>
+                    <span>Memory</span>
+                    <span>Ports</span>
+                  </div>
+                  <div id="resource-containers"></div>
+                </div>
+              </section>
+
+              <section class="resource-table-section">
+                <h2>Processes</h2>
+                <p id="resource-tasks">Tasks loading...</p>
+                <div class="resource-table resource-processes">
+                  <div class="resource-row resource-head">
+                    <span>CPU</span>
+                    <span>MEM</span>
+                    <span>PID</span>
+                    <span>User</span>
+                    <span>Command</span>
+                  </div>
+                  <div id="resource-processes"></div>
+                </div>
+              </section>
+            </div>
+          </details>
+
+          <section class="status-panel">
+            <h2>Physical disks</h2>
+            <div id="disks" class="stack"></div>
+          </section>
+        </section>
+
+        <section class="view" id="view-apps" data-view-panel="apps">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Linux and Docker discovery</p>
+              <h1>Apps</h1>
+            </div>
+            <button id="refresh" type="button">Refresh apps</button>
+          </header>
+
+          <section class="toolbar">
+            <label class="search">
+              <span>Search</span>
+              <input id="search" type="search" autocomplete="off" placeholder="App, port, or container" />
+            </label>
+            <div class="type-filter" aria-label="App type filter">
+              <button class="type-filter-item active" type="button" data-app-type="all">All</button>
+              <button class="type-filter-item" type="button" data-app-type="docker">Docker</button>
+              <button class="type-filter-item" type="button" data-app-type="native">Native Linux</button>
+              <button class="type-filter-item" type="button" data-app-type="supported">Supported</button>
+            </div>
+          </section>
+
+          <section class="grid" id="apps" aria-live="polite"></section>
+        </section>
+
+        <section class="view" id="view-files" data-view-panel="files">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">System app</p>
+              <h1>File Browser</h1>
+              <form id="file-path-form" class="file-path-form">
+                <input id="file-path" type="text" autocomplete="off" spellcheck="false" value="Available roots" />
+                <button type="submit">Go</button>
+              </form>
+            </div>
+            <div class="file-toolbar">
+              <button id="file-paste" type="button" disabled>Paste</button>
+              <button id="file-new-folder" type="button">New folder</button>
+              <button id="file-home" type="button">Home</button>
+              <button id="file-up" type="button">Up</button>
+            </div>
+          </header>
+
+          <section class="file-panel">
+            <div class="file-explorer">
+              <aside id="file-roots" class="file-sidebar"></aside>
+              <div class="file-main">
+                <div id="file-drop-status" class="file-drop-status">Drop files here to upload</div>
+                <div class="file-columns">
+                  <span>Name</span>
+                  <span>Type</span>
+                  <span>Size</span>
+                  <span>Modified</span>
+                  <span>Actions</span>
+                </div>
+                <div id="files" class="file-list"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="view-settings" data-view-panel="settings">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">System configuration</p>
+              <h1>Settings</h1>
+            </div>
+            <button id="refresh-network" type="button">Refresh network</button>
+          </header>
+
+          <section class="settings-panel">
+            <div class="section-head">
+              <div>
+                <h2>Network</h2>
+                <p>Detected physical network interfaces. Applying changes can disconnect this host.</p>
+              </div>
+            </div>
+
+            <div class="network-layout">
+              <div>
+                <h3>Interfaces</h3>
+                <div id="network-interfaces" class="stack"></div>
+              </div>
+              <form id="network-form" class="network-form">
+                <h3>Edit IPv4</h3>
+                <label>
+                  Interface
+                  <input id="network-interface" name="interface" readonly />
+                </label>
+                <label>
+                  Mode
+                  <select id="network-mode" name="mode">
+                    <option value="static">Static</option>
+                    <option value="dhcp">DHCP</option>
+                  </select>
+                </label>
+                <label>
+                  Address / prefix
+                  <input id="network-address" name="address" placeholder="192.168.1.20/24" />
+                </label>
+                <label>
+                  Gateway
+                  <input id="network-gateway" name="gateway" placeholder="192.168.1.1" />
+                </label>
+                <label>
+                  DNS servers
+                  <input id="network-dns" name="dns" placeholder="192.168.1.1, 1.1.1.1" />
+                </label>
+                <p id="network-managed-by" class="form-note">Select an interface to edit.</p>
+                <button id="network-apply" type="submit">Apply network changes</button>
+              </form>
+            </div>
+          </section>
+
+          <section class="settings-panel">
+            <div class="section-head">
+              <div>
+                <h2>Updates</h2>
+                <p>Select a HomeStart update package from this device. Local config and data are preserved.</p>
+              </div>
+            </div>
+            <form id="update-form" class="update-form">
+              <label>
+                Update package
+                <input id="update-file" type="file" accept=".tar.gz,.tgz,application/gzip" />
+              </label>
+              <p id="update-status" class="form-note">No update selected.</p>
+              <button id="update-apply" type="submit">Apply update</button>
+            </form>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <template id="app-card">
+      <article class="card">
+        <div class="card-head">
+          <div class="icon"><img alt="" /></div>
+          <div>
+            <h2></h2>
+            <p class="kind"></p>
+          </div>
+        </div>
+        <div class="badges"></div>
+        <p class="description"></p>
+        <div class="meta"></div>
+        <div class="actions">
+          <a class="open" target="_blank" rel="noreferrer">Open</a>
+          <button class="stop" type="button">Stop</button>
+          <button class="restart" type="button">Restart</button>
+          <button class="uninstall" type="button">Uninstall</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

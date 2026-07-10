@@ -1,0 +1,2586 @@
+#!/usr/bin/env python3
+import json
+import base64
+import binascii
+import ipaddress
+import mimetypes
+import os
+import re
+import shutil
+import socket
+import sqlite3
+import subprocess
+import tarfile
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+import yaml
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path, PurePosixPath
+from urllib.parse import parse_qs, quote, urljoin, urlparse
+
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "homestart.db"
+BACKUP_DIR = DATA_DIR / "backups"
+CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
+CPU_PREV = None
+CPU_DETAIL_PREV = None
+GPU_PREV = None
+ICON_CACHE = {}
+APP_NAME_ALIASES = {
+    "openspeedtest": "openspeedtest",
+    "open speed test": "openspeedtest",
+    "qbittorrent": "qbittorrent",
+    "q bittorrent": "qbittorrent",
+    "plex": "plex",
+}
+DEFAULT_CONFIG = {
+    "dashboard": {
+        "title": "HomeStart",
+        "subtitle": "Dashboard",
+        "host": "",
+    },
+    "apps": [],
+    "native_apps": [],
+    "file_roots": ["/"],
+    "services": ["homestart.service", "docker.service"],
+    "features": {
+        "docker_actions": True,
+        "file_browser": True,
+        "file_operations": True,
+        "app_uninstall": True,
+    },
+    "supported_apps": {
+        "codex": {
+            "home": "",
+            "codex_home": "",
+        },
+    },
+}
+INLINE_EXTENSIONS = {
+    ".bmp",
+    ".css",
+    ".csv",
+    ".gif",
+    ".htm",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".json",
+    ".log",
+    ".md",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".txt",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".xml",
+}
+ICON_CANDIDATES = [
+    "/favicon.ico",
+    "/favicon.png",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+]
+VIRTUAL_INTERFACE_PREFIXES = ("br-", "docker", "veth")
+UPDATE_EXCLUDED = {"config.json", "data", ".git", "__pycache__", "dist", "backups", ".env", "homestart.service"}
+UPDATE_ALLOWED_PREFIXES = {"static", "scripts"}
+UPDATE_ALLOWED_FILES = {
+    ".gitignore",
+    "README.md",
+    "app.py",
+    "config.example.json",
+    "homestart.service.example",
+    "install.sh",
+}
+UPDATE_PRIVATE_SUFFIXES = (".db", ".sqlite", ".log")
+UPDATE_PRIVATE_FRAGMENTS = (".sqlite-",)
+
+
+def deep_merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_config_file():
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+    return deep_merge(DEFAULT_CONFIG, data)
+
+
+def clamp_percent(value):
+    if value is None:
+        return None
+    return max(0, min(100, round(value, 1)))
+
+
+def local_ip():
+    configured = os.environ.get("HOMESTART_HOST") or load_config_file()["dashboard"].get("host")
+    if configured:
+        return configured
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return socket.gethostbyname(socket.gethostname())
+
+
+def public_app_url(url, host):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return url
+
+    netloc = host
+    if parsed.port:
+        netloc = f"{host}:{parsed.port}"
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        netloc = f"{auth}@{netloc}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def run_json(command):
+    output = subprocess.check_output(command, text=True, timeout=5)
+    return json.loads(output)
+
+
+def load_config():
+    data = load_config_file()
+    apps = []
+    for key in ("apps", "native_apps"):
+        values = data.get(key, [])
+        if isinstance(values, list):
+            for app in values:
+                if (
+                    app.get("name") == "Example App"
+                    and app.get("description") == "Replace this with your own app"
+                    and "localhost:8080" in str(app.get("url", ""))
+                ):
+                    continue
+                apps.append(app)
+    return apps
+
+
+def normalize_app_type(value):
+    app_type = str(value or "").strip().lower().replace("_", "-")
+    if app_type in {"docker", "container"}:
+        return "docker"
+    if app_type in {"native", "linux", "native-linux", "linux-native"}:
+        return "native"
+    if app_type in {"supported", "homestart-supported"}:
+        return "supported"
+    return ""
+
+
+def app_type_label(app_type):
+    return {
+        "docker": "Docker",
+        "native": "Native Linux",
+        "supported": "Supported",
+    }.get(app_type, "App")
+
+
+def command_available(command):
+    return shutil.which(command) is not None
+
+
+def requirement_payload(requirement):
+    req_type = requirement.get("type", "command")
+    name = requirement.get("name", "")
+    installed = False
+    if req_type == "command":
+        installed = command_available(name)
+        if not installed:
+            installed = any(Path(path).expanduser().exists() for path in requirement.get("paths", []))
+
+    return {
+        "type": req_type,
+        "name": name,
+        "installed": installed,
+        "install_hint": requirement.get("install_hint", ""),
+    }
+
+
+def apply_app_metadata(app):
+    app_type = normalize_app_type(app.get("app_type") or app.get("type") or app.get("source"))
+    if not app_type:
+        app_type = "supported" if app.get("requirements") else "native"
+
+    requirements = [requirement_payload(item) for item in app.get("requirements", [])]
+    missing = [item for item in requirements if not item["installed"]]
+    tags = list(dict.fromkeys([app_type_label(app_type), *(app.get("tags") or [])]))
+
+    app["app_type"] = app_type
+    app["app_type_label"] = app_type_label(app_type)
+    app["tags"] = tags
+    app["requirements_status"] = requirements
+    if missing:
+        app["available"] = False
+        app["status"] = f"Missing requirement: {', '.join(item['name'] for item in missing)}"
+    else:
+        app["available"] = True
+    return app
+
+
+def app_uninstall_enabled():
+    return load_config_file().get("features", {}).get("app_uninstall", True)
+
+
+def safe_uninstall_command(command):
+    if not isinstance(command, list) or not command:
+        return None
+    if len(command) > 32:
+        return None
+    if not all(isinstance(part, str) and part.strip() for part in command):
+        return None
+    return [part.strip() for part in command]
+
+
+def apply_uninstall_metadata(app):
+    enabled = app_uninstall_enabled()
+    command = safe_uninstall_command(app.get("uninstall_command"))
+    app["uninstallable"] = False
+    app["uninstall_reason"] = "Uninstall is disabled"
+
+    if not enabled:
+        return app
+
+    if app.get("docker_name"):
+        app["uninstallable"] = True
+        app["uninstall_reason"] = "Removes the Docker container. Images and volumes are preserved."
+        return app
+
+    if command:
+        app["uninstallable"] = True
+        app["uninstall_reason"] = "Runs this app's configured uninstall command."
+        return app
+
+    app["uninstall_reason"] = "No uninstall command is configured for this app."
+    return app
+
+
+def normalized_name(name):
+    lowered = re.sub(r"[^a-z0-9]+", "", name.lower())
+    return APP_NAME_ALIASES.get(lowered, lowered)
+
+
+def docker_inspect(container_name):
+    if not container_name:
+        return None
+
+    try:
+        output = subprocess.check_output(
+            ["docker", "inspect", container_name],
+            text=True,
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        )
+        data = json.loads(output)[0]
+    except (IndexError, json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+    return data
+
+
+def docker_host_mode_ports(container_name):
+    data = docker_inspect(container_name)
+    if not data:
+        return []
+
+    if data.get("HostConfig", {}).get("NetworkMode") != "host":
+        return []
+
+    exposed = data.get("Config", {}).get("ExposedPorts") or {}
+    ports = []
+    for value in exposed:
+        port, _, protocol = value.partition("/")
+        if protocol == "tcp" and port.isdigit() and port not in ports:
+            ports.append(port)
+    return sorted(ports, key=int)
+
+
+def docker_published_ports(container_name):
+    data = docker_inspect(container_name)
+    if not data:
+        return []
+
+    ports = []
+    bindings = data.get("HostConfig", {}).get("PortBindings") or {}
+    for values in bindings.values():
+        for item in values or []:
+            port = str(item.get("HostPort", ""))
+            if port.isdigit() and port not in ports:
+                ports.append(port)
+
+    network_ports = data.get("NetworkSettings", {}).get("Ports") or {}
+    for values in network_ports.values():
+        for item in values or []:
+            port = str(item.get("HostPort", ""))
+            if port.isdigit() and port not in ports:
+                ports.append(port)
+
+    return sorted(ports, key=int)
+
+
+def docker_apps(host, all_containers=True):
+    try:
+        command = [
+            "docker",
+            "container",
+            "ls",
+            "--format",
+            "{{json .}}",
+        ]
+        if all_containers:
+            command.insert(3, "-a")
+
+        output = subprocess.check_output(
+            command,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return []
+
+    apps = []
+    for line in output.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        ports = []
+        raw_ports = item.get("Ports", "")
+        for part in raw_ports.split(","):
+            part = part.strip()
+            if "->" not in part:
+                continue
+            public = part.split("->", 1)[0].rsplit(":", 1)[-1]
+            if public.isdigit() and public not in ports:
+                ports.append(public)
+
+        if not ports:
+            ports = docker_host_mode_ports(item.get("Names", ""))
+        if not ports:
+            ports = docker_published_ports(item.get("Names", ""))
+
+        url = f"http://{host}:{ports[0]}" if ports else ""
+        apps.append(
+            with_icon(
+                {
+                    "name": item.get("Names", "Docker app"),
+                    "kind": "Docker",
+                    "status": item.get("Status", ""),
+                    "image": item.get("Image", ""),
+                    "ports": ports,
+                    "url": url,
+                    "source": "docker",
+                    "app_type": "docker",
+                    "app_type_label": "Docker",
+                    "tags": ["Docker"],
+                    "available": True,
+                    "docker_name": item.get("Names", ""),
+                }
+            )
+        )
+
+    return apps
+
+
+def docker_map(host):
+    return {normalized_name(app["name"]): app for app in docker_apps(host)}
+
+
+def with_icon(app):
+    if app.get("icon_url") or not app.get("url"):
+        return app
+    if urlparse(app.get("url", "")).scheme not in {"http", "https"}:
+        return app
+
+    app["icon_url"] = f"/api/icon?url={quote(app['url'], safe='')}"
+    return app
+
+
+def fetch_url(url):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "HomeStart/1.0",
+            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        content_type = response.headers.get_content_type()
+        if not content_type.startswith("image/"):
+            return None
+
+        body = response.read(512 * 1024 + 1)
+        if len(body) > 512 * 1024:
+            return None
+
+        return {
+            "content_type": content_type,
+            "body": body,
+        }
+
+
+def fetch_html_icon_urls(app_url):
+    request = urllib.request.Request(
+        app_url,
+        headers={
+            "User-Agent": "HomeStart/1.0",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        content_type = response.headers.get_content_type()
+        if content_type not in {"text/html", "application/xhtml+xml"}:
+            return []
+
+        html = response.read(256 * 1024).decode("utf-8", errors="replace")
+
+    urls = []
+    for tag in re.findall(r"<link\b[^>]*>", html, flags=re.IGNORECASE):
+        rel = re.search(r"\brel=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
+        href = re.search(r"\bhref=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
+        if not rel or not href:
+            continue
+        if "icon" not in rel.group(1).lower():
+            continue
+        urls.append(urljoin(app_url, href.group(1)))
+    return urls
+
+
+def icon_candidates(app_url):
+    parsed = urlparse(app_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return []
+
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    candidates = [f"{base}{path}" for path in ICON_CANDIDATES]
+    if parsed.path and parsed.path != "/":
+        parent = parsed.path.rsplit("/", 1)[0] or ""
+        candidates.extend(f"{base}{parent}{path}" for path in ICON_CANDIDATES)
+
+    try:
+        candidates.extend(fetch_html_icon_urls(app_url))
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+
+    return candidates
+
+
+def get_icon(app_url):
+    if app_url in ICON_CACHE:
+        return ICON_CACHE[app_url]
+
+    for candidate in icon_candidates(app_url):
+        try:
+            icon = fetch_url(candidate)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            continue
+
+        if icon:
+            ICON_CACHE[app_url] = icon
+            return icon
+
+    ICON_CACHE[app_url] = None
+    return None
+
+
+def serve_icon(handler, app_url, include_body=True):
+    icon = get_icon(app_url)
+    if not icon:
+        handler.send_response(HTTPStatus.NOT_FOUND)
+        handler.end_headers()
+        return
+
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", icon["content_type"])
+    handler.send_header("Content-Length", str(len(icon["body"])))
+    handler.send_header("Cache-Control", "public, max-age=3600")
+    handler.skip_default_cache = True
+    handler.end_headers()
+    if include_body:
+        handler.wfile.write(icon["body"])
+
+
+def read_cpu_times():
+    with Path("/proc/stat").open("r", encoding="utf-8") as file:
+        fields = file.readline().split()[1:]
+
+    values = [int(value) for value in fields]
+    idle = values[3] + values[4]
+    total = sum(values)
+    return total, idle
+
+
+def read_cpu_counters():
+    with Path("/proc/stat").open("r", encoding="utf-8") as file:
+        fields = [int(value) for value in file.readline().split()[1:]]
+
+    names = ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice"]
+    return dict(zip(names, fields + [0] * (len(names) - len(fields))))
+
+
+def cpu_percent():
+    global CPU_PREV
+    current = read_cpu_times()
+    if CPU_PREV is None:
+        CPU_PREV = current
+        return None
+
+    total_delta = current[0] - CPU_PREV[0]
+    idle_delta = current[1] - CPU_PREV[1]
+    CPU_PREV = current
+    if total_delta <= 0:
+        return None
+
+    return clamp_percent((1 - (idle_delta / total_delta)) * 100)
+
+
+def cpu_detail_payload():
+    global CPU_DETAIL_PREV
+    current = read_cpu_counters()
+    if CPU_DETAIL_PREV is None:
+        CPU_DETAIL_PREV = current
+        return {
+            "user": None,
+            "system": None,
+            "iowait": None,
+            "idle": None,
+        }
+
+    delta = {key: current.get(key, 0) - CPU_DETAIL_PREV.get(key, 0) for key in current}
+    CPU_DETAIL_PREV = current
+    total = sum(max(0, value) for value in delta.values())
+    if total <= 0:
+        return {
+            "user": None,
+            "system": None,
+            "iowait": None,
+            "idle": None,
+        }
+
+    user = delta.get("user", 0) + delta.get("nice", 0)
+    system = delta.get("system", 0) + delta.get("irq", 0) + delta.get("softirq", 0)
+    return {
+        "user": clamp_percent(user / total * 100),
+        "system": clamp_percent(system / total * 100),
+        "iowait": clamp_percent(delta.get("iowait", 0) / total * 100),
+        "idle": clamp_percent(delta.get("idle", 0) / total * 100),
+    }
+
+
+def memory_payload():
+    values = {}
+    with Path("/proc/meminfo").open("r", encoding="utf-8") as file:
+        for line in file:
+            key, raw = line.split(":", 1)
+            values[key] = int(raw.strip().split()[0]) * 1024
+
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", 0)
+    used = max(0, total - available)
+    percent = (used / total * 100) if total else None
+    return {
+        "used_bytes": used,
+        "total_bytes": total,
+        "free_bytes": values.get("MemFree", 0),
+        "available_bytes": available,
+        "used_label": format_bytes(used),
+        "total_label": format_bytes(total),
+        "free_label": format_bytes(values.get("MemFree", 0)),
+        "available_label": format_bytes(available),
+        "percent": clamp_percent(percent),
+    }
+
+
+def read_first_match(paths, pattern):
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        match = re.search(pattern, text, re.MULTILINE)
+        if match:
+            return match.group(1), str(path)
+    return None, None
+
+
+def gpu_debug_paths(filename):
+    root = Path("/sys/kernel/debug/dri")
+    if not root.exists():
+        return []
+    return sorted(root.glob(f"*/{filename}"))
+
+
+def gpu_frequency():
+    raw, source = read_first_match(
+        gpu_debug_paths("i915_frequency_info"),
+        r"Actual freq:\s+(\d+)\s+MHz",
+    )
+    if raw is None:
+        return None, None
+    return int(raw), source
+
+
+def gpu_busy_percent():
+    global GPU_PREV
+    paths = gpu_debug_paths("i915_engine_info")
+    engine_runtime = {}
+
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+
+        engine = None
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not line.startswith("\t") and re.match(r"^[a-z]+[0-9]+$", stripped):
+                engine = stripped
+                continue
+
+            if engine and stripped.startswith("Runtime:"):
+                match = re.search(r"Runtime:\s+(\d+)ms", stripped)
+                if match:
+                    engine_runtime[engine] = int(match.group(1))
+                engine = None
+
+    if not engine_runtime:
+        return None
+
+    now = time.monotonic()
+    current = (now, engine_runtime)
+    if GPU_PREV is None:
+        GPU_PREV = current
+        return None
+
+    elapsed_ms = max(1, (now - GPU_PREV[0]) * 1000)
+    previous = GPU_PREV[1]
+    GPU_PREV = current
+
+    deltas = [
+        max(0, runtime - previous.get(engine, runtime))
+        for engine, runtime in engine_runtime.items()
+    ]
+    if not deltas:
+        return None
+
+    return clamp_percent((sum(deltas) / (elapsed_ms * max(1, len(deltas)))) * 100)
+
+
+def nvidia_gpus_payload():
+    command = shutil.which("nvidia-smi")
+    if not command:
+        return []
+    try:
+        output = subprocess.check_output(
+            [
+                command,
+                "--query-gpu=index,name,utilization.gpu,clocks.gr,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=2,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return []
+
+    gpus = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 6:
+            continue
+        try:
+            index = int(parts[0])
+        except ValueError:
+            index = len(gpus)
+        try:
+            percent = float(parts[2])
+        except ValueError:
+            percent = None
+        try:
+            frequency = int(float(parts[3]))
+        except ValueError:
+            frequency = None
+        try:
+            memory_used = int(float(parts[4])) * 1024 * 1024
+            memory_total = int(float(parts[5])) * 1024 * 1024
+        except ValueError:
+            memory_used = 0
+            memory_total = 0
+        gpus.append(
+            {
+                "index": index,
+                "name": parts[1] or f"NVIDIA GPU {index}",
+                "percent": clamp_percent(percent),
+                "frequency_mhz": frequency,
+                "memory_used_bytes": memory_used,
+                "memory_total_bytes": memory_total,
+                "memory_used_label": format_bytes(memory_used),
+                "memory_total_label": format_bytes(memory_total),
+                "memory_percent": clamp_percent((memory_used / memory_total * 100) if memory_total else None),
+                "available": percent is not None or frequency is not None,
+                "source": "nvidia-smi",
+            }
+        )
+    return gpus
+
+
+def summarize_gpus(gpus):
+    available = [gpu for gpu in gpus if gpu.get("available")]
+    if not available:
+        return {
+            "name": "GPU",
+            "count": 0,
+            "percent": None,
+            "frequency_mhz": None,
+            "available": False,
+            "source": "",
+        }
+
+    percents = [gpu["percent"] for gpu in available if gpu.get("percent") is not None]
+    frequencies = [gpu["frequency_mhz"] for gpu in available if gpu.get("frequency_mhz")]
+    return {
+        "name": f"{len(gpus)} GPUs" if len(gpus) > 1 else available[0].get("name", "GPU"),
+        "count": len(gpus),
+        "percent": max(percents) if percents else None,
+        "frequency_mhz": max(frequencies) if frequencies else None,
+        "available": True,
+        "source": available[0].get("source", ""),
+    }
+
+
+def system_payload():
+    gpus = nvidia_gpus_payload()
+    if gpus:
+        gpu = summarize_gpus(gpus)
+    else:
+        gpu_freq, gpu_source = gpu_frequency()
+        gpu_busy = gpu_busy_percent()
+        intel_gpu = {
+            "index": 0,
+            "name": "Intel GPU",
+            "percent": gpu_busy,
+            "frequency_mhz": gpu_freq,
+            "available": gpu_busy is not None or gpu_freq is not None,
+            "source": gpu_source,
+        }
+        gpus = [intel_gpu] if intel_gpu["available"] else []
+        gpu = summarize_gpus(gpus)
+    return {
+        "timestamp": int(time.time()),
+        "cpu": {"percent": cpu_percent()},
+        "memory": memory_payload(),
+        "gpu": gpu,
+        "gpus": gpus,
+    }
+
+
+def uptime_label():
+    try:
+        seconds = int(float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0]))
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        return f"{days} days, {hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def task_summary():
+    total = 0
+    threads = 0
+    running = 0
+    sleeping = 0
+    other = 0
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+
+        total += 1
+        try:
+            stat = entry.joinpath("stat").read_text(encoding="utf-8", errors="replace").split()
+            status = entry.joinpath("status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        state = stat[2] if len(stat) > 2 else ""
+        if state == "R":
+            running += 1
+        elif state in {"S", "I"}:
+            sleeping += 1
+        else:
+            other += 1
+
+        match = re.search(r"^Threads:\s+(\d+)$", status, flags=re.MULTILINE)
+        if match:
+            threads += int(match.group(1))
+
+    return {
+        "total": total,
+        "threads": threads,
+        "running": running,
+        "sleeping": sleeping,
+        "other": other,
+    }
+
+
+def process_payload(limit=12):
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid,user,pcpu,pmem,rss,args", "--sort=-pcpu"],
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return []
+
+    processes = []
+    cpu_count = max(1, os.cpu_count() or 1)
+    for line in output.splitlines()[1:]:
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+
+        pid, user, cpu, memory, rss, command = parts
+        if "ps -eo pid,user,pcpu,pmem,rss,args" in command or "docker stats --no-stream" in command:
+            continue
+        try:
+            rss_bytes = int(rss) * 1024
+            raw_cpu = float(cpu)
+            memory_percent = float(memory)
+        except ValueError:
+            rss_bytes = 0
+            raw_cpu = 0
+            memory_percent = 0
+
+        processes.append(
+            {
+                "pid": pid,
+                "user": user,
+                "cpu_percent": clamp_percent(raw_cpu / cpu_count),
+                "cpu_raw_percent": raw_cpu,
+                "memory_percent": memory_percent,
+                "memory": format_bytes(rss_bytes),
+                "command": command,
+            }
+        )
+        if len(processes) >= limit:
+            break
+    return processes
+
+
+def docker_stats_payload():
+    try:
+        output = subprocess.check_output(
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return {}
+
+    stats = {}
+    for line in output.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name = item.get("Name", "")
+        if name:
+            stats[name] = item
+    return stats
+
+
+def container_resources_payload():
+    stats = docker_stats_payload()
+    containers = []
+    for app in docker_apps(local_ip()):
+        name = app.get("docker_name") or app.get("name")
+        stat = stats.get(name, {})
+        containers.append(
+            {
+                "name": name,
+                "status": app.get("status", ""),
+                "cpu": stat.get("CPUPerc", "0%"),
+                "memory": stat.get("MemUsage", ""),
+                "memory_percent": stat.get("MemPerc", ""),
+                "ports": app.get("ports", []),
+            }
+        )
+    return containers
+
+
+def resources_payload():
+    memory = memory_payload()
+    return {
+        "hostname": socket.gethostname(),
+        "uptime": uptime_label(),
+        "cpu": cpu_detail_payload(),
+        "memory": memory,
+        "containers": container_resources_payload(),
+        "tasks": task_summary(),
+        "processes": process_payload(),
+    }
+
+
+def format_bytes(size):
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{size} B"
+
+
+def file_kind(path):
+    if path.is_dir():
+        return "directory"
+
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}:
+        return "image"
+    if suffix in {".mp4", ".webm", ".mkv", ".avi", ".mov"}:
+        return "video"
+    if suffix in {".mp3", ".wav", ".ogg", ".flac", ".m4a"}:
+        return "audio"
+    if suffix in {".pdf"}:
+        return "pdf"
+    if suffix in {".zip", ".rar", ".7z", ".tar", ".gz"}:
+        return "archive"
+    if suffix in {".txt", ".md", ".log", ".json", ".xml", ".csv", ".js", ".css", ".html"}:
+        return "text"
+    return "file"
+
+
+def allowed_roots():
+    config = load_config_file()
+    roots = []
+    candidates = config.get("file_roots", []) or DEFAULT_CONFIG["file_roots"]
+    for item in candidates:
+        try:
+            root = Path(item).expanduser().resolve()
+        except OSError:
+            continue
+        if root.exists():
+            roots.append(root)
+    return roots
+
+
+def path_is_allowed(path, roots):
+    return any(path == root or root in path.parents for root in roots)
+
+
+def discovered_mount_roots(roots):
+    if not roots:
+        return []
+
+    mounts = []
+    ignored_prefixes = (
+        "/dev",
+        "/proc",
+        "/run/docker",
+        "/sys",
+        "/var/lib/containerd",
+        "/var/lib/docker",
+    )
+    try:
+        lines = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        source, target, fstype = parts[:3]
+        if not source.startswith("/dev/"):
+            continue
+        if fstype in {"autofs", "devtmpfs", "overlay", "proc", "sysfs", "tmpfs"}:
+            continue
+        if target == "/" or target.startswith(ignored_prefixes):
+            continue
+        try:
+            mount = Path(target.replace("\\040", " ")).resolve()
+        except OSError:
+            continue
+        if mount.exists() and path_is_allowed(mount, roots):
+            mounts.append(mount)
+    return mounts
+
+
+def file_sidebar_roots():
+    roots = allowed_roots()
+    combined = []
+    seen = set()
+    for root in roots + discovered_mount_roots(roots):
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            combined.append(root)
+    return combined
+
+
+def resolve_file_path(raw_path):
+    roots = allowed_roots()
+    if not roots:
+        raise FileNotFoundError("No file browser roots are available")
+
+    if not raw_path:
+        return None
+
+    candidate = Path(raw_path).expanduser().resolve()
+    for root in roots:
+        if path_is_allowed(candidate, [root]):
+            return candidate
+    raise PermissionError("Path is outside the allowed roots")
+
+
+def file_listing(raw_path):
+    roots = allowed_roots()
+    sidebar_roots = file_sidebar_roots()
+    target = resolve_file_path(raw_path)
+
+    if target is None:
+        return {
+            "path": "",
+            "parent": "",
+            "roots": [str(root) for root in sidebar_roots],
+            "entries": [
+                {
+                    "name": str(root),
+                    "path": str(root),
+                    "type": "directory",
+                    "kind": "directory",
+                    "size": "",
+                    "size_bytes": 0,
+                    "modified": int(root.stat().st_mtime),
+                }
+                for root in sidebar_roots
+            ],
+        }
+
+    if not target.exists():
+        raise FileNotFoundError("The path does not exist")
+    if not target.is_dir():
+        raise NotADirectoryError("The path is not a folder")
+
+    entries = []
+    for item in sorted(target.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+
+        entries.append(
+            {
+                "name": item.name,
+                "path": str(item),
+                "type": "directory" if item.is_dir() else "file",
+                "kind": file_kind(item),
+                "size": "" if item.is_dir() else format_bytes(stat.st_size),
+                "size_bytes": 0 if item.is_dir() else stat.st_size,
+                "modified": int(stat.st_mtime),
+            }
+        )
+
+    parent = ""
+    for root in roots:
+        if target != root and (target == root or root in target.parents):
+            parent = str(target.parent)
+            break
+
+    return {
+        "path": str(target),
+        "parent": parent,
+        "roots": [str(root) for root in sidebar_roots],
+        "entries": entries,
+    }
+
+
+def file_operations_enabled():
+    return load_config_file().get("features", {}).get("file_operations", True)
+
+
+def ensure_file_operations_enabled():
+    if not file_operations_enabled():
+        raise PermissionError("File operations are disabled")
+
+
+def resolve_new_child(parent_path, name):
+    parent = resolve_file_path(parent_path)
+    if parent is None:
+        raise FileNotFoundError("Select a folder first")
+    if not parent.exists() or not parent.is_dir():
+        raise NotADirectoryError("Parent path is not a folder")
+
+    clean_name = str(name or "").strip()
+    if not clean_name or clean_name in {".", ".."}:
+        raise ValueError("Name is required")
+    if any(separator in clean_name for separator in {"/", "\\"}):
+        raise ValueError("Name cannot contain path separators")
+
+    target = (parent / clean_name).resolve()
+    resolve_file_path(str(target))
+    return target
+
+
+def create_folder(parent_path, name):
+    ensure_file_operations_enabled()
+    target = resolve_new_child(parent_path, name)
+    if target.exists():
+        raise FileExistsError("A file or folder with that name already exists")
+    target.mkdir()
+    return {"ok": True, "path": str(target), "action": "mkdir"}
+
+
+def delete_file_path(raw_path):
+    ensure_file_operations_enabled()
+    target = resolve_file_path(raw_path)
+    if target is None:
+        raise ValueError("Path is required")
+    roots = allowed_roots()
+    if any(target == root for root in roots):
+        raise PermissionError("Allowed roots cannot be deleted")
+    if not target.exists():
+        raise FileNotFoundError("The path does not exist")
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    return {"ok": True, "path": str(target), "action": "delete"}
+
+
+def copy_file_path(source_path, destination_path):
+    ensure_file_operations_enabled()
+    source = resolve_file_path(source_path)
+    destination = resolve_file_path(destination_path)
+    if source is None or destination is None:
+        raise ValueError("Source and destination are required")
+    if not source.exists():
+        raise FileNotFoundError("The source path does not exist")
+
+    target = destination / source.name if destination.exists() and destination.is_dir() else destination
+    resolve_file_path(str(target))
+    if source.resolve() == target.resolve():
+        raise ValueError("Source and destination are the same")
+    if source.is_dir() and (target == source or source in target.parents):
+        raise ValueError("A folder cannot be copied into itself")
+    if target.exists():
+        raise FileExistsError("The destination already exists")
+    if not target.parent.exists() or not target.parent.is_dir():
+        raise NotADirectoryError("Destination parent folder does not exist")
+
+    if source.is_dir():
+        shutil.copytree(source, target)
+    else:
+        shutil.copy2(source, target)
+    return {"ok": True, "path": str(target), "action": "copy"}
+
+
+def decode_data_url(content):
+    value = str(content or "")
+    if "," in value and value.startswith("data:"):
+        value = value.split(",", 1)[1]
+    try:
+        return base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("Invalid upload encoding") from error
+
+
+def upload_file(parent_path, name, content):
+    ensure_file_operations_enabled()
+    target = resolve_new_child(parent_path, name)
+    if target.exists():
+        raise FileExistsError("A file or folder with that name already exists")
+    payload = decode_data_url(content)
+    if len(payload) > 100 * 1024 * 1024:
+        raise ValueError("Uploaded file is too large")
+    target.write_bytes(payload)
+    return {
+        "ok": True,
+        "path": str(target),
+        "action": "upload",
+        "size": len(payload),
+    }
+
+
+def file_action(payload):
+    action = payload.get("action", "")
+    if action == "mkdir":
+        return create_folder(payload.get("parent", ""), payload.get("name", ""))
+    if action == "delete":
+        return delete_file_path(payload.get("path", ""))
+    if action == "copy":
+        return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
+    if action == "upload":
+        return upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
+    raise ValueError("Invalid file action")
+
+
+def serve_file(handler, raw_path, include_body=True):
+    target = resolve_file_path(raw_path)
+    if target is None:
+        raise FileNotFoundError("No file was provided")
+    if not target.exists():
+        raise FileNotFoundError("The file does not exist")
+    if not target.is_file():
+        raise IsADirectoryError("The path is not a file")
+
+    content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    disposition = "inline"
+    stat = target.stat()
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(stat.st_size))
+    handler.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quote(target.name)}")
+    handler.end_headers()
+
+    if include_body:
+        with target.open("rb") as file:
+            shutil.copyfileobj(file, handler.wfile)
+
+
+def disk_payload():
+    try:
+        output = subprocess.check_output(
+            [
+                "lsblk",
+                "-J",
+                "-b",
+                "-o",
+                "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,TRAN",
+            ],
+            text=True,
+            timeout=3,
+        )
+        devices = json.loads(output).get("blockdevices", [])
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        return []
+
+    disks = []
+    for device in devices:
+        if device.get("type") != "disk":
+            continue
+
+        mountpoints = []
+        filesystems = []
+        used_total = 0
+        mounted_total = 0
+        seen_mounts = set()
+        for child in device.get("children", []):
+            if child.get("fstype"):
+                filesystems.append(child["fstype"])
+
+            child_mounts = [
+                mountpoint
+                for mountpoint in (child.get("mountpoints") or [])
+                if mountpoint and mountpoint not in seen_mounts
+            ]
+            mountpoints.extend(child_mounts)
+            seen_mounts.update(child_mounts)
+            if not child_mounts:
+                continue
+
+            try:
+                usage = shutil.disk_usage(child_mounts[0])
+            except OSError:
+                continue
+
+            used_total += usage.used
+            mounted_total += usage.total
+
+        disk_size = int(device.get("size") or 0)
+        percent = used_total / mounted_total * 100 if mounted_total else 0
+        disks.append(
+            {
+                "name": device.get("name", ""),
+                "device": f"/dev/{device.get('name', '')}",
+                "model": (device.get("model") or "").strip(),
+                "serial": device.get("serial") or "",
+                "transport": device.get("tran") or "",
+                "filesystems": sorted(set(filesystems)),
+                "mountpoints": mountpoints,
+                "mountpoint": ", ".join(mountpoints) if mountpoints else "Not mounted",
+                "used": used_total,
+                "total": disk_size,
+                "mounted_total": mounted_total,
+                "free": max(0, mounted_total - used_total),
+                "used_label": format_bytes(used_total),
+                "total_label": format_bytes(disk_size),
+                "free_label": format_bytes(max(0, mounted_total - used_total)),
+                "percent": clamp_percent(percent),
+            }
+        )
+
+    return sorted(disks, key=lambda disk: disk["device"])
+
+
+def service_status(unit):
+    try:
+        output = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--property=Id,Description,LoadState,ActiveState,SubState",
+                "--no-page",
+            ],
+            text=True,
+            timeout=2,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.SubprocessError:
+        return None
+
+    data = {}
+    for line in output.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            data[key] = value
+
+    if data.get("LoadState") == "not-found":
+        return None
+
+    return {
+        "name": data.get("Id", unit),
+        "description": data.get("Description", unit),
+        "active": data.get("ActiveState", "unknown"),
+        "sub": data.get("SubState", "unknown"),
+    }
+
+
+def status_payload():
+    host = local_ip()
+    services = load_config_file().get("services", [])
+    return {
+        "disks": disk_payload(),
+        "services": [service for unit in services if (service := service_status(unit))],
+        "containers": docker_apps(host),
+    }
+
+
+def docker_action(name, action):
+    if not load_config_file().get("features", {}).get("docker_actions", True):
+        raise ValueError("Docker actions are disabled")
+
+    docker_name = name.strip()
+    if action not in {"stop", "restart"}:
+        raise ValueError("Invalid action")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", docker_name):
+        raise ValueError("Invalid container name")
+
+    subprocess.check_output(
+        ["docker", action, docker_name],
+        text=True,
+        timeout=30,
+        stderr=subprocess.STDOUT,
+    )
+    return {"ok": True, "container": docker_name, "action": action}
+
+
+def configured_app(name):
+    target = normalized_name(name)
+    for app in load_config():
+        if normalized_name(app.get("name", "")) == target:
+            return app
+    return None
+
+
+def app_action(payload):
+    action = payload.get("action", "")
+    docker_name = payload.get("docker_name", "")
+
+    if action in {"stop", "restart"}:
+        return docker_action(docker_name, action)
+
+    if action != "uninstall":
+        raise ValueError("Invalid action")
+    if not app_uninstall_enabled():
+        raise ValueError("App uninstall is disabled")
+
+    docker_name = docker_name.strip()
+    if docker_name:
+        if not re.match(r"^[A-Za-z0-9_.-]+$", docker_name):
+            raise ValueError("Invalid container name")
+        subprocess.check_output(
+            ["docker", "rm", "-f", docker_name],
+            text=True,
+            timeout=60,
+            stderr=subprocess.STDOUT,
+        )
+        return {
+            "ok": True,
+            "container": docker_name,
+            "action": action,
+            "message": "Container removed. Docker images and volumes were preserved.",
+        }
+
+    app = configured_app(payload.get("app_name", ""))
+    if not app:
+        raise ValueError("App not found")
+    command = safe_uninstall_command(app.get("uninstall_command"))
+    if not command:
+        raise ValueError("This app does not have an uninstall command configured")
+
+    subprocess.check_output(
+        command,
+        text=True,
+        timeout=120,
+        stderr=subprocess.STDOUT,
+    )
+    return {"ok": True, "app": app.get("name"), "action": action}
+
+
+CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
+CODEX_APPROVALS = {"never", "on-request", "on-failure", "untrusted"}
+CODEX_DEFAULT_PERMISSIONS = {"sandbox": "read-only", "approval": "never", "model": ""}
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def codex_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS codex_chats (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            permissions TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS codex_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            attachments TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(chat_id) REFERENCES codex_chats(id) ON DELETE CASCADE
+        )
+        """
+    )
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(codex_messages)").fetchall()
+    }
+    if "attachments" not in columns:
+        connection.execute("ALTER TABLE codex_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+    connection.commit()
+    return connection
+
+
+def speedtest_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS speedtest_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at INTEGER NOT NULL,
+            summary TEXT NOT NULL,
+            raw TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+    return connection
+
+
+def codex_permissions(value=None):
+    value = value or {}
+    sandbox = value.get("sandbox", CODEX_DEFAULT_PERMISSIONS["sandbox"])
+    approval = value.get("approval", CODEX_DEFAULT_PERMISSIONS["approval"])
+    model = str(value.get("model", CODEX_DEFAULT_PERMISSIONS["model"]) or "").strip()
+    if sandbox not in CODEX_SANDBOXES:
+        raise ValueError("Invalid Codex sandbox")
+    if approval not in CODEX_APPROVALS:
+        raise ValueError("Invalid Codex approval policy")
+    if model and not re.match(r"^[A-Za-z0-9._:-]{1,80}$", model):
+        raise ValueError("Invalid Codex model")
+    return {"sandbox": sandbox, "approval": approval, "model": model}
+
+
+def codex_title(messages):
+    for message in messages:
+        if message.get("role") == "user" and message.get("content"):
+            title = str(message["content"]).strip().replace("\n", " ")
+            return f"{title[:42]}..." if len(title) > 42 else title
+    return "New chat"
+
+
+def codex_clean_attachments(attachments=None):
+    clean = []
+    for item in attachments or []:
+        name = str(item.get("name", "attachment")).strip()[:180] or "attachment"
+        mime = str(item.get("mime", "application/octet-stream")).strip()[:120]
+        kind = "image" if str(item.get("kind", "")).lower() == "image" else "text"
+        content = str(item.get("content", ""))
+        if not content:
+            continue
+        limit = 1_500_000 if kind == "image" else 200_000
+        clean.append(
+            {
+                "name": name,
+                "mime": mime,
+                "kind": kind,
+                "content": content[:limit],
+            }
+        )
+    return clean[:6]
+
+
+def codex_attachment_prompt(attachments):
+    blocks = []
+    for index, item in enumerate(attachments or [], start=1):
+        if item.get("kind") == "text":
+            blocks.append(
+                f"Attachment {index}: {item.get('name')} ({item.get('mime')})\n"
+                f"```text\n{item.get('content', '')[:12000]}\n```"
+            )
+        else:
+            blocks.append(f"Attachment {index}: {item.get('name')} ({item.get('mime')}) [image attached]")
+    return "\n\n".join(blocks)
+
+
+def codex_chat_summary(row, message_count=0):
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "permissions": json.loads(row["permissions"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "messageCount": message_count,
+    }
+
+
+def codex_list_chats():
+    with codex_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT c.*, COUNT(m.id) AS message_count
+            FROM codex_chats c
+            LEFT JOIN codex_messages m ON m.chat_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+            """
+        ).fetchall()
+    return {"chats": [codex_chat_summary(row, row["message_count"]) for row in rows]}
+
+
+def codex_get_chat(chat_id):
+    with codex_db() as connection:
+        chat = connection.execute(
+            "SELECT * FROM codex_chats WHERE id = ?",
+            (chat_id,),
+        ).fetchone()
+        if not chat:
+            raise ValueError("Chat not found")
+        messages = connection.execute(
+            "SELECT role, content, attachments, created_at FROM codex_messages WHERE chat_id = ? ORDER BY id",
+            (chat_id,),
+        ).fetchall()
+    return {
+        "chat": codex_chat_summary(chat, len(messages)),
+        "messages": [
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "attachments": json.loads(row["attachments"] or "[]"),
+                "createdAt": row["created_at"],
+            }
+            for row in messages
+        ],
+    }
+
+
+def codex_create_chat(messages=None, permissions=None):
+    messages = messages or []
+    clean_messages = []
+    for message in messages:
+        role = message.get("role", "")
+        content = str(message.get("content", "")).strip()
+        attachments = codex_clean_attachments(message.get("attachments", []))
+        if role in {"user", "assistant"} and (content or attachments):
+            clean_messages.append(
+                {
+                    "role": role,
+                    "content": content[:12000],
+                    "attachments": attachments,
+                    "createdAt": now_ms(),
+                }
+            )
+
+    timestamp = now_ms()
+    chat_id = str(uuid.uuid4())
+    safe_permissions = codex_permissions(permissions)
+    with codex_db() as connection:
+        connection.execute(
+            "INSERT INTO codex_chats (id, title, permissions, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                chat_id,
+                codex_title(clean_messages),
+                json.dumps(safe_permissions),
+                timestamp,
+                timestamp,
+            ),
+        )
+        for message in clean_messages:
+            connection.execute(
+                "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    message["role"],
+                    message["content"],
+                    json.dumps(message["attachments"]),
+                    message["createdAt"],
+                ),
+            )
+    return codex_get_chat(chat_id)
+
+
+def codex_update_chat(chat_id, permissions=None):
+    safe_permissions = codex_permissions(permissions)
+    timestamp = now_ms()
+    with codex_db() as connection:
+        result = connection.execute(
+            "UPDATE codex_chats SET permissions = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(safe_permissions), timestamp, chat_id),
+        )
+        if result.rowcount == 0:
+            raise ValueError("Chat not found")
+    return codex_get_chat(chat_id)
+
+
+def codex_delete_chat(chat_id):
+    with codex_db() as connection:
+        result = connection.execute("DELETE FROM codex_chats WHERE id = ?", (chat_id,))
+        connection.execute("DELETE FROM codex_messages WHERE chat_id = ?", (chat_id,))
+        if result.rowcount == 0:
+            raise ValueError("Chat not found")
+    return {"ok": True}
+
+
+def codex_runtime_paths():
+    config = load_config_file().get("supported_apps", {}).get("codex", {})
+    explicit_home = str(config.get("home") or "").strip()
+    explicit_codex_home = str(config.get("codex_home") or "").strip()
+
+    def valid_path(value):
+        if not value:
+            return None
+        path = Path(value).expanduser()
+        return path if str(path) not in {"", "."} else None
+
+    if explicit_home or explicit_codex_home:
+        home = valid_path(explicit_home) or valid_path(os.environ.get("HOME")) or Path.home()
+        codex_home = valid_path(explicit_codex_home) or (home / ".codex")
+        if not (codex_home / "auth.json").is_file():
+            raise ValueError(f"Configured Codex home is not authenticated: {codex_home}")
+        return home, codex_home, codex_run_user(codex_home)
+
+    candidates = []
+
+    def add_candidate(home, codex_home=None):
+        home = valid_path(str(home)) if home else None
+        if not home:
+            return
+        codex_home = codex_home or (home / ".codex")
+        if (codex_home / "auth.json").is_file():
+            candidates.append((home, codex_home))
+
+    env_home = valid_path(os.environ.get("HOME"))
+    env_codex_home = valid_path(os.environ.get("CODEX_HOME"))
+    if env_codex_home:
+        add_candidate(env_codex_home.parent, env_codex_home)
+    add_candidate(env_home)
+    add_candidate(Path.home())
+    add_candidate(Path("/root"))
+
+    users_root = Path("/home")
+    if users_root.exists():
+        for home in sorted(path for path in users_root.iterdir() if path.is_dir()):
+            add_candidate(home)
+
+    unique = []
+    seen = set()
+    for home, codex_home in candidates:
+        key = str(codex_home.resolve())
+        if key not in seen:
+            seen.add(key)
+            unique.append((home, codex_home))
+
+    if not unique:
+        raise ValueError("Codex CLI is installed, but no authenticated Codex home was found.")
+    if len(unique) > 1:
+        homes = ", ".join(str(codex_home) for _, codex_home in unique)
+        raise ValueError(f"Multiple authenticated Codex homes were found. Configure supported_apps.codex.codex_home. Found: {homes}")
+
+    home, codex_home = unique[0]
+    return home, codex_home, codex_run_user(codex_home)
+
+
+def codex_run_user(codex_home):
+    if getattr(os, "geteuid", lambda: -1)() != 0:
+        return None
+    try:
+        owner = codex_home.owner()
+    except (KeyError, OSError, NotImplementedError):
+        return None
+    return owner if owner and owner != "root" else None
+
+
+def codex_run(messages, permissions=None):
+    if not shutil.which("codex"):
+        raise ValueError("Codex CLI is not installed")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("Message history is required")
+
+    permissions = codex_permissions(permissions)
+    sandbox = permissions["sandbox"]
+    approval = permissions["approval"]
+    model = permissions["model"]
+
+    clean_messages = []
+    for item in messages[-16:]:
+        role = item.get("role", "")
+        content = str(item.get("content", "")).strip()
+        attachments = codex_clean_attachments(item.get("attachments", []))
+        if role not in {"user", "assistant"} or (not content and not attachments):
+            continue
+        attachment_text = codex_attachment_prompt(attachments)
+        full_content = content[:4000]
+        if attachment_text:
+            full_content = f"{full_content}\n\n{attachment_text}".strip()
+        clean_messages.append({"role": role, "content": full_content[:16000], "attachments": attachments})
+
+    if not clean_messages or clean_messages[-1]["role"] != "user":
+        raise ValueError("The latest message must be from the user")
+
+    transcript = "\n\n".join(
+        f"{item['role'].upper()}:\n{item['content']}" for item in clean_messages
+    )
+    prompt = (
+        "You are Codex CLI answering through the HomeStart dashboard.\n"
+        "Reply to the latest user message using the conversation for context.\n"
+        "Use the same language as the user. Keep the answer concise unless detail is needed.\n"
+        f"You are running with model={model or 'default'}, sandbox={sandbox}, and approval_policy={approval}.\n"
+        "Explain before risky system changes and respect the current permission level.\n\n"
+        f"{transcript}"
+    )
+
+    output_path = None
+    temp_attachments = []
+    try:
+        with tempfile.NamedTemporaryFile(prefix="homestart-codex-", suffix=".txt", delete=False) as file:
+            output_path = file.name
+
+        home_path, codex_home, run_user = codex_runtime_paths()
+        if run_user:
+            os.chmod(output_path, 0o666)
+        env = os.environ.copy()
+        env["HOME"] = str(home_path)
+        env["CODEX_HOME"] = str(codex_home)
+        command = ["codex"]
+        if model:
+            command.extend(["-m", model])
+        command.extend([
+            "-C",
+            str(home_path),
+            "--ask-for-approval",
+            approval,
+            "exec",
+            "--sandbox",
+            sandbox,
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "--output-last-message",
+            output_path,
+            "-",
+        ])
+        for item in clean_messages[-1].get("attachments", []):
+            if item.get("kind") != "image":
+                continue
+            try:
+                _, encoded = item.get("content", "").split(",", 1)
+                suffix = mimetypes.guess_extension(item.get("mime", "")) or ".png"
+                with tempfile.NamedTemporaryFile(prefix="homestart-codex-image-", suffix=suffix, delete=False) as image:
+                    image.write(base64.b64decode(encoded))
+                    temp_attachments.append(image.name)
+                    if run_user:
+                        os.chmod(image.name, 0o644)
+                    command.extend(["-i", image.name])
+            except (ValueError, OSError, binascii.Error):
+                continue
+
+        run_env = env
+        if run_user:
+            command = [
+                "sudo",
+                "-H",
+                "-u",
+                run_user,
+                "env",
+                f"HOME={home_path}",
+                f"CODEX_HOME={codex_home}",
+                f"PATH={env.get('PATH', '')}",
+                *command,
+            ]
+            run_env = os.environ.copy()
+
+        result = subprocess.run(
+            command,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=180,
+            env=run_env,
+            cwd=str(home_path),
+        )
+
+        output = ""
+        if output_path and Path(output_path).exists():
+            output = Path(output_path).read_text(encoding="utf-8", errors="replace").strip()
+        if not output:
+            output = (result.stdout or result.stderr).strip()
+        if result.returncode != 0:
+            if "401 Unauthorized" in output:
+                raise ValueError("Codex CLI is installed, but it is not authenticated on this server.")
+            raise ValueError(output or "Codex CLI failed")
+
+        return {"ok": True, "reply": output}
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Codex CLI timed out") from error
+    finally:
+        if output_path:
+            try:
+                Path(output_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        for path in temp_attachments:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def speedtest_run():
+    if not shutil.which("speedtest"):
+        raise ValueError("Ookla Speedtest CLI is not installed")
+
+    env = os.environ.copy()
+    env.setdefault("HOME", str(Path.home() if Path.home().exists() else Path(tempfile.gettempdir())))
+    env.setdefault("LANG", "C.UTF-8")
+    env.setdefault("LC_ALL", "C.UTF-8")
+    env["PATH"] = env.get("PATH") or "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    result = subprocess.run(
+        ["speedtest", "--accept-license", "--accept-gdpr", "--format=json"],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        env=env,
+    )
+    output = (result.stdout or result.stderr).strip()
+    if result.returncode != 0:
+        raise ValueError(output or "Speedtest failed")
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ValueError(output or "Speedtest returned invalid JSON") from error
+
+    download_bps = payload.get("download", {}).get("bandwidth")
+    upload_bps = payload.get("upload", {}).get("bandwidth")
+    summary = {
+        "download_mbps": round(download_bps * 8 / 1_000_000, 2) if isinstance(download_bps, (int, float)) else None,
+        "upload_mbps": round(upload_bps * 8 / 1_000_000, 2) if isinstance(upload_bps, (int, float)) else None,
+        "ping_ms": payload.get("ping", {}).get("latency"),
+        "jitter_ms": payload.get("ping", {}).get("jitter"),
+        "packet_loss": payload.get("packetLoss"),
+        "isp": payload.get("isp"),
+        "server": payload.get("server", {}).get("name"),
+        "location": payload.get("server", {}).get("location"),
+        "result_url": payload.get("result", {}).get("url"),
+    }
+    created_at = now_ms()
+    with speedtest_db() as connection:
+        cursor = connection.execute(
+            "INSERT INTO speedtest_results (created_at, summary, raw) VALUES (?, ?, ?)",
+            (created_at, json.dumps(summary), json.dumps(payload)),
+        )
+        result_id = cursor.lastrowid
+
+    return {
+        "ok": True,
+        "id": result_id,
+        "created_at": created_at,
+        "raw": payload,
+        "summary": summary,
+    }
+
+
+def speedtest_history(limit=20):
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    with speedtest_db() as connection:
+        rows = connection.execute(
+            "SELECT id, created_at, summary FROM speedtest_results ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return {
+        "ok": True,
+        "results": [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "summary": json.loads(row["summary"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+def codex_send_message(chat_id, content, permissions=None, attachments=None):
+    content = str(content or "").strip()
+    attachments = codex_clean_attachments(attachments)
+    if not content and not attachments:
+        raise ValueError("Message is required")
+
+    if chat_id:
+        chat_payload = codex_get_chat(chat_id)
+        codex_update_chat(chat_id, permissions or chat_payload["chat"]["permissions"])
+    else:
+        chat_payload = codex_create_chat(permissions=permissions)
+        chat_id = chat_payload["chat"]["id"]
+
+    timestamp = now_ms()
+    with codex_db() as connection:
+        connection.execute(
+            "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, "user", content[:12000], json.dumps(attachments), timestamp),
+        )
+        messages = [
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "attachments": json.loads(row["attachments"] or "[]"),
+            }
+            for row in connection.execute(
+                "SELECT role, content, attachments FROM codex_messages WHERE chat_id = ? ORDER BY id",
+                (chat_id,),
+            ).fetchall()
+        ]
+
+    permissions_payload = codex_get_chat(chat_id)["chat"]["permissions"]
+    result = codex_run(messages, permissions_payload)
+    timestamp = now_ms()
+    with codex_db() as connection:
+        connection.execute(
+            "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, "assistant", result["reply"], "[]", timestamp),
+        )
+        connection.execute(
+            "UPDATE codex_chats SET title = ?, updated_at = ? WHERE id = ?",
+            (codex_title(messages), timestamp, chat_id),
+        )
+
+    payload = codex_get_chat(chat_id)
+    payload["ok"] = True
+    payload["reply"] = result["reply"]
+    return payload
+
+
+def app_payload():
+    host = local_ip()
+    containers = docker_map(host)
+    configured = load_config()
+
+    for app in configured:
+        container = containers.get(normalized_name(app.get("name", "")))
+        if container:
+            app["source"] = "docker"
+            app["app_type"] = "docker"
+            app["docker_name"] = container["docker_name"]
+            app["status"] = container["status"]
+            app["image"] = container["image"]
+        apply_app_metadata(app)
+        apply_uninstall_metadata(app)
+        app["url"] = public_app_url(app.get("url", ""), host)
+        with_icon(app)
+
+    seen = {normalized_name(app.get("name", "")) for app in configured}
+    discovered = [
+        app for app in containers.values() if normalized_name(app.get("name", "")) not in seen
+    ]
+    for app in discovered:
+        apply_uninstall_metadata(app)
+
+    return {
+        "dashboard": load_config_file().get("dashboard", {}),
+        "host": host,
+        "apps": configured + discovered,
+        "features": load_config_file().get("features", {}),
+    }
+
+
+def default_routes():
+    try:
+        routes = run_json(["ip", "-j", "route", "show", "default"])
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        return {}
+    return {route.get("dev"): route for route in routes if route.get("dev")}
+
+
+def netplan_files():
+    root = Path("/etc/netplan")
+    if not root.exists():
+        return []
+    return sorted([*root.glob("*.yaml"), *root.glob("*.yml")])
+
+
+def load_netplan_file(path):
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            return yaml.safe_load(file) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def netplan_interface_config(interface):
+    for path in netplan_files():
+        data = load_netplan_file(path)
+        network = data.get("network", {})
+        for section in ("ethernets", "wifis"):
+            interfaces = network.get(section, {})
+            if interface in interfaces:
+                return path, interfaces[interface]
+    return None, {}
+
+
+def is_physical_network_interface(item):
+    name = item.get("ifname", "")
+    if item.get("link_type") not in {"ether"}:
+        return False
+    if name == "lo" or name.startswith(VIRTUAL_INTERFACE_PREFIXES):
+        return False
+    if "master" in item:
+        return False
+    return True
+
+
+def network_interfaces_payload():
+    try:
+        addresses = run_json(["ip", "-j", "addr", "show"])
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        addresses = []
+
+    routes = default_routes()
+    interfaces = []
+    for item in addresses:
+        if not is_physical_network_interface(item):
+            continue
+
+        name = item.get("ifname", "")
+        netplan_path, netplan_config = netplan_interface_config(name)
+        ipv4 = [
+            {
+                "address": address.get("local"),
+                "prefix": address.get("prefixlen"),
+                "cidr": f"{address.get('local')}/{address.get('prefixlen')}",
+            }
+            for address in item.get("addr_info", [])
+            if address.get("family") == "inet"
+        ]
+        route = routes.get(name, {})
+        nameservers = netplan_config.get("nameservers", {}).get("addresses", [])
+        mode = "dhcp" if netplan_config.get("dhcp4") else "static" if netplan_config else "unknown"
+        interfaces.append(
+            {
+                "name": name,
+                "mac": item.get("address", ""),
+                "state": item.get("operstate", "UNKNOWN"),
+                "mtu": item.get("mtu"),
+                "ipv4": ipv4,
+                "gateway": route.get("gateway", ""),
+                "dns": nameservers,
+                "mode": mode,
+                "netplan_file": str(netplan_path) if netplan_path else "",
+                "managed_by": "netplan" if netplan_path else "unknown",
+            }
+        )
+
+    return {
+        "renderer": "netplan",
+        "interfaces": interfaces,
+    }
+
+
+def validate_interface_name(name):
+    interfaces = {item["name"] for item in network_interfaces_payload()["interfaces"]}
+    if name not in interfaces:
+        raise ValueError("Unknown or unsupported network interface")
+
+
+def update_netplan_interface(interface, mode, address, gateway, dns):
+    validate_interface_name(interface)
+    if mode not in {"dhcp", "static"}:
+        raise ValueError("Invalid network mode")
+
+    target_file, _ = netplan_interface_config(interface)
+    if target_file is None:
+        target_file = Path(f"/etc/netplan/90-homestart-{interface}.yaml")
+        section = "wifis" if interface.startswith("wl") else "ethernets"
+        data = {"network": {"version": 2, "renderer": "networkd", section: {}}}
+    else:
+        data = load_netplan_file(target_file)
+        network = data.setdefault("network", {})
+        network.setdefault("version", 2)
+        network.setdefault("renderer", "networkd")
+        section = "ethernets" if interface in network.get("ethernets", {}) else "wifis"
+        network.setdefault(section, {})
+
+    network = data.setdefault("network", {})
+    interface_config = network.setdefault(section, {}).setdefault(interface, {})
+    if mode == "dhcp":
+        interface_config.clear()
+        interface_config["dhcp4"] = True
+    else:
+        try:
+            ipaddress.ip_interface(address)
+            ipaddress.ip_address(gateway)
+            dns_addresses = [str(ipaddress.ip_address(item.strip())) for item in dns if item.strip()]
+        except ValueError as error:
+            raise ValueError(f"Invalid network value: {error}") from error
+
+        interface_config.clear()
+        interface_config["dhcp4"] = False
+        interface_config["addresses"] = [address]
+        interface_config["routes"] = [{"to": "default", "via": gateway}]
+        if dns_addresses:
+            interface_config["nameservers"] = {"addresses": dns_addresses}
+
+    backup = target_file.with_suffix(target_file.suffix + f".bak-{int(time.time())}")
+    if target_file.exists():
+        shutil.copy2(target_file, backup)
+
+    with target_file.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(data, file, sort_keys=False)
+
+    subprocess.check_output(["netplan", "generate"], text=True, timeout=10, stderr=subprocess.STDOUT)
+    subprocess.check_output(["netplan", "apply"], text=True, timeout=20, stderr=subprocess.STDOUT)
+    return {
+        "ok": True,
+        "interface": interface,
+        "mode": mode,
+        "backup": str(backup) if backup.exists() else "",
+    }
+
+
+def update_member_path(name):
+    path = PurePosixPath(name)
+    parts = [part for part in path.parts if part not in {"", "."}]
+    if not parts:
+        return None
+    if parts[0] in {"homestart", "package"}:
+        parts = parts[1:]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    lower_parts = [part.lower() for part in parts]
+    if any(part in UPDATE_EXCLUDED for part in lower_parts):
+        raise ValueError(f"Update package contains protected entry: {name}")
+    if any(part.endswith(UPDATE_PRIVATE_SUFFIXES) for part in lower_parts):
+        raise ValueError(f"Update package contains private data file: {name}")
+    if any(fragment in part for part in lower_parts for fragment in UPDATE_PRIVATE_FRAGMENTS):
+        raise ValueError(f"Update package contains private data file: {name}")
+    if parts[0] in UPDATE_ALLOWED_PREFIXES or parts[0] in UPDATE_ALLOWED_FILES:
+        return Path(*parts)
+    return None
+
+
+def update_member_parts(name):
+    path = PurePosixPath(name)
+    parts = [part for part in path.parts if part not in {"", "."}]
+    if parts and parts[0] in {"homestart", "package"}:
+        parts = parts[1:]
+    return parts
+
+
+def validate_update_manifest(archive):
+    manifest_member = None
+    for member in archive.getmembers():
+        parts = update_member_parts(member.name)
+        if parts == ["package.json"]:
+            manifest_member = member
+            break
+    if manifest_member is None:
+        raise ValueError("Update package is missing package.json metadata")
+    if not manifest_member.isfile():
+        raise ValueError("Update package metadata is invalid")
+
+    source = archive.extractfile(manifest_member)
+    if source is None:
+        raise ValueError("Update package metadata could not be read")
+    try:
+        manifest = json.loads(source.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Update package metadata is invalid JSON") from error
+
+    if manifest.get("name") != "homestart":
+        raise ValueError("Update package is not a HomeStart package")
+    if manifest.get("package_type") != "update":
+        raise ValueError("This file is not a HomeStart update package")
+    return manifest
+
+
+def restart_service_later():
+    def restart():
+      subprocess.run(["systemctl", "restart", "homestart.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    threading.Timer(1.0, restart).start()
+
+
+def apply_update_package(filename, content):
+    if not filename.endswith((".tar.gz", ".tgz")):
+        raise ValueError("Update file must be a .tar.gz or .tgz package")
+    if "," in content:
+        content = content.split(",", 1)[1]
+
+    try:
+        payload = base64.b64decode(content, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("Invalid update file encoding") from error
+    if len(payload) > 30 * 1024 * 1024:
+        raise ValueError("Update package is too large")
+
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup_root = BACKUP_DIR / f"update-{timestamp}"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    changed = []
+
+    with tempfile.NamedTemporaryFile(prefix="homestart-update-", suffix=".tar.gz", delete=False) as file:
+        archive_path = Path(file.name)
+        file.write(payload)
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            manifest = validate_update_manifest(archive)
+            members = []
+            for member in archive.getmembers():
+                target = update_member_path(member.name)
+                if target is None or member.isdir():
+                    continue
+                if not member.isfile():
+                    raise ValueError(f"Unsupported package entry: {member.name}")
+                members.append((member, target))
+
+            if not members:
+                raise ValueError("No updatable files found in package")
+
+            for member, relative_target in members:
+                target = BASE_DIR / relative_target
+                if target.exists():
+                    backup_target = backup_root / relative_target
+                    backup_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target, backup_target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    continue
+                with target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                mode = member.mode & 0o777
+                if mode:
+                    os.chmod(target, mode)
+                changed.append(str(relative_target))
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    restart_service_later()
+    return {
+        "ok": True,
+        "changed": changed,
+        "backup": str(backup_root),
+        "restart": True,
+        "package": manifest,
+    }
+
+
+class HomeStartHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        route = parsed.path
+        if route == "/api/apps":
+            self.send_json(app_payload())
+            return
+
+        if route in {"/codex", "/codex/"}:
+            self.path = "/codex.html"
+            super().do_GET()
+            return
+
+        if route in {"/speedtest", "/speedtest/"}:
+            self.path = "/speedtest.html"
+            super().do_GET()
+            return
+
+        if route == "/api/codex/chats":
+            self.send_json(codex_list_chats())
+            return
+
+        if route == "/api/codex/chat":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(codex_get_chat(query.get("id", [""])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/icon":
+            query = parse_qs(parsed.query)
+            serve_icon(self, query.get("url", [""])[0])
+            return
+
+        if route == "/api/system":
+            self.send_json(system_payload())
+            return
+
+        if route == "/api/resources":
+            self.send_json(resources_payload())
+            return
+
+        if route == "/api/speedtest/history":
+            query = parse_qs(parsed.query)
+            self.send_json(speedtest_history(query.get("limit", [20])[0]))
+            return
+
+        if route == "/api/settings/network":
+            self.send_json(network_interfaces_payload())
+            return
+
+        if route == "/api/status":
+            self.send_json(status_payload())
+            return
+
+        if route == "/api/files":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(file_listing(query.get("path", [""])[0]))
+            except (FileNotFoundError, NotADirectoryError, PermissionError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/file/open":
+            query = parse_qs(parsed.query)
+            try:
+                serve_file(self, query.get("path", [""])[0])
+            except (FileNotFoundError, IsADirectoryError, PermissionError) as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/health":
+            self.send_json({"ok": True})
+            return
+
+        super().do_GET()
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/icon":
+            query = parse_qs(parsed.query)
+            serve_icon(self, query.get("url", [""])[0], include_body=False)
+            return
+
+        if parsed.path == "/api/file/open":
+            query = parse_qs(parsed.query)
+            try:
+                serve_file(self, query.get("path", [""])[0], include_body=False)
+            except (FileNotFoundError, IsADirectoryError, PermissionError):
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+            return
+
+        super().do_HEAD()
+
+    def do_POST(self):
+        route = urlparse(self.path).path
+        if route == "/api/update":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(apply_update_package(payload.get("filename", ""), payload.get("content", "")))
+            except (json.JSONDecodeError, ValueError, OSError, tarfile.TarError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/codex/chats":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                self.send_json(codex_create_chat(payload.get("messages", []), payload.get("permissions", {})))
+            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/codex/chat/update":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(codex_update_chat(payload.get("chat_id", ""), payload.get("permissions", {})))
+            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/codex/chat/delete":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(codex_delete_chat(payload.get("chat_id", "")))
+            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/codex/chat":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if "content" in payload:
+                    self.send_json(
+                        codex_send_message(
+                            payload.get("chat_id", ""),
+                            payload.get("content", ""),
+                            payload.get("permissions", {}),
+                            payload.get("attachments", []),
+                        )
+                    )
+                else:
+                    self.send_json(codex_run(payload.get("messages", []), payload.get("permissions", {})))
+            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/speedtest/run":
+            try:
+                self.send_json(speedtest_run())
+            except (ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/settings/network":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                result = update_netplan_interface(
+                    payload.get("interface", ""),
+                    payload.get("mode", ""),
+                    payload.get("address", ""),
+                    payload.get("gateway", ""),
+                    payload.get("dns", []),
+                )
+                self.send_json(result)
+            except (json.JSONDecodeError, ValueError, subprocess.SubprocessError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/files/action":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(file_action(payload))
+            except (json.JSONDecodeError, ValueError, OSError, PermissionError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route != "/api/apps/action":
+            self.send_json({"error": "Route not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = app_action(payload)
+            self.send_json(result)
+        except (json.JSONDecodeError, ValueError, subprocess.SubprocessError) as error:
+            self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def end_headers(self):
+        if not getattr(self, "skip_default_cache", False):
+            self.send_header("Cache-Control", "no-store")
+        self.skip_default_cache = False
+        super().end_headers()
+
+    def send_json(self, payload, status=HTTPStatus.OK):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main():
+    port = int(os.environ.get("PORT", "80"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HomeStartHandler)
+    print(f"HomeStart listening on 0.0.0.0:{port}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
