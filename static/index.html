@@ -145,27 +145,41 @@
         </section>
 
         <section class="view" id="view-files" data-view-panel="files">
-          <header class="topbar">
-            <div>
-              <p class="eyebrow">System app</p>
-              <h1>File Browser</h1>
-              <form id="file-path-form" class="file-path-form">
-                <input id="file-path" type="text" autocomplete="off" spellcheck="false" value="Available roots" />
-                <button type="submit">Go</button>
-              </form>
-            </div>
-            <div class="file-toolbar">
-              <button id="file-paste" type="button" disabled>Paste</button>
-              <button id="file-new-folder" type="button">New folder</button>
-              <button id="file-home" type="button">Home</button>
-              <button id="file-up" type="button">Up</button>
-            </div>
-          </header>
-
           <section class="file-panel">
             <div class="file-explorer">
-              <aside id="file-roots" class="file-sidebar"></aside>
+              <aside class="file-sidebar">
+                <div class="file-sidebar-title">
+                  <strong>Files</strong>
+                  <span>Locations</span>
+                </div>
+                <div id="file-roots" class="file-root-list"></div>
+              </aside>
               <div class="file-main">
+                <header class="file-main-header">
+                  <div class="file-location">
+                    <p class="eyebrow">File Browser</p>
+                    <h1 id="file-location-name">Files</h1>
+                    <span id="file-count">Loading...</span>
+                  </div>
+                  <div class="file-toolbar">
+                    <label class="file-upload-button">
+                      <span>Upload</span>
+                      <input id="file-upload" type="file" multiple />
+                    </label>
+                    <button id="file-new-folder" type="button">New folder</button>
+                    <button id="file-paste" type="button" disabled>Paste</button>
+                    <button id="file-up" type="button">Up</button>
+                    <button id="file-home" type="button">Roots</button>
+                    <div class="file-view-toggle" aria-label="File view mode">
+                      <button id="file-view-grid" class="active" type="button" aria-pressed="true">Grid</button>
+                      <button id="file-view-list" type="button" aria-pressed="false">List</button>
+                    </div>
+                  </div>
+                </header>
+                <form id="file-path-form" class="file-path-form">
+                  <input id="file-path" type="text" autocomplete="off" spellcheck="false" value="Available roots" aria-label="Full path" />
+                  <button type="submit">Go</button>
+                </form>
                 <div id="file-drop-status" class="file-drop-status">Drop files here to upload</div>
                 <div class="file-columns">
                   <span>Name</span>
@@ -174,7 +188,7 @@
                   <span>Modified</span>
                   <span>Actions</span>
                 </div>
-                <div id="files" class="file-list"></div>
+                <div id="files" class="file-list grid-view"></div>
               </div>
             </div>
           </section>

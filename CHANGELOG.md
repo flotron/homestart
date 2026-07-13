@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260713-1445
+
+- Redesigned the File Browser into a more visual desktop-style explorer.
+- Added a large grid view for folders and files, with a list view toggle for
+  dense directory inspection.
+- Added a cleaner file sidebar with friendly location labels and full paths.
+- Moved upload, new folder, paste, up, roots, and view controls into the File
+  Browser workspace header.
+- Added a visible Upload button while keeping drag-and-drop uploads.
+- Added folder/file counts and current location naming above the file grid.
+
 ## 20260710-1735
 
 - Prepared HomeStart for public GitHub distribution.

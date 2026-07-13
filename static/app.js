@@ -6,6 +6,7 @@ const state = {
   fileParent: "",
   fileRoots: [],
   fileClipboard: null,
+  fileView: "grid",
   features: { file_operations: true },
   view: "status",
   networkInterfaces: [],
@@ -47,9 +48,14 @@ const fileUp = document.querySelector("#file-up");
 const fileHome = document.querySelector("#file-home");
 const fileNewFolder = document.querySelector("#file-new-folder");
 const filePaste = document.querySelector("#file-paste");
+const fileUpload = document.querySelector("#file-upload");
 const fileDropStatus = document.querySelector("#file-drop-status");
 const fileMain = document.querySelector(".file-main");
 const fileRoots = document.querySelector("#file-roots");
+const fileCount = document.querySelector("#file-count");
+const fileLocationName = document.querySelector("#file-location-name");
+const fileViewGrid = document.querySelector("#file-view-grid");
+const fileViewList = document.querySelector("#file-view-list");
 const refreshNetwork = document.querySelector("#refresh-network");
 const networkInterfaces = document.querySelector("#network-interfaces");
 const networkForm = document.querySelector("#network-form");
@@ -250,6 +256,8 @@ function formatTime(timestamp) {
 }
 
 function fileIcon(entry) {
+  if (entry.type === "directory") return "";
+  const extension = entry.name?.includes(".") ? entry.name.split(".").pop().slice(0, 4).toUpperCase() : "";
   const icons = {
     archive: "ZIP",
     audio: "AUD",
@@ -260,7 +268,7 @@ function fileIcon(entry) {
     text: "TXT",
     video: "VID",
   };
-  return icons[entry.kind] || icons[entry.type] || "FILE";
+  return extension || icons[entry.kind] || icons[entry.type] || "FILE";
 }
 
 function fileTypeLabel(entry) {
@@ -376,7 +384,13 @@ function renderFileEntry(entry) {
   const node = document.createElement("div");
   node.className = `file-entry ${entry.type}`;
   node.innerHTML = `
-    <button class="file-name" type="button"><span class="file-icon"></span><span class="file-label"></span></button>
+    <button class="file-name" type="button">
+      <span class="file-thumb"><span class="file-icon"></span></span>
+      <span class="file-text">
+        <span class="file-label"></span>
+        <span class="file-subtitle"></span>
+      </span>
+    </button>
     <span class="file-type"></span>
     <span class="file-size"></span>
     <span class="file-modified"></span>
@@ -391,6 +405,9 @@ function renderFileEntry(entry) {
   node.querySelector(".file-type").textContent = fileTypeLabel(entry);
   node.querySelector(".file-size").textContent = entry.size || "";
   node.querySelector(".file-modified").textContent = formatTime(entry.modified);
+  node.querySelector(".file-subtitle").textContent = entry.type === "directory"
+    ? "Folder"
+    : [fileTypeLabel(entry), entry.size].filter(Boolean).join(" · ");
   node.querySelector(".file-open").textContent = entry.type === "directory" ? "Open" : "View";
   if (state.fileClipboard?.path === entry.path) {
     node.classList.add("copied");
@@ -417,10 +434,24 @@ function renderFileEntry(entry) {
 function updateFileControls() {
   const canOperate = Boolean(state.filePath) && Boolean(state.features.file_operations);
   fileNewFolder.disabled = !canOperate;
+  fileUpload.disabled = !canOperate;
   filePaste.disabled = !canOperate || !state.fileClipboard;
   filePaste.textContent = state.fileClipboard ? `Paste ${state.fileClipboard.name}` : "Paste";
   fileDropStatus.textContent = canOperate ? "Drop files here to upload" : "File operations are disabled";
   fileDropStatus.classList.toggle("disabled", !canOperate);
+}
+
+function fileRootLabel(root) {
+  if (root === "/") return "Root";
+  const parts = root.split("/").filter(Boolean);
+  return parts.at(-1) || root;
+}
+
+function currentFolderName(path) {
+  if (!path) return "Locations";
+  if (path === "/") return "Root";
+  const parts = path.split("/").filter(Boolean);
+  return parts.at(-1) || path;
 }
 
 async function runFileAction(payload) {
@@ -485,7 +516,15 @@ function renderRoots() {
     const node = document.createElement("button");
     node.type = "button";
     node.className = "root-entry";
-    node.textContent = root;
+    node.innerHTML = `
+      <span class="root-icon"></span>
+      <span>
+        <strong></strong>
+        <small></small>
+      </span>
+    `;
+    node.querySelector("strong").textContent = fileRootLabel(root);
+    node.querySelector("small").textContent = root;
     if (state.filePath === root || state.filePath.startsWith(`${root}/`)) {
       node.classList.add("active");
     }
@@ -629,10 +668,17 @@ async function loadFiles(path = "") {
   state.fileRoots = data.roots || [];
   filePathNode.value = state.filePath || "";
   filePathNode.placeholder = "Available roots";
+  fileLocationName.textContent = currentFolderName(state.filePath);
+  const entries = data.entries || [];
+  const folderCount = entries.filter((entry) => entry.type === "directory").length;
+  const fileOnlyCount = entries.length - folderCount;
+  fileCount.textContent = state.filePath
+    ? `${entries.length} item${entries.length === 1 ? "" : "s"} · ${folderCount} folder${folderCount === 1 ? "" : "s"} · ${fileOnlyCount} file${fileOnlyCount === 1 ? "" : "s"}`
+    : `${entries.length} location${entries.length === 1 ? "" : "s"}`;
   fileUp.disabled = !state.fileParent && !state.filePath;
   updateFileControls();
   renderRoots();
-  filesNode.replaceChildren(...(data.entries || []).map(renderFileEntry));
+  filesNode.replaceChildren(...entries.map(renderFileEntry));
 }
 
 function openTypedFilePath(event) {
@@ -660,6 +706,16 @@ async function uploadDroppedFiles(files) {
     fileDropStatus.textContent = error.message;
     window.alert(error.message);
   }
+}
+
+function setFileView(view) {
+  state.fileView = view;
+  filesNode.classList.toggle("grid-view", view === "grid");
+  filesNode.classList.toggle("list-view", view === "list");
+  fileViewGrid.classList.toggle("active", view === "grid");
+  fileViewList.classList.toggle("active", view === "list");
+  fileViewGrid.setAttribute("aria-pressed", String(view === "grid"));
+  fileViewList.setAttribute("aria-pressed", String(view === "list"));
 }
 
 function setFileDropActive(active) {
@@ -727,6 +783,13 @@ fileUp.addEventListener("click", () => loadFiles(state.fileParent));
 fileHome.addEventListener("click", () => loadFiles(""));
 fileNewFolder.addEventListener("click", createFolder);
 filePaste.addEventListener("click", pasteFileEntry);
+fileUpload.addEventListener("change", () => {
+  const selected = [...(fileUpload.files || [])];
+  fileUpload.value = "";
+  uploadDroppedFiles(selected).catch(console.error);
+});
+fileViewGrid.addEventListener("click", () => setFileView("grid"));
+fileViewList.addEventListener("click", () => setFileView("list"));
 filePathForm.addEventListener("submit", openTypedFilePath);
 filePathNode.addEventListener("keydown", handleFilePathKeydown);
 fileMain.addEventListener("dragover", (event) => {
