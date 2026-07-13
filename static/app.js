@@ -432,13 +432,21 @@ function renderFileEntry(entry) {
 }
 
 function updateFileControls() {
-  const canOperate = Boolean(state.filePath) && Boolean(state.features.file_operations);
+  const operationsEnabled = Boolean(state.features.file_operations);
+  const hasFolder = Boolean(state.filePath);
+  const canOperate = hasFolder && operationsEnabled;
   fileNewFolder.disabled = !canOperate;
   fileUpload.disabled = !canOperate;
   filePaste.disabled = !canOperate || !state.fileClipboard;
   filePaste.textContent = state.fileClipboard ? `Paste ${state.fileClipboard.name}` : "Paste";
-  fileDropStatus.textContent = canOperate ? "Drop files here to upload" : "File operations are disabled";
-  fileDropStatus.classList.toggle("disabled", !canOperate);
+  if (!operationsEnabled) {
+    fileDropStatus.textContent = "File operations are disabled";
+  } else if (!hasFolder) {
+    fileDropStatus.textContent = "Open a location to upload or create files";
+  } else {
+    fileDropStatus.textContent = "Drop files here to upload";
+  }
+  fileDropStatus.classList.toggle("disabled", !operationsEnabled);
 }
 
 function fileRootLabel(root) {

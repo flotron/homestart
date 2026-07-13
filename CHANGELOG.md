@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260713-1820
+
+- Fixed File Browser empty Locations view showing "File operations are
+  disabled" even when file operations were enabled.
+- The drop/status banner now distinguishes between disabled operations and
+  simply needing to open a folder before upload/create/paste actions are
+  available.
+
 ## 20260713-1815
 
 - Reworked File Browser colors back into the dark HomeStart dashboard theme
