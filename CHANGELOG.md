@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260713-1815
+
+- Reworked File Browser colors back into the dark HomeStart dashboard theme
+  while keeping the new visual grid explorer.
+- Removed Codex CLI Chat from the default Supported Apps list because it is not
+  practical enough as a normal app card.
+- Removed Codex-specific default configuration and public README promotion from
+  the distributable package.
+
 ## 20260713-1445
 
 - Redesigned the File Browser into a more visual desktop-style explorer.

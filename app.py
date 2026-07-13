@@ -57,12 +57,6 @@ DEFAULT_CONFIG = {
         "file_operations": True,
         "app_uninstall": True,
     },
-    "supported_apps": {
-        "codex": {
-            "home": "",
-            "codex_home": "",
-        },
-    },
 }
 INLINE_EXTENSIONS = {
     ".bmp",

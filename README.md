@@ -1,4 +1,4 @@
-# HomeStart
+﻿# HomeStart
 
 HomeStart is a small self-hosted dashboard for homelabs, local servers, and
 small office machines. It is written with the Python standard library plus
@@ -6,8 +6,7 @@ PyYAML, and is designed to run as a `systemd` service on a trusted LAN.
 
 It gives you a browser UI to inspect the host, open local apps, manage Docker
 containers, browse files, run supported CLI wrappers such as Ookla Speedtest,
-and use a local Codex CLI chat interface when Codex is installed and
-authenticated on the server.
+and apply local updates without bundling private runtime data.
 
 ## Features
 
@@ -18,7 +17,6 @@ authenticated on the server.
 - Settings: network interface configuration through netplan and update uploads.
 - Supported apps:
   - Ookla Speedtest CLI wrapper with stored local history.
-  - Codex CLI Chat wrapper with per-chat permissions and model selection.
 - Safe packaging: installer/update archives exclude local runtime data.
 
 ## Security Model
@@ -27,7 +25,7 @@ HomeStart is intended for trusted LAN use. Do not expose it directly to the
 public internet without adding authentication, TLS, and a reverse proxy.
 
 Actions such as Docker stop/restart, app uninstall, file operations, network
-changes, and Codex CLI execution can affect the host. Use conservative
+changes, and update installation can affect the host. Use conservative
 `config.json` settings for shared or less trusted environments.
 
 Local runtime data is intentionally not part of releases:
@@ -132,7 +130,6 @@ Updates preserve:
 - `config.json`
 - `data/`
 - local Speedtest history
-- Codex chat history
 - local backups and runtime files
 
 The updater validates package metadata and rejects installer archives.
@@ -182,10 +179,6 @@ Supported apps are visual wrappers around local CLI tools.
 Ookla Speedtest requires the official `speedtest` CLI. Results are stored in
 the local HomeStart database and shown in the Speedtest history table.
 
-Codex CLI Chat requires `codex` installed and authenticated on the server.
-HomeStart searches for authenticated Codex config directories generically and
-can be pointed to one through `supported_apps.codex.codex_home`.
-
 ## Configuration
 
 Copy and edit:
@@ -208,7 +201,6 @@ Important options:
 - `apps[].app_type`: `docker`, `native`, or `supported`.
 - `apps[].requirements`: optional command/path checks.
 - `apps[].uninstall_command`: explicit uninstall command for native/supported apps.
-- `supported_apps.codex.codex_home`: optional authenticated Codex config path.
 
 Mounted disks and USB drives appear as sidebar shortcuts when their mount points
 are inside configured `file_roots`.
@@ -239,4 +231,5 @@ Before publishing a release:
 2. Run the package builder.
 3. Confirm archives do not include local data.
 4. Test install/update flow on a clean machine or VM when possible.
+
 

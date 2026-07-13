@@ -10,12 +10,6 @@
     "file_operations": true,
     "app_uninstall": true
   },
-  "supported_apps": {
-    "codex": {
-      "home": "",
-      "codex_home": ""
-    }
-  },
   "file_roots": [
     "/"
   ],
@@ -47,25 +41,6 @@
       ],
       "tags": [
         "Ookla CLI"
-      ]
-    },
-    {
-      "name": "Codex CLI Chat",
-      "app_type": "supported",
-      "kind": "Supported",
-      "status": "Local interface",
-      "url": "/codex",
-      "description": "Chat interface backed by the Codex CLI",
-      "requirements": [
-        {
-          "type": "command",
-          "name": "codex",
-          "paths": [],
-          "install_hint": "Install the Codex CLI"
-        }
-      ],
-      "tags": [
-        "Codex CLI"
       ]
     }
   ],
