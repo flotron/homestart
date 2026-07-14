@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Docker app URLs now prefer HTTP-like container ports over non-web ports such
+  as SSH, databases, or mail ports, so apps exposing both web and SSH choose
+  the browser port instead of the first published port.
 - Uninstall confirmation now shows an explicit mismatch message when the typed
   confirmation text is incorrect, instead of silently cancelling.
 - Hardened Docker app actions so uninstall verifies the container exists before

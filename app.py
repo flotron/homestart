@@ -390,44 +390,127 @@ def docker_container_diagnostics(container_name):
     }
 
 
-def docker_host_mode_ports(container_name):
+WEB_CONTAINER_PORTS = ["80", "443", "3000", "5000", "5601", "8000", "8080", "8081", "8096", "9000", "9443"]
+NON_WEB_CONTAINER_PORTS = {"22", "2222", "25", "53", "110", "143", "465", "587", "993", "995", "3306", "5432", "6379"}
+HTTPS_PORTS = {"443", "8443", "9443"}
+
+
+def parse_container_port(value):
+    port, _, protocol = str(value or "").partition("/")
+    return port if port.isdigit() else "", protocol or "tcp"
+
+
+def docker_port_mappings(container_name):
     data = docker_inspect(container_name)
     if not data:
         return []
 
+    mappings = []
     if data.get("HostConfig", {}).get("NetworkMode") != "host":
-        return []
+        bindings = data.get("HostConfig", {}).get("PortBindings") or {}
+        for container, values in bindings.items():
+            container_port, protocol = parse_container_port(container)
+            for item in values or []:
+                host_port = str(item.get("HostPort", ""))
+                if host_port.isdigit() and container_port:
+                    mappings.append(
+                        {
+                            "host_port": host_port,
+                            "container_port": container_port,
+                            "protocol": protocol,
+                        }
+                    )
 
-    exposed = data.get("Config", {}).get("ExposedPorts") or {}
+        network_ports = data.get("NetworkSettings", {}).get("Ports") or {}
+        for container, values in network_ports.items():
+            container_port, protocol = parse_container_port(container)
+            for item in values or []:
+                host_port = str(item.get("HostPort", ""))
+                if host_port.isdigit() and container_port:
+                    mappings.append(
+                        {
+                            "host_port": host_port,
+                            "container_port": container_port,
+                            "protocol": protocol,
+                        }
+                    )
+    else:
+        exposed = data.get("Config", {}).get("ExposedPorts") or {}
+        for value in exposed:
+            container_port, protocol = parse_container_port(value)
+            if container_port and protocol == "tcp":
+                mappings.append(
+                    {
+                        "host_port": container_port,
+                        "container_port": container_port,
+                        "protocol": protocol,
+                    }
+                )
+
+    unique = []
+    seen = set()
+    for mapping in mappings:
+        key = (mapping["host_port"], mapping["container_port"], mapping["protocol"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(mapping)
+    return unique
+
+
+def docker_port_score(mapping):
+    if mapping.get("protocol") != "tcp":
+        return -10000
+    host_port = mapping.get("host_port", "")
+    container_port = mapping.get("container_port", "")
+    score = 0
+    if container_port in WEB_CONTAINER_PORTS:
+        score += 1000 - WEB_CONTAINER_PORTS.index(container_port)
+    if host_port in WEB_CONTAINER_PORTS:
+        score += 180 - WEB_CONTAINER_PORTS.index(host_port)
+    if container_port in NON_WEB_CONTAINER_PORTS:
+        score -= 900
+    if host_port in NON_WEB_CONTAINER_PORTS:
+        score -= 120
+    if score == 0 and host_port.isdigit():
+        score = 10
+    return score
+
+
+def select_docker_web_mapping(mappings):
+    if not mappings:
+        return None
+    tcp_mappings = [mapping for mapping in mappings if mapping.get("protocol") == "tcp"]
+    if not tcp_mappings:
+        return None
+    return sorted(
+        tcp_mappings,
+        key=lambda mapping: (docker_port_score(mapping), -int(mapping["host_port"])),
+        reverse=True,
+    )[0]
+
+
+def docker_ports_for_display(mappings, selected=None):
     ports = []
-    for value in exposed:
-        port, _, protocol = value.partition("/")
-        if protocol == "tcp" and port.isdigit() and port not in ports:
+    if selected:
+        ports.append(selected["host_port"])
+    for mapping in sorted(mappings, key=lambda item: int(item["host_port"])):
+        if mapping.get("protocol") != "tcp":
+            continue
+        port = mapping["host_port"]
+        if port not in ports:
             ports.append(port)
-    return sorted(ports, key=int)
+    return ports
 
 
-def docker_published_ports(container_name):
-    data = docker_inspect(container_name)
-    if not data:
-        return []
-
-    ports = []
-    bindings = data.get("HostConfig", {}).get("PortBindings") or {}
-    for values in bindings.values():
-        for item in values or []:
-            port = str(item.get("HostPort", ""))
-            if port.isdigit() and port not in ports:
-                ports.append(port)
-
-    network_ports = data.get("NetworkSettings", {}).get("Ports") or {}
-    for values in network_ports.values():
-        for item in values or []:
-            port = str(item.get("HostPort", ""))
-            if port.isdigit() and port not in ports:
-                ports.append(port)
-
-    return sorted(ports, key=int)
+def docker_url_from_mapping(host, mapping):
+    if not mapping:
+        return ""
+    host_port = mapping["host_port"]
+    container_port = mapping["container_port"]
+    scheme = "https" if host_port in HTTPS_PORTS or container_port in HTTPS_PORTS else "http"
+    default_port = (scheme == "http" and host_port == "80") or (scheme == "https" and host_port == "443")
+    return f"{scheme}://{host}" if default_port else f"{scheme}://{host}:{host_port}"
 
 
 def docker_apps(host, all_containers=True):
@@ -457,22 +540,10 @@ def docker_apps(host, all_containers=True):
         except json.JSONDecodeError:
             continue
 
-        ports = []
-        raw_ports = item.get("Ports", "")
-        for part in raw_ports.split(","):
-            part = part.strip()
-            if "->" not in part:
-                continue
-            public = part.split("->", 1)[0].rsplit(":", 1)[-1]
-            if public.isdigit() and public not in ports:
-                ports.append(public)
-
-        if not ports:
-            ports = docker_host_mode_ports(item.get("Names", ""))
-        if not ports:
-            ports = docker_published_ports(item.get("Names", ""))
-
-        url = f"http://{host}:{ports[0]}" if ports else ""
+        mappings = docker_port_mappings(item.get("Names", ""))
+        selected_port = select_docker_web_mapping(mappings)
+        ports = docker_ports_for_display(mappings, selected_port)
+        url = docker_url_from_mapping(host, selected_port)
         apps.append(
             with_icon(
                 {
@@ -481,6 +552,8 @@ def docker_apps(host, all_containers=True):
                     "status": item.get("Status", ""),
                     "image": item.get("Image", ""),
                     "ports": ports,
+                    "port_mappings": mappings,
+                    "selected_port": selected_port,
                     "url": url,
                     "source": "docker",
                     "app_type": "docker",
