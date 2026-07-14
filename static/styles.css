@@ -341,6 +341,30 @@ button:disabled {
   font-size: 12px;
 }
 
+.store-actions {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.45fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.store-link {
+  display: grid;
+  min-height: 40px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--text);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.store-link:hover {
+  border-color: rgb(56 189 248 / 0.45);
+  background: rgb(56 189 248 / 0.1);
+}
+
 .store-dialog {
   width: min(620px, calc(100vw - 28px));
   border: 1px solid var(--line);
@@ -2035,6 +2059,7 @@ button:disabled {
 
   .topbar-actions,
   .store-search,
+  .store-actions,
   .split-fields {
     grid-template-columns: 1fr;
     width: 100%;

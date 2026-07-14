@@ -321,7 +321,10 @@ function renderStoreResult(item) {
       </div>
     </div>
     <div class="store-meta"></div>
-    <button type="button">Install</button>
+    <div class="store-actions">
+      <a class="store-link" target="_blank" rel="noopener noreferrer">Docker Hub</a>
+      <button type="button">Install</button>
+    </div>
   `;
   const icon = node.querySelector(".store-icon");
   const iconImage = node.querySelector(".store-icon img");
@@ -346,6 +349,9 @@ function renderStoreResult(item) {
     `${compactNumber(item.stars)} stars`,
     `${compactNumber(item.pulls)} pulls`,
   ].filter(Boolean).join(" · ");
+  const link = node.querySelector(".store-link");
+  link.href = item.page_url || `https://hub.docker.com/r/${encodeURIComponent(item.image || item.name)}`;
+  link.title = `Open ${item.name} on Docker Hub`;
   node.querySelector("button").addEventListener("click", () => openStoreInstall(item));
   return node;
 }

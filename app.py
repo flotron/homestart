@@ -2186,6 +2186,7 @@ def dockerhub_search(query, limit=12):
                 "image": name,
                 "namespace": namespace,
                 "repo": repo,
+                "page_url": f"https://hub.docker.com/r/{name}",
                 "description": description,
                 "stars": item.get("star_count") or 0,
                 "pulls": item.get("pull_count") or 0,

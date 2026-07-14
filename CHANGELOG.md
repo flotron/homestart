@@ -6,6 +6,8 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added a Docker Hub link to each App Store result so users can inspect the
+  image page before installing it.
 - Improved Docker Hub App Store results with visual icons, namespace/repository
   labels, automated/official badges, richer cards, and local relevance sorting
   so stronger image-name matches appear before weak description matches.
