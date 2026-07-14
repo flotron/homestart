@@ -53,6 +53,9 @@ install -m 0644 "$SRC_DIR/config.example.json" "$INSTALL_DIR/config.example.json
 install -m 0644 "$SRC_DIR/README.md" "$INSTALL_DIR/README.md"
 install -m 0644 "$SRC_DIR/homestart.service.example" "$INSTALL_DIR/homestart.service.example"
 install -m 0755 "$SRC_DIR/install.sh" "$INSTALL_DIR/install.sh"
+if [[ -f "$SRC_DIR/package.json" ]]; then
+  install -m 0644 "$SRC_DIR/package.json" "$INSTALL_DIR/package.json"
+fi
 
 if [[ -d "$SRC_DIR/scripts" ]]; then
   cp -a "$SRC_DIR/scripts/." "$INSTALL_DIR/scripts/"

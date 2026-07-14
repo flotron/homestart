@@ -263,7 +263,17 @@
             <div class="section-head">
               <div>
                 <h2>Updates</h2>
-                <p>Select a HomeStart update package from this device. Local config and data are preserved.</p>
+                <p>Install a release from GitHub or select a package from this device. Local config and data are preserved.</p>
+              </div>
+            </div>
+            <div class="update-online">
+              <div>
+                <h3>GitHub releases</h3>
+                <p id="github-update-status" class="form-note">Check the configured repository for HomeStart updates.</p>
+              </div>
+              <div class="update-online-actions">
+                <button id="github-update-check" type="button">Check GitHub</button>
+                <button id="github-update-apply" type="button" disabled>Install latest</button>
               </div>
             </div>
             <form id="update-form" class="update-form">

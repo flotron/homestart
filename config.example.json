@@ -17,6 +17,9 @@
     "homestart.service",
     "docker.service"
   ],
+  "updates": {
+    "github_repo": "flotron/homestart"
+  },
   "apps": [
     {
       "name": "Ookla Speedtest",

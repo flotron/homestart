@@ -12,10 +12,17 @@ packaging, security, and migration notes.
   tree branch under the active root.
 - Added a broader liquid-glass visual treatment across dashboard panels,
   resource sections, app cards, and File Browser surfaces.
-- Added visual CPU, RAM, and GPU icons plus circular usage indicators to the
-  Status summary cards.
+- Reworked the CPU, RAM, and GPU status icons so they visually match a chip,
+  memory module, and graphics card, plus circular usage indicators.
 - Added custom app icon uploads from app cards; uploaded icons are stored under
   local `data/` and are excluded from distributable packages.
+- Simplified the app-card custom icon upload affordance to a plain plus sign.
+- Added richer File Browser root metadata so physical disks and USB-mounted
+  locations can show disk/USB icons and device details.
+- Added GitHub release update checks from Settings; HomeStart can download and
+  apply a `homestart-update-*.tar.gz` asset from the configured repository.
+- Installed `package.json` metadata during fresh installs so version checks can
+  compare the installed version against GitHub releases.
 
 ## 20260713-1820
 

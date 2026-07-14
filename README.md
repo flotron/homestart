@@ -6,16 +6,16 @@ PyYAML, and is designed to run as a `systemd` service on a trusted LAN.
 
 It gives you a browser UI to inspect the host, open local apps, manage Docker
 containers, browse files, run supported CLI wrappers such as Ookla Speedtest,
-and apply local updates without bundling private runtime data.
+and apply local or GitHub release updates without bundling private runtime data.
 
 ## Features
 
 - System status: CPU, memory, GPU usage, physical disks, processes, and Docker resources.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
-- File Browser: Windows-like navigation, full path address bar, mounted disk/USB shortcuts, upload by drag and drop, copy/paste, delete, and new folder.
+- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts with icons, upload by drag and drop, copy/paste, delete, and new folder.
 - Custom app icons stored locally under `data/`.
-- Settings: network interface configuration through netplan and update uploads.
+- Settings: network interface configuration through netplan, GitHub release update checks, and update uploads.
 - Supported apps:
   - Ookla Speedtest CLI wrapper with stored local history.
 - Safe packaging: installer/update archives exclude local runtime data.
@@ -135,6 +135,15 @@ Updates preserve:
 - local backups and runtime files
 
 The updater validates package metadata and rejects installer archives.
+
+HomeStart can also check GitHub releases from `Settings > Updates`. The
+configured repository is `updates.github_repo` in `config.json` and defaults to
+`flotron/homestart`. Online updates expect the latest GitHub release to include
+an asset named like:
+
+```text
+homestart-update-VERSION.tar.gz
+```
 
 ## Basic Usage
 

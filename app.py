@@ -32,6 +32,7 @@ DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
 APP_ICON_DIR = DATA_DIR / "app-icons"
 APP_ICON_INDEX = DATA_DIR / "app-icons.json"
+PACKAGE_PATH = BASE_DIR / "package.json"
 CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
 CPU_PREV = None
 CPU_DETAIL_PREV = None
@@ -59,6 +60,9 @@ DEFAULT_CONFIG = {
         "file_browser": True,
         "file_operations": True,
         "app_uninstall": True,
+    },
+    "updates": {
+        "github_repo": "flotron/homestart",
     },
 }
 INLINE_EXTENSIONS = {
@@ -102,6 +106,7 @@ UPDATE_ALLOWED_FILES = {
     "config.example.json",
     "homestart.service.example",
     "install.sh",
+    "package.json",
 }
 UPDATE_PRIVATE_SUFFIXES = (".db", ".sqlite", ".log")
 UPDATE_PRIVATE_FRAGMENTS = (".sqlite-",)
@@ -1203,6 +1208,84 @@ def file_sidebar_roots():
     return combined
 
 
+def block_mount_metadata():
+    metadata = {}
+    try:
+        result = subprocess.run(
+            ["lsblk", "-J", "-o", "NAME,PATH,TYPE,TRAN,FSTYPE,LABEL,MOUNTPOINTS,SIZE,MODEL"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return metadata
+    if result.returncode != 0:
+        return metadata
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return metadata
+
+    def visit(node, parent_disk=None):
+        device_type = node.get("type") or ""
+        disk = node if device_type == "disk" else parent_disk
+        mountpoints = node.get("mountpoints") or []
+        if isinstance(mountpoints, str):
+            mountpoints = [mountpoints]
+        for mountpoint in mountpoints:
+            if not mountpoint:
+                continue
+            try:
+                mount = str(Path(mountpoint).resolve())
+            except OSError:
+                mount = str(mountpoint)
+            disk_info = disk or node
+            transport = disk_info.get("tran") or node.get("tran") or ""
+            metadata[mount] = {
+                "device": node.get("path") or node.get("name") or "",
+                "disk": disk_info.get("path") or disk_info.get("name") or "",
+                "filesystem": node.get("fstype") or "",
+                "label": node.get("label") or disk_info.get("label") or "",
+                "model": disk_info.get("model") or "",
+                "size": node.get("size") or disk_info.get("size") or "",
+                "transport": transport,
+                "kind": "usb" if str(transport).lower() == "usb" else "disk",
+            }
+        for child in node.get("children") or []:
+            visit(child, disk)
+
+    for device in payload.get("blockdevices") or []:
+        visit(device)
+    return metadata
+
+
+def file_sidebar_items():
+    roots = file_sidebar_roots()
+    disk_metadata = block_mount_metadata()
+    items = []
+    for root in roots:
+        root_path = str(root)
+        meta = disk_metadata.get(root_path, {})
+        name = meta.get("label") or ("Root" if root_path == "/" else Path(root_path).name or root_path)
+        kind = meta.get("kind") or ("root" if root_path == "/" else "folder")
+        items.append(
+            {
+                "path": root_path,
+                "name": name,
+                "kind": kind,
+                "device": meta.get("device", ""),
+                "disk": meta.get("disk", ""),
+                "filesystem": meta.get("filesystem", ""),
+                "label": meta.get("label", ""),
+                "model": meta.get("model", ""),
+                "size": meta.get("size", ""),
+                "transport": meta.get("transport", ""),
+            }
+        )
+    return items
+
+
 def resolve_file_path(raw_path):
     roots = allowed_roots()
     if not roots:
@@ -1220,25 +1303,26 @@ def resolve_file_path(raw_path):
 
 def file_listing(raw_path):
     roots = allowed_roots()
-    sidebar_roots = file_sidebar_roots()
+    sidebar_items = file_sidebar_items()
     target = resolve_file_path(raw_path)
 
     if target is None:
         return {
             "path": "",
             "parent": "",
-            "roots": [str(root) for root in sidebar_roots],
+            "roots": [item["path"] for item in sidebar_items],
+            "root_entries": sidebar_items,
             "entries": [
                 {
-                    "name": str(root),
-                    "path": str(root),
+                    "name": item["path"],
+                    "path": item["path"],
                     "type": "directory",
-                    "kind": "directory",
-                    "size": "",
+                    "kind": item["kind"],
+                    "size": item.get("size", ""),
                     "size_bytes": 0,
-                    "modified": int(root.stat().st_mtime),
+                    "modified": int(Path(item["path"]).stat().st_mtime),
                 }
-                for root in sidebar_roots
+                for item in sidebar_items
             ],
         }
 
@@ -1275,7 +1359,8 @@ def file_listing(raw_path):
     return {
         "path": str(target),
         "parent": parent,
-        "roots": [str(root) for root in sidebar_roots],
+        "roots": [item["path"] for item in sidebar_items],
+        "root_entries": sidebar_items,
         "entries": entries,
     }
 
@@ -2501,6 +2586,122 @@ def apply_update_package(filename, content):
     }
 
 
+def installed_package_metadata():
+    try:
+        with PACKAGE_PATH.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def github_update_repo():
+    repo = str(load_config_file().get("updates", {}).get("github_repo", "")).strip()
+    if not repo:
+        raise ValueError("GitHub update repository is not configured")
+    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+        raise ValueError("GitHub update repository must look like owner/repo")
+    return repo
+
+
+def fetch_github_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "HomeStart updater",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def update_asset_version(name):
+    match = re.match(r"homestart-update-(.+)\.t(?:ar\.)?gz$", name)
+    return match.group(1) if match else ""
+
+
+def github_latest_update_asset():
+    repo = github_update_repo()
+    try:
+        release = fetch_github_json(f"https://api.github.com/repos/{repo}/releases/latest")
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return {
+                "ok": True,
+                "repo": repo,
+                "current_version": installed_package_metadata().get("version", ""),
+                "latest_version": "",
+                "update_available": False,
+                "message": "No GitHub release was found for this repository.",
+            }
+        raise
+
+    assets = release.get("assets") or []
+    update_assets = [
+        asset
+        for asset in assets
+        if update_asset_version(str(asset.get("name", ""))) and asset.get("browser_download_url")
+    ]
+    if not update_assets:
+        return {
+            "ok": True,
+            "repo": repo,
+            "current_version": installed_package_metadata().get("version", ""),
+            "latest_version": release.get("tag_name", ""),
+            "update_available": False,
+            "release_url": release.get("html_url", ""),
+            "message": "Latest GitHub release does not include a homestart-update package.",
+        }
+
+    asset = sorted(update_assets, key=lambda item: str(item.get("name", "")), reverse=True)[0]
+    current_version = installed_package_metadata().get("version", "")
+    latest_version = update_asset_version(str(asset.get("name", ""))) or str(release.get("tag_name", ""))
+    return {
+        "ok": True,
+        "repo": repo,
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": latest_version != current_version,
+        "asset_name": asset.get("name", ""),
+        "asset_size": asset.get("size", 0),
+        "published_at": release.get("published_at", ""),
+        "release_url": release.get("html_url", ""),
+        "download_url": asset.get("browser_download_url", ""),
+        "message": "Update available." if latest_version != current_version else "HomeStart is up to date.",
+    }
+
+
+def download_update_asset(url):
+    request = urllib.request.Request(url, headers={"User-Agent": "HomeStart updater"})
+    limit = 30 * 1024 * 1024
+    payload = bytearray()
+    with urllib.request.urlopen(request, timeout=30) as response:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > limit:
+                raise ValueError("Update package is too large")
+    return bytes(payload)
+
+
+def apply_github_update():
+    status = github_latest_update_asset()
+    if not status.get("download_url"):
+        raise ValueError(status.get("message") or "No downloadable update package was found")
+    if not status.get("update_available"):
+        return {**status, "ok": True, "restart": False}
+
+    payload = download_update_asset(status["download_url"])
+    encoded = base64.b64encode(payload).decode("ascii")
+    result = apply_update_package(status.get("asset_name", "homestart-update.tar.gz"), encoded)
+    result["source"] = "github"
+    result["latest_version"] = status.get("latest_version", "")
+    return result
+
+
 class HomeStartHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -2561,6 +2762,13 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json(network_interfaces_payload())
             return
 
+        if route == "/api/update/check":
+            try:
+                self.send_json(github_latest_update_asset())
+            except (ValueError, OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/status":
             self.send_json(status_payload())
             return
@@ -2618,6 +2826,13 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_json(apply_update_package(payload.get("filename", ""), payload.get("content", "")))
             except (json.JSONDecodeError, ValueError, OSError, tarfile.TarError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/update/github":
+            try:
+                self.send_json(apply_github_update())
+            except (ValueError, OSError, urllib.error.URLError, json.JSONDecodeError, tarfile.TarError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 

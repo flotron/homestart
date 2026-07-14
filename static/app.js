@@ -5,12 +5,14 @@ const state = {
   filePath: "",
   fileParent: "",
   fileRoots: [],
+  fileRootEntries: [],
   fileClipboard: null,
   fileView: "grid",
   features: { file_operations: true },
   view: "status",
   networkInterfaces: [],
   selectedNetwork: null,
+  githubUpdate: null,
 };
 
 const navItems = [...document.querySelectorAll(".nav-item")];
@@ -72,6 +74,9 @@ const updateForm = document.querySelector("#update-form");
 const updateFile = document.querySelector("#update-file");
 const updateStatus = document.querySelector("#update-status");
 const updateApply = document.querySelector("#update-apply");
+const githubUpdateStatus = document.querySelector("#github-update-status");
+const githubUpdateCheck = document.querySelector("#github-update-check");
+const githubUpdateApply = document.querySelector("#github-update-apply");
 
 function normalize(value) {
   return String(value || "").toLowerCase();
@@ -558,7 +563,15 @@ async function deleteFileEntry(entry) {
 }
 
 function renderRoots() {
-  fileRoots.replaceChildren(...state.fileRoots.map((root) => {
+  const roots = state.fileRootEntries.length
+    ? state.fileRootEntries
+    : state.fileRoots.map((root) => ({ path: root, name: fileRootLabel(root), kind: "folder" }));
+  const activeRoot = roots
+    .map((rootEntry) => rootEntry.path)
+    .filter((root) => rootContainsPath(root, state.filePath))
+    .sort((a, b) => b.length - a.length)[0];
+  fileRoots.replaceChildren(...roots.map((rootEntry) => {
+    const root = rootEntry.path;
     const wrapper = document.createElement("div");
     wrapper.className = "root-tree";
     const node = document.createElement("button");
@@ -571,15 +584,19 @@ function renderRoots() {
         <small></small>
       </span>
     `;
-    node.querySelector("strong").textContent = fileRootLabel(root);
-    node.querySelector("small").textContent = root;
-    if (state.filePath === root || state.filePath.startsWith(`${root}/`)) {
+    const icon = node.querySelector(".root-icon");
+    icon.classList.add(rootEntry.kind || "folder");
+    node.querySelector("strong").textContent = rootEntry.name || fileRootLabel(root);
+    const details = [rootEntry.size, rootEntry.filesystem, rootEntry.device].filter(Boolean).join(" · ");
+    node.querySelector("small").textContent = details || root;
+    node.title = root;
+    if (root === activeRoot) {
       node.classList.add("active");
       wrapper.classList.add("active");
     }
     node.addEventListener("click", () => loadFiles(root));
     wrapper.appendChild(node);
-    renderCurrentPathBranch(wrapper, root);
+    if (root === activeRoot) renderCurrentPathBranch(wrapper, root);
     return wrapper;
   }));
 }
@@ -738,6 +755,63 @@ async function applyUpdate(event) {
   }
 }
 
+function renderGithubUpdateStatus(data) {
+  state.githubUpdate = data;
+  if (!githubUpdateStatus || !githubUpdateApply) return;
+  githubUpdateApply.disabled = !data?.update_available || !data?.download_url;
+
+  if (!data?.ok) {
+    githubUpdateStatus.textContent = data?.error || "Could not check GitHub releases.";
+    return;
+  }
+  const current = data.current_version || "unknown";
+  const latest = data.latest_version || "none";
+  githubUpdateStatus.textContent = `${data.message || "GitHub checked."} Current: ${current}. Latest: ${latest}.`;
+}
+
+async function checkGithubUpdate() {
+  if (!githubUpdateCheck) return;
+  githubUpdateCheck.disabled = true;
+  githubUpdateStatus.textContent = "Checking GitHub releases...";
+  try {
+    const response = await fetch("/api/update/check", { cache: "no-store" });
+    const data = await response.json();
+    renderGithubUpdateStatus(data);
+  } catch (error) {
+    renderGithubUpdateStatus({ ok: false, error: error.message });
+  } finally {
+    githubUpdateCheck.disabled = false;
+  }
+}
+
+async function applyGithubUpdate() {
+  const latest = state.githubUpdate?.latest_version || "latest";
+  const confirmed = window.confirm(`Install HomeStart ${latest} from GitHub? HomeStart will restart after the update.`);
+  if (!confirmed) return;
+
+  githubUpdateApply.disabled = true;
+  githubUpdateCheck.disabled = true;
+  githubUpdateStatus.textContent = "Downloading and applying GitHub update...";
+  try {
+    const response = await fetch("/api/update/github", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || "Could not apply GitHub update");
+    }
+    if (!result.restart) {
+      renderGithubUpdateStatus(result);
+      return;
+    }
+    githubUpdateStatus.textContent = `Update applied from GitHub. ${result.changed?.length || 0} files changed. Restarting...`;
+    window.setTimeout(() => window.location.reload(), 3500);
+  } catch (error) {
+    githubUpdateStatus.textContent = error.message;
+    githubUpdateApply.disabled = !state.githubUpdate?.update_available;
+  } finally {
+    githubUpdateCheck.disabled = false;
+  }
+}
+
 async function loadFiles(path = "") {
   const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" });
   const data = await response.json();
@@ -749,6 +823,7 @@ async function loadFiles(path = "") {
   state.filePath = data.path || "";
   state.fileParent = data.parent || "";
   state.fileRoots = data.roots || [];
+  state.fileRootEntries = data.root_entries || state.fileRoots.map((root) => ({ path: root }));
   filePathNode.value = state.filePath || "";
   filePathNode.placeholder = "Available roots";
   fileLocationName.textContent = currentFolderName(state.filePath);
@@ -862,6 +937,8 @@ resourcesPanel.addEventListener("toggle", () => loadResources().catch(console.er
 refreshNetwork.addEventListener("click", () => loadNetworkSettings().catch(console.error));
 networkForm.addEventListener("submit", applyNetworkSettings);
 updateForm.addEventListener("submit", applyUpdate);
+githubUpdateCheck.addEventListener("click", () => checkGithubUpdate().catch(console.error));
+githubUpdateApply.addEventListener("click", () => applyGithubUpdate().catch(console.error));
 fileUp.addEventListener("click", () => loadFiles(state.fileParent));
 fileHome.addEventListener("click", () => loadFiles(""));
 fileNewFolder.addEventListener("click", createFolder);

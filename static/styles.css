@@ -276,38 +276,67 @@ button:disabled {
 }
 
 .cpu-icon::before {
-  width: 20px;
-  height: 20px;
-  border: 3px solid var(--accent);
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--accent);
   border-radius: 5px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) 50% 50% / 8px 8px no-repeat,
+    rgb(56 189 248 / 0.16);
   box-shadow:
-    -10px 4px 0 -8px var(--accent),
-    10px 4px 0 -8px var(--accent),
-    4px -10px 0 -8px var(--accent),
-    4px 10px 0 -8px var(--accent);
+    -12px -7px 0 -9px var(--accent),
+    -12px 0 0 -9px var(--accent),
+    -12px 7px 0 -9px var(--accent),
+    12px -7px 0 -9px var(--accent),
+    12px 0 0 -9px var(--accent),
+    12px 7px 0 -9px var(--accent),
+    -7px -12px 0 -9px var(--accent),
+    0 -12px 0 -9px var(--accent),
+    7px -12px 0 -9px var(--accent),
+    -7px 12px 0 -9px var(--accent),
+    0 12px 0 -9px var(--accent),
+    7px 12px 0 -9px var(--accent);
 }
 
 .ram-icon::before {
-  width: 24px;
+  width: 28px;
   height: 16px;
   border: 2px solid var(--ok);
-  border-radius: 4px;
-  background: linear-gradient(90deg, transparent 24%, rgb(65 209 155 / 0.35) 24% 30%, transparent 30% 62%, rgb(65 209 155 / 0.35) 62% 68%, transparent 68%);
+  border-bottom: 4px solid var(--ok);
+  border-radius: 4px 4px 2px 2px;
+  background:
+    linear-gradient(90deg, rgb(65 209 155 / 0.42) 0 16%, transparent 16% 28%, rgb(65 209 155 / 0.42) 28% 44%, transparent 44% 56%, rgb(65 209 155 / 0.42) 56% 72%, transparent 72% 84%, rgb(65 209 155 / 0.42) 84% 100%),
+    rgb(65 209 155 / 0.12);
+}
+
+.ram-icon::after {
+  position: absolute;
+  bottom: 9px;
+  width: 22px;
+  height: 3px;
+  background: repeating-linear-gradient(90deg, #facc15 0 3px, transparent 3px 5px);
 }
 
 .gpu-icon::before {
-  width: 25px;
-  height: 17px;
+  width: 29px;
+  height: 19px;
   border: 2px solid #a78bfa;
-  border-radius: 5px;
+  border-radius: 5px 7px 5px 5px;
+  background:
+    radial-gradient(circle at 48% 50%, transparent 0 4px, #a78bfa 5px 6px, transparent 7px),
+    linear-gradient(90deg, transparent 0 72%, rgb(167 139 250 / 0.3) 72% 100%),
+    rgb(167 139 250 / 0.12);
 }
 
 .gpu-icon::after {
   position: absolute;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #a78bfa;
+  right: 5px;
+  bottom: 9px;
+  width: 8px;
+  height: 4px;
+  border-radius: 1px;
+  background: #facc15;
+  box-shadow: -14px 0 0 -2px #facc15;
 }
 
 .metric-ring {
@@ -398,21 +427,19 @@ button:disabled {
 
 .icon-upload {
   position: absolute;
-  right: -7px;
-  bottom: -7px;
-  width: 22px;
-  height: 22px;
+  right: -4px;
+  bottom: -6px;
   display: none;
   place-items: center;
   overflow: hidden;
-  border: 1px solid var(--glass-line);
-  border-radius: 999px;
-  background: var(--accent-strong);
+  border: 0;
+  background: transparent;
   color: #ffffff;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 21px;
   font-weight: 900;
-  box-shadow: 0 8px 20px rgb(0 0 0 / 0.24);
+  line-height: 1;
+  text-shadow: 0 2px 8px rgb(0 0 0 / 0.7), 0 0 10px rgb(56 189 248 / 0.6);
 }
 
 .card:hover .icon-upload,
@@ -747,13 +774,31 @@ button:disabled {
 }
 
 .network-form,
-.update-form {
+.update-form,
+.update-online {
   display: grid;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
   border-radius: 8px;
-  background: var(--panel);
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.02));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.update-online {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.update-online h3 {
+  margin: 0 0 4px;
+}
+
+.update-online-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .network-form label,
@@ -949,6 +994,7 @@ button:disabled {
 .root-icon {
   width: 24px;
   height: 22px;
+  position: relative;
   display: block;
   border-radius: 5px 5px 4px 4px;
   background: linear-gradient(#38bdf8, #0284c7);
@@ -964,6 +1010,59 @@ button:disabled {
   transform: translateY(-3px);
   border-radius: 4px 4px 0 0;
   background: #0ea5e9;
+}
+
+.root-icon.root {
+  border-radius: 7px;
+  background: linear-gradient(145deg, #38bdf8, #155e75);
+}
+
+.root-icon.root::before {
+  width: 8px;
+  height: 8px;
+  margin: 7px auto 0;
+  transform: none;
+  border-radius: 999px;
+  background: #e0f2fe;
+  box-shadow: 0 0 0 4px rgb(224 242 254 / 0.12);
+}
+
+.root-icon.disk,
+.root-icon.usb {
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(145deg, #334155, #0f172a);
+  border: 1px solid rgb(148 163 184 / 0.35);
+}
+
+.root-icon.disk::before {
+  position: absolute;
+  inset: 5px;
+  width: auto;
+  height: auto;
+  margin: 0;
+  transform: none;
+  border-radius: 999px;
+  background: radial-gradient(circle, #e2e8f0 0 2px, transparent 3px 5px, rgb(56 189 248 / 0.75) 6px 7px, transparent 8px);
+}
+
+.root-icon.usb {
+  width: 18px;
+  margin-left: 3px;
+  border-radius: 4px 4px 7px 7px;
+  background: linear-gradient(180deg, #38bdf8, #0f766e);
+}
+
+.root-icon.usb::before {
+  position: absolute;
+  top: -5px;
+  left: 4px;
+  width: 10px;
+  height: 6px;
+  margin: 0;
+  transform: none;
+  border-radius: 2px 2px 0 0;
+  background: #cbd5e1;
 }
 
 .file-main {
