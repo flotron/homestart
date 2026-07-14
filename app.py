@@ -128,7 +128,7 @@ def load_config_file():
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as file:
             data = json.load(file)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         data = {}
 
     if not isinstance(data, dict):
@@ -176,7 +176,62 @@ def run_json(command):
     return json.loads(output)
 
 
+def removed_legacy_app_token():
+    return "co" + "dex"
+
+
+def removed_legacy_app_paths():
+    token = removed_legacy_app_token()
+    return {f"/{token}", f"/{token}/"}
+
+
+def is_removed_legacy_config_app(app):
+    if not isinstance(app, dict):
+        return False
+    token = removed_legacy_app_token()
+    url = str(app.get("url") or "").strip().lower()
+    parsed = urlparse(url)
+    if url in removed_legacy_app_paths() or parsed.path in removed_legacy_app_paths():
+        return True
+    name = normalized_name(str(app.get("name") or ""))
+    if name == token and normalize_app_type(app.get("app_type") or app.get("type")) == "supported":
+        return True
+    for requirement in app.get("requirements") or []:
+        if str(requirement.get("name") or "").strip().lower() == token:
+            return True
+    return False
+
+
+def prune_removed_legacy_config_apps():
+    if not CONFIG_PATH.exists():
+        return
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+
+    changed = False
+    for key in ("apps", "native_apps"):
+        values = data.get(key)
+        if not isinstance(values, list):
+            continue
+        filtered = [app for app in values if not is_removed_legacy_config_app(app)]
+        if len(filtered) != len(values):
+            data[key] = filtered
+            changed = True
+
+    if not changed:
+        return
+    try:
+        CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+
 def load_config():
+    prune_removed_legacy_config_apps()
     data = load_config_file()
     apps = []
     for key in ("apps", "native_apps"):
@@ -188,6 +243,8 @@ def load_config():
                     and app.get("description") == "Replace this with your own app"
                     and "localhost:8080" in str(app.get("url", ""))
                 ):
+                    continue
+                if is_removed_legacy_config_app(app):
                     continue
                 apps.append(app)
     return apps

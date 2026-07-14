@@ -8,6 +8,8 @@ packaging, security, and migration notes.
 
 - Removed the experimental CLI chat feature completely from distributable code,
   static assets, routes, styles, and package contents.
+- Added a startup migration that removes the old preserved CLI-chat app entry
+  from local `config.json` when upgrading from older installs.
 - Added File Browser actions to mount unmounted partitions read-only under
   `/mnt/homestart` using `ro,nosuid,nodev,noexec`, plus unmount support for
   HomeStart-managed mounts.
