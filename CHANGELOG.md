@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Reworked the File Browser sidebar to show physical disks as parent devices
+  with partitions/LVM volumes underneath, including unmounted devices as
+  disabled entries instead of hiding them.
 - Simplified File Browser delete confirmation to a normal confirmation prompt
   instead of requiring the file or folder name to be typed.
 - Improved the File Browser sidebar so the current path is shown as an expanded

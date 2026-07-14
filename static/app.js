@@ -6,6 +6,7 @@ const state = {
   fileParent: "",
   fileRoots: [],
   fileRootEntries: [],
+  fileDriveEntries: [],
   fileClipboard: null,
   fileView: "grid",
   features: { file_operations: true },
@@ -570,7 +571,7 @@ function renderRoots() {
     .map((rootEntry) => rootEntry.path)
     .filter((root) => rootContainsPath(root, state.filePath))
     .sort((a, b) => b.length - a.length)[0];
-  fileRoots.replaceChildren(...roots.map((rootEntry) => {
+  const locationNodes = roots.map((rootEntry) => {
     const root = rootEntry.path;
     const wrapper = document.createElement("div");
     wrapper.className = "root-tree";
@@ -598,7 +599,72 @@ function renderRoots() {
     wrapper.appendChild(node);
     if (root === activeRoot) renderCurrentPathBranch(wrapper, root);
     return wrapper;
-  }));
+  });
+
+  const driveNodes = state.fileDriveEntries.length
+    ? [
+        sectionLabel("Physical disks"),
+        ...state.fileDriveEntries.map(renderDriveEntry),
+      ]
+    : [];
+  fileRoots.replaceChildren(sectionLabel("Locations"), ...locationNodes, ...driveNodes);
+}
+
+function sectionLabel(label) {
+  const node = document.createElement("div");
+  node.className = "root-section-label";
+  node.textContent = label;
+  return node;
+}
+
+function renderDriveEntry(entry) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "drive-tree";
+  wrapper.appendChild(renderDriveNode(entry, true));
+  (entry.children || []).forEach((child) => renderDriveChildren(wrapper, child));
+  return wrapper;
+}
+
+function renderDriveChildren(parent, entry) {
+  parent.appendChild(renderDriveNode(entry, false));
+  (entry.children || []).forEach((child) => renderDriveChildren(parent, child));
+}
+
+function firstAllowedMount(entry) {
+  return (entry.mountpoints || []).find((mount) => mount.allowed && mount.path);
+}
+
+function renderDriveNode(entry, isDisk) {
+  const mount = firstAllowedMount(entry);
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = `drive-entry ${isDisk ? "disk" : "partition"}`;
+  node.style.setProperty("--depth", entry.depth || 0);
+  node.disabled = !mount;
+  const title = entry.label || entry.model || entry.name || entry.path;
+  const details = [
+    entry.size,
+    entry.filesystem,
+    entry.path,
+    mount?.path || "not mounted",
+  ].filter(Boolean).join(" · ");
+  node.innerHTML = `
+    <span class="drive-icon ${entry.kind || "disk"}"></span>
+    <span>
+      <strong></strong>
+      <small></small>
+    </span>
+  `;
+  node.querySelector("strong").textContent = title;
+  node.querySelector("small").textContent = details;
+  node.title = details;
+  if (mount && rootContainsPath(mount.path, state.filePath)) {
+    node.classList.add("active");
+  }
+  if (mount) {
+    node.addEventListener("click", () => loadFiles(mount.path));
+  }
+  return node;
 }
 
 function rootContainsPath(root, path) {
@@ -824,6 +890,7 @@ async function loadFiles(path = "") {
   state.fileParent = data.parent || "";
   state.fileRoots = data.roots || [];
   state.fileRootEntries = data.root_entries || state.fileRoots.map((root) => ({ path: root }));
+  state.fileDriveEntries = data.drive_entries || [];
   filePathNode.value = state.filePath || "";
   filePathNode.placeholder = "Available roots";
   fileLocationName.textContent = currentFolderName(state.filePath);

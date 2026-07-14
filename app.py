@@ -1208,8 +1208,7 @@ def file_sidebar_roots():
     return combined
 
 
-def block_mount_metadata():
-    metadata = {}
+def lsblk_payload():
     try:
         result = subprocess.run(
             ["lsblk", "-J", "-o", "NAME,PATH,TYPE,TRAN,FSTYPE,LABEL,MOUNTPOINTS,SIZE,MODEL"],
@@ -1219,23 +1218,32 @@ def block_mount_metadata():
             check=False,
         )
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-        return metadata
+        return {}
     if result.returncode != 0:
-        return metadata
+        return {}
     try:
-        payload = json.loads(result.stdout or "{}")
+        return json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
+        return {}
+
+
+def normalized_mountpoints(node):
+    mountpoints = node.get("mountpoints") or []
+    if isinstance(mountpoints, str):
+        mountpoints = [mountpoints]
+    return [str(item) for item in mountpoints if item]
+
+
+def block_mount_metadata():
+    metadata = {}
+    payload = lsblk_payload()
+    if not payload:
         return metadata
 
     def visit(node, parent_disk=None):
         device_type = node.get("type") or ""
         disk = node if device_type == "disk" else parent_disk
-        mountpoints = node.get("mountpoints") or []
-        if isinstance(mountpoints, str):
-            mountpoints = [mountpoints]
-        for mountpoint in mountpoints:
-            if not mountpoint:
-                continue
+        for mountpoint in normalized_mountpoints(node):
             try:
                 mount = str(Path(mountpoint).resolve())
             except OSError:
@@ -1258,6 +1266,56 @@ def block_mount_metadata():
     for device in payload.get("blockdevices") or []:
         visit(device)
     return metadata
+
+
+def physical_drive_entries():
+    payload = lsblk_payload()
+    roots = allowed_roots()
+    entries = []
+
+    def location_payload(node, disk, depth=0):
+        mounts = []
+        for mountpoint in normalized_mountpoints(node):
+            try:
+                mount = str(Path(mountpoint).resolve())
+            except OSError:
+                mount = mountpoint
+            mounts.append(
+                {
+                    "path": mount,
+                    "allowed": path_is_allowed(Path(mount), roots),
+                }
+            )
+        transport = disk.get("tran") or node.get("tran") or ""
+        return {
+            "name": node.get("name") or node.get("path") or "",
+            "path": node.get("path") or "",
+            "type": node.get("type") or "",
+            "kind": "usb" if str(transport).lower() == "usb" else "disk",
+            "transport": transport,
+            "filesystem": node.get("fstype") or "",
+            "label": node.get("label") or "",
+            "size": node.get("size") or "",
+            "model": node.get("model") or "",
+            "mountpoints": mounts,
+            "depth": depth,
+        }
+
+    def visit_children(node, disk, depth):
+        children = []
+        for child in node.get("children") or []:
+            item = location_payload(child, disk, depth)
+            item["children"] = visit_children(child, disk, depth + 1)
+            children.append(item)
+        return children
+
+    for disk in payload.get("blockdevices") or []:
+        if disk.get("type") != "disk":
+            continue
+        item = location_payload(disk, disk, 0)
+        item["children"] = visit_children(disk, disk, 1)
+        entries.append(item)
+    return entries
 
 
 def file_sidebar_items():
@@ -1312,6 +1370,7 @@ def file_listing(raw_path):
             "parent": "",
             "roots": [item["path"] for item in sidebar_items],
             "root_entries": sidebar_items,
+            "drive_entries": physical_drive_entries(),
             "entries": [
                 {
                     "name": item["path"],
@@ -1361,6 +1420,7 @@ def file_listing(raw_path):
         "parent": parent,
         "roots": [item["path"] for item in sidebar_items],
         "root_entries": sidebar_items,
+        "drive_entries": physical_drive_entries(),
         "entries": entries,
     }
 
