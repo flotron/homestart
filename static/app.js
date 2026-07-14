@@ -508,6 +508,12 @@ function currentFolderName(path) {
 }
 
 async function runFileAction(payload) {
+  const result = await postFileAction(payload);
+  await loadFiles(state.filePath);
+  return result;
+}
+
+async function postFileAction(payload) {
   const response = await fetch("/api/files/action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -517,8 +523,31 @@ async function runFileAction(payload) {
   if (!response.ok || !result.ok) {
     throw new Error(result.error || "File operation failed");
   }
-  await loadFiles(state.filePath);
   return result;
+}
+
+async function mountDriveEntry(entry) {
+  if (!state.features.file_operations || state.features.file_mounts === false) return;
+  try {
+    const result = await postFileAction({ action: "mount_readonly", device: entry.path });
+    await loadFiles(result.path || state.filePath);
+  } catch (error) {
+    window.alert(error.message);
+    await loadFiles(state.filePath);
+  }
+}
+
+async function unmountDriveEntry(entry) {
+  if (!state.features.file_operations || state.features.file_mounts === false) return;
+  const confirmed = window.confirm(`Unmount ${entry.label || entry.name || entry.path}?`);
+  if (!confirmed) return;
+  try {
+    await postFileAction({ action: "unmount", device: entry.path });
+    await loadFiles("");
+  } catch (error) {
+    window.alert(error.message);
+    await loadFiles(state.filePath);
+  }
 }
 
 async function createFolder() {
@@ -636,11 +665,10 @@ function firstAllowedMount(entry) {
 
 function renderDriveNode(entry, isDisk) {
   const mount = firstAllowedMount(entry);
-  const node = document.createElement("button");
-  node.type = "button";
+  const node = document.createElement("div");
   node.className = `drive-entry ${isDisk ? "disk" : "partition"}`;
   node.style.setProperty("--depth", entry.depth || 0);
-  node.disabled = !mount;
+  node.classList.toggle("unavailable", !mount && !entry.can_mount);
   const title = entry.label || entry.model || entry.name || entry.path;
   const details = [
     entry.size,
@@ -654,6 +682,7 @@ function renderDriveNode(entry, isDisk) {
       <strong></strong>
       <small></small>
     </span>
+    <span class="drive-actions"></span>
   `;
   node.querySelector("strong").textContent = title;
   node.querySelector("small").textContent = details;
@@ -662,7 +691,40 @@ function renderDriveNode(entry, isDisk) {
     node.classList.add("active");
   }
   if (mount) {
+    node.tabIndex = 0;
     node.addEventListener("click", () => loadFiles(mount.path));
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        loadFiles(mount.path);
+      }
+    });
+  }
+
+  const actions = node.querySelector(".drive-actions");
+  const mountingEnabled = state.features.file_operations && state.features.file_mounts !== false;
+  if (entry.can_mount && mountingEnabled) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "drive-action";
+    button.textContent = "Mount RO";
+    button.title = "Mount read-only";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      mountDriveEntry(entry).catch(console.error);
+    });
+    actions.appendChild(button);
+  }
+  if (entry.can_unmount && mountingEnabled) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "drive-action";
+    button.textContent = "Unmount";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      unmountDriveEntry(entry).catch(console.error);
+    });
+    actions.appendChild(button);
   }
   return node;
 }

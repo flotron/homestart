@@ -1082,7 +1082,7 @@ button:disabled {
 .drive-entry {
   width: 100%;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 42px;
@@ -1098,13 +1098,13 @@ button:disabled {
 }
 
 .drive-entry.active,
-.drive-entry:hover:not(:disabled) {
+.drive-entry:hover:not(.unavailable) {
   border-left-color: var(--accent);
   background: linear-gradient(135deg, rgb(56 189 248 / 0.14), rgb(255 255 255 / 0.04));
   color: var(--text);
 }
 
-.drive-entry:disabled {
+.drive-entry.unavailable {
   cursor: default;
   opacity: 0.56;
 }
@@ -1127,6 +1127,28 @@ button:disabled {
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
+}
+
+.drive-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drive-action {
+  min-height: 26px;
+  padding: 5px 7px;
+  border: 1px solid rgb(56 189 248 / 0.28);
+  border-radius: 7px;
+  background: rgb(56 189 248 / 0.12);
+  color: #dff7ff;
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.drive-action:hover {
+  border-color: rgb(56 189 248 / 0.55);
+  background: rgb(56 189 248 / 0.2);
 }
 
 .drive-icon {

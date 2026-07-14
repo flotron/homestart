@@ -33,6 +33,7 @@ BACKUP_DIR = DATA_DIR / "backups"
 APP_ICON_DIR = DATA_DIR / "app-icons"
 APP_ICON_INDEX = DATA_DIR / "app-icons.json"
 PACKAGE_PATH = BASE_DIR / "package.json"
+FILE_MOUNT_ROOT = Path("/mnt/homestart")
 CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
 CPU_PREV = None
 CPU_DETAIL_PREV = None
@@ -59,6 +60,7 @@ DEFAULT_CONFIG = {
         "docker_actions": True,
         "file_browser": True,
         "file_operations": True,
+        "file_mounts": True,
         "app_uninstall": True,
     },
     "updates": {
@@ -1234,6 +1236,98 @@ def normalized_mountpoints(node):
     return [str(item) for item in mountpoints if item]
 
 
+def iter_block_nodes(payload):
+    def visit(node, parent_disk=None):
+        disk = node if node.get("type") == "disk" else parent_disk
+        yield node, disk
+        for child in node.get("children") or []:
+            yield from visit(child, disk)
+
+    for device in payload.get("blockdevices") or []:
+        yield from visit(device)
+
+
+def block_node_by_path(device_path):
+    clean_path = str(device_path or "").strip()
+    if not re.fullmatch(r"/dev/[A-Za-z0-9_./+-]+", clean_path):
+        raise ValueError("Invalid block device path")
+    payload = lsblk_payload()
+    for node, disk in iter_block_nodes(payload):
+        if node.get("path") == clean_path:
+            return node, disk or node
+    raise FileNotFoundError("Block device was not found")
+
+
+def homestart_mountpoint(device_path):
+    name = Path(device_path).name
+    safe_name = re.sub(r"[^A-Za-z0-9_.+-]+", "-", name).strip("-")
+    if not safe_name:
+        raise ValueError("Invalid block device name")
+    return FILE_MOUNT_ROOT / safe_name
+
+
+def mountpoint_allowed(path):
+    roots = allowed_roots()
+    return bool(roots) and path_is_allowed(path, roots)
+
+
+def mount_block_device_readonly(device_path):
+    ensure_file_mounts_enabled()
+    node, _disk = block_node_by_path(device_path)
+    device_type = node.get("type") or ""
+    filesystem = node.get("fstype") or ""
+    if device_type not in {"part", "lvm", "crypt", "rom"}:
+        raise ValueError("Only partitions and volumes can be mounted from HomeStart")
+    if not filesystem:
+        raise ValueError("The selected device does not expose a filesystem")
+    mounts = normalized_mountpoints(node)
+    if mounts:
+        mount = Path(mounts[0]).resolve()
+        if not mountpoint_allowed(mount):
+            raise PermissionError("Mounted path is outside the allowed file roots")
+        return {"ok": True, "action": "mount_readonly", "path": str(mount), "already_mounted": True}
+
+    target = homestart_mountpoint(device_path).resolve()
+    if not mountpoint_allowed(target):
+        raise PermissionError("HomeStart mount path is outside the allowed file roots")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(exist_ok=True)
+    if target.is_symlink():
+        raise PermissionError("Mount point cannot be a symlink")
+    if os.path.ismount(target):
+        return {"ok": True, "action": "mount_readonly", "path": str(target), "already_mounted": True}
+
+    options = "ro,nosuid,nodev,noexec"
+    command = ["mount", "-o", options, str(device_path), str(target)]
+    try:
+        subprocess.check_output(command, text=True, timeout=20, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as error:
+        output = (error.output or "").strip()
+        raise ValueError(output or "Could not mount the device read-only") from error
+    return {"ok": True, "action": "mount_readonly", "path": str(target), "readonly": True}
+
+
+def unmount_homestart_device(device_path):
+    ensure_file_mounts_enabled()
+    node, _disk = block_node_by_path(device_path)
+    target = homestart_mountpoint(device_path).resolve()
+    mounts = [Path(item).resolve() for item in normalized_mountpoints(node)]
+    if target not in mounts and not os.path.ismount(target):
+        raise ValueError("This device is not mounted by HomeStart")
+    if not path_is_allowed(target, [FILE_MOUNT_ROOT.resolve()]):
+        raise PermissionError("Only HomeStart-managed mounts can be unmounted here")
+    try:
+        subprocess.check_output(["umount", str(target)], text=True, timeout=15, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as error:
+        output = (error.output or "").strip()
+        raise ValueError(output or "Could not unmount the device") from error
+    try:
+        target.rmdir()
+    except OSError:
+        pass
+    return {"ok": True, "action": "unmount", "path": str(target)}
+
+
 def block_mount_metadata():
     metadata = {}
     payload = lsblk_payload()
@@ -1287,9 +1381,24 @@ def physical_drive_entries():
                 }
             )
         transport = disk.get("tran") or node.get("tran") or ""
+        device_path = node.get("path") or ""
+        mount_target = homestart_mountpoint(device_path) if device_path else None
+        mounted_by_homestart = any(
+            path_is_allowed(Path(mount["path"]).resolve(), [FILE_MOUNT_ROOT.resolve()])
+            for mount in mounts
+        )
+        can_mount = (
+            file_mounts_enabled()
+            and device_path
+            and node.get("type") in {"part", "lvm", "crypt", "rom"}
+            and bool(node.get("fstype"))
+            and not mounts
+            and mount_target is not None
+            and mountpoint_allowed(mount_target.resolve())
+        )
         return {
             "name": node.get("name") or node.get("path") or "",
-            "path": node.get("path") or "",
+            "path": device_path,
             "type": node.get("type") or "",
             "kind": "usb" if str(transport).lower() == "usb" else "disk",
             "transport": transport,
@@ -1298,6 +1407,10 @@ def physical_drive_entries():
             "size": node.get("size") or "",
             "model": node.get("model") or "",
             "mountpoints": mounts,
+            "mount_target": str(mount_target) if mount_target else "",
+            "can_mount": bool(can_mount),
+            "can_unmount": bool(mounted_by_homestart),
+            "mounted_by_homestart": bool(mounted_by_homestart),
             "depth": depth,
         }
 
@@ -1434,6 +1547,16 @@ def ensure_file_operations_enabled():
         raise PermissionError("File operations are disabled")
 
 
+def file_mounts_enabled():
+    features = load_config_file().get("features", {})
+    return features.get("file_operations", True) and features.get("file_mounts", True)
+
+
+def ensure_file_mounts_enabled():
+    if not file_mounts_enabled():
+        raise PermissionError("File disk mounting is disabled")
+
+
 def resolve_new_child(parent_path, name):
     parent = resolve_file_path(parent_path)
     if parent is None:
@@ -1542,6 +1665,10 @@ def file_action(payload):
         return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
     if action == "upload":
         return upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
+    if action == "mount_readonly":
+        return mount_block_device_readonly(payload.get("device", ""))
+    if action == "unmount":
+        return unmount_homestart_device(payload.get("device", ""))
     raise ValueError("Invalid file action")
 
 

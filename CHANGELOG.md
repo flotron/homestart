@@ -6,6 +6,11 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added File Browser actions to mount unmounted partitions read-only under
+  `/mnt/homestart` using `ro,nosuid,nodev,noexec`, plus unmount support for
+  HomeStart-managed mounts.
+- Added `features.file_mounts` so disk mounting can be disabled independently
+  from regular File Browser operations.
 - Reworked the File Browser sidebar to show physical disks as parent devices
   with partitions/LVM volumes underneath, including unmounted devices as
   disabled entries instead of hiding them.

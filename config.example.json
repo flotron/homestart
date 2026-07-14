@@ -8,6 +8,7 @@
     "docker_actions": true,
     "file_browser": true,
     "file_operations": true,
+    "file_mounts": true,
     "app_uninstall": true
   },
   "file_roots": [

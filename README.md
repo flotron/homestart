@@ -174,13 +174,16 @@ Use `File Browser` like a lightweight OS explorer:
 
 - type a full path in the address bar and press Enter
 - browse configured roots and mounted drives
+- mount unmounted partitions read-only under `/mnt/homestart` when enabled
 - drag files into the main pane to upload
 - copy an item and paste it into another folder
 - create folders
 - open/view files inline when the browser supports them
 - delete with a simple confirmation prompt
 
-All file operations are constrained by `file_roots`.
+All file operations are constrained by `file_roots`. Unmounted partitions cannot
+be browsed directly by Linux; HomeStart mounts them read-only with
+`ro,nosuid,nodev,noexec` before opening them.
 
 ### Settings
 
@@ -209,6 +212,7 @@ Important options:
 - `features.docker_actions`: enable Docker stop/restart actions.
 - `features.file_browser`: enable File Browser.
 - `features.file_operations`: enable create/copy/delete/upload operations.
+- `features.file_mounts`: enable read-only mounting of unmounted partitions.
 - `features.app_uninstall`: enable uninstall actions.
 - `file_roots`: folders the File Browser can access.
 - `services`: systemd units shown in status.
