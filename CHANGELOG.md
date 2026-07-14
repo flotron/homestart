@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Hardened Docker app actions so uninstall verifies the container exists before
+  removal, confirms it is gone afterward, returns Docker errors clearly, and
+  shows a success message in the UI.
 - Added generic native web-app discovery from Apache and Nginx virtual host
   configuration, using detected document roots and listen ports instead of
   app-specific rules.

@@ -1995,23 +1995,48 @@ def status_payload():
     }
 
 
+def normalize_docker_name(name):
+    docker_name = str(name or "").strip().lstrip("/")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", docker_name):
+        raise ValueError("Invalid container name")
+    return docker_name
+
+
+def run_docker_command(command, timeout=60):
+    try:
+        return subprocess.check_output(
+            ["docker", *command],
+            text=True,
+            timeout=timeout,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except FileNotFoundError as error:
+        raise ValueError("Docker is not installed") from error
+    except subprocess.CalledProcessError as error:
+        output = (error.output or "").strip()
+        raise ValueError(output or "Docker command failed") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Docker command timed out") from error
+
+
+def docker_container_exists(name):
+    try:
+        run_docker_command(["inspect", name], timeout=10)
+        return True
+    except ValueError:
+        return False
+
+
 def docker_action(name, action):
     if not load_config_file().get("features", {}).get("docker_actions", True):
         raise ValueError("Docker actions are disabled")
 
-    docker_name = name.strip()
+    docker_name = normalize_docker_name(name)
     if action not in {"stop", "restart"}:
         raise ValueError("Invalid action")
-    if not re.match(r"^[A-Za-z0-9_.-]+$", docker_name):
-        raise ValueError("Invalid container name")
 
-    subprocess.check_output(
-        ["docker", action, docker_name],
-        text=True,
-        timeout=30,
-        stderr=subprocess.STDOUT,
-    )
-    return {"ok": True, "container": docker_name, "action": action}
+    output = run_docker_command([action, docker_name], timeout=30)
+    return {"ok": True, "container": docker_name, "action": action, "message": output}
 
 
 def configured_app(name):
@@ -2034,21 +2059,19 @@ def app_action(payload):
     if not app_uninstall_enabled():
         raise ValueError("App uninstall is disabled")
 
-    docker_name = docker_name.strip()
+    docker_name = str(docker_name or "").strip()
     if docker_name:
-        if not re.match(r"^[A-Za-z0-9_.-]+$", docker_name):
-            raise ValueError("Invalid container name")
-        subprocess.check_output(
-            ["docker", "rm", "-f", docker_name],
-            text=True,
-            timeout=60,
-            stderr=subprocess.STDOUT,
-        )
+        docker_name = normalize_docker_name(docker_name)
+        if not docker_container_exists(docker_name):
+            raise ValueError("Docker container was not found")
+        output = run_docker_command(["rm", "-f", docker_name], timeout=90)
+        if docker_container_exists(docker_name):
+            raise ValueError("Docker reported success, but the container still exists")
         return {
             "ok": True,
             "container": docker_name,
             "action": action,
-            "message": "Container removed. Docker images and volumes were preserved.",
+            "message": output or "Container removed. Docker images and volumes were preserved.",
         }
 
     app = configured_app(payload.get("app_name", ""))

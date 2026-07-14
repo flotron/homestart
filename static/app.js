@@ -137,6 +137,9 @@ async function runAppAction(app, action) {
 
   await load();
   await loadStatus();
+  if (action === "uninstall") {
+    window.alert(result.message || `${app.name} was uninstalled.`);
+  }
 }
 
 function render() {
