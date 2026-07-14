@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import json
 import base64
 import binascii
@@ -1886,51 +1886,8 @@ def app_action(payload):
     return {"ok": True, "app": app.get("name"), "action": action}
 
 
-CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
-CODEX_APPROVALS = {"never", "on-request", "on-failure", "untrusted"}
-CODEX_DEFAULT_PERMISSIONS = {"sandbox": "read-only", "approval": "never", "model": ""}
-
-
 def now_ms():
     return int(time.time() * 1000)
-
-
-def codex_db():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS codex_chats (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            permissions TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS codex_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            attachments TEXT NOT NULL DEFAULT '[]',
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(chat_id) REFERENCES codex_chats(id) ON DELETE CASCADE
-        )
-        """
-    )
-    columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(codex_messages)").fetchall()
-    }
-    if "attachments" not in columns:
-        connection.execute("ALTER TABLE codex_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
-    connection.commit()
-    return connection
 
 
 def speedtest_db():
@@ -1949,384 +1906,6 @@ def speedtest_db():
     )
     connection.commit()
     return connection
-
-
-def codex_permissions(value=None):
-    value = value or {}
-    sandbox = value.get("sandbox", CODEX_DEFAULT_PERMISSIONS["sandbox"])
-    approval = value.get("approval", CODEX_DEFAULT_PERMISSIONS["approval"])
-    model = str(value.get("model", CODEX_DEFAULT_PERMISSIONS["model"]) or "").strip()
-    if sandbox not in CODEX_SANDBOXES:
-        raise ValueError("Invalid Codex sandbox")
-    if approval not in CODEX_APPROVALS:
-        raise ValueError("Invalid Codex approval policy")
-    if model and not re.match(r"^[A-Za-z0-9._:-]{1,80}$", model):
-        raise ValueError("Invalid Codex model")
-    return {"sandbox": sandbox, "approval": approval, "model": model}
-
-
-def codex_title(messages):
-    for message in messages:
-        if message.get("role") == "user" and message.get("content"):
-            title = str(message["content"]).strip().replace("\n", " ")
-            return f"{title[:42]}..." if len(title) > 42 else title
-    return "New chat"
-
-
-def codex_clean_attachments(attachments=None):
-    clean = []
-    for item in attachments or []:
-        name = str(item.get("name", "attachment")).strip()[:180] or "attachment"
-        mime = str(item.get("mime", "application/octet-stream")).strip()[:120]
-        kind = "image" if str(item.get("kind", "")).lower() == "image" else "text"
-        content = str(item.get("content", ""))
-        if not content:
-            continue
-        limit = 1_500_000 if kind == "image" else 200_000
-        clean.append(
-            {
-                "name": name,
-                "mime": mime,
-                "kind": kind,
-                "content": content[:limit],
-            }
-        )
-    return clean[:6]
-
-
-def codex_attachment_prompt(attachments):
-    blocks = []
-    for index, item in enumerate(attachments or [], start=1):
-        if item.get("kind") == "text":
-            blocks.append(
-                f"Attachment {index}: {item.get('name')} ({item.get('mime')})\n"
-                f"```text\n{item.get('content', '')[:12000]}\n```"
-            )
-        else:
-            blocks.append(f"Attachment {index}: {item.get('name')} ({item.get('mime')}) [image attached]")
-    return "\n\n".join(blocks)
-
-
-def codex_chat_summary(row, message_count=0):
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "permissions": json.loads(row["permissions"]),
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "messageCount": message_count,
-    }
-
-
-def codex_list_chats():
-    with codex_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT c.*, COUNT(m.id) AS message_count
-            FROM codex_chats c
-            LEFT JOIN codex_messages m ON m.chat_id = c.id
-            GROUP BY c.id
-            ORDER BY c.updated_at DESC
-            """
-        ).fetchall()
-    return {"chats": [codex_chat_summary(row, row["message_count"]) for row in rows]}
-
-
-def codex_get_chat(chat_id):
-    with codex_db() as connection:
-        chat = connection.execute(
-            "SELECT * FROM codex_chats WHERE id = ?",
-            (chat_id,),
-        ).fetchone()
-        if not chat:
-            raise ValueError("Chat not found")
-        messages = connection.execute(
-            "SELECT role, content, attachments, created_at FROM codex_messages WHERE chat_id = ? ORDER BY id",
-            (chat_id,),
-        ).fetchall()
-    return {
-        "chat": codex_chat_summary(chat, len(messages)),
-        "messages": [
-            {
-                "role": row["role"],
-                "content": row["content"],
-                "attachments": json.loads(row["attachments"] or "[]"),
-                "createdAt": row["created_at"],
-            }
-            for row in messages
-        ],
-    }
-
-
-def codex_create_chat(messages=None, permissions=None):
-    messages = messages or []
-    clean_messages = []
-    for message in messages:
-        role = message.get("role", "")
-        content = str(message.get("content", "")).strip()
-        attachments = codex_clean_attachments(message.get("attachments", []))
-        if role in {"user", "assistant"} and (content or attachments):
-            clean_messages.append(
-                {
-                    "role": role,
-                    "content": content[:12000],
-                    "attachments": attachments,
-                    "createdAt": now_ms(),
-                }
-            )
-
-    timestamp = now_ms()
-    chat_id = str(uuid.uuid4())
-    safe_permissions = codex_permissions(permissions)
-    with codex_db() as connection:
-        connection.execute(
-            "INSERT INTO codex_chats (id, title, permissions, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (
-                chat_id,
-                codex_title(clean_messages),
-                json.dumps(safe_permissions),
-                timestamp,
-                timestamp,
-            ),
-        )
-        for message in clean_messages:
-            connection.execute(
-                "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
-                (
-                    chat_id,
-                    message["role"],
-                    message["content"],
-                    json.dumps(message["attachments"]),
-                    message["createdAt"],
-                ),
-            )
-    return codex_get_chat(chat_id)
-
-
-def codex_update_chat(chat_id, permissions=None):
-    safe_permissions = codex_permissions(permissions)
-    timestamp = now_ms()
-    with codex_db() as connection:
-        result = connection.execute(
-            "UPDATE codex_chats SET permissions = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(safe_permissions), timestamp, chat_id),
-        )
-        if result.rowcount == 0:
-            raise ValueError("Chat not found")
-    return codex_get_chat(chat_id)
-
-
-def codex_delete_chat(chat_id):
-    with codex_db() as connection:
-        result = connection.execute("DELETE FROM codex_chats WHERE id = ?", (chat_id,))
-        connection.execute("DELETE FROM codex_messages WHERE chat_id = ?", (chat_id,))
-        if result.rowcount == 0:
-            raise ValueError("Chat not found")
-    return {"ok": True}
-
-
-def codex_runtime_paths():
-    config = load_config_file().get("supported_apps", {}).get("codex", {})
-    explicit_home = str(config.get("home") or "").strip()
-    explicit_codex_home = str(config.get("codex_home") or "").strip()
-
-    def valid_path(value):
-        if not value:
-            return None
-        path = Path(value).expanduser()
-        return path if str(path) not in {"", "."} else None
-
-    if explicit_home or explicit_codex_home:
-        home = valid_path(explicit_home) or valid_path(os.environ.get("HOME")) or Path.home()
-        codex_home = valid_path(explicit_codex_home) or (home / ".codex")
-        if not (codex_home / "auth.json").is_file():
-            raise ValueError(f"Configured Codex home is not authenticated: {codex_home}")
-        return home, codex_home, codex_run_user(codex_home)
-
-    candidates = []
-
-    def add_candidate(home, codex_home=None):
-        home = valid_path(str(home)) if home else None
-        if not home:
-            return
-        codex_home = codex_home or (home / ".codex")
-        if (codex_home / "auth.json").is_file():
-            candidates.append((home, codex_home))
-
-    env_home = valid_path(os.environ.get("HOME"))
-    env_codex_home = valid_path(os.environ.get("CODEX_HOME"))
-    if env_codex_home:
-        add_candidate(env_codex_home.parent, env_codex_home)
-    add_candidate(env_home)
-    add_candidate(Path.home())
-    add_candidate(Path("/root"))
-
-    users_root = Path("/home")
-    if users_root.exists():
-        for home in sorted(path for path in users_root.iterdir() if path.is_dir()):
-            add_candidate(home)
-
-    unique = []
-    seen = set()
-    for home, codex_home in candidates:
-        key = str(codex_home.resolve())
-        if key not in seen:
-            seen.add(key)
-            unique.append((home, codex_home))
-
-    if not unique:
-        raise ValueError("Codex CLI is installed, but no authenticated Codex home was found.")
-    if len(unique) > 1:
-        homes = ", ".join(str(codex_home) for _, codex_home in unique)
-        raise ValueError(f"Multiple authenticated Codex homes were found. Configure supported_apps.codex.codex_home. Found: {homes}")
-
-    home, codex_home = unique[0]
-    return home, codex_home, codex_run_user(codex_home)
-
-
-def codex_run_user(codex_home):
-    if getattr(os, "geteuid", lambda: -1)() != 0:
-        return None
-    try:
-        owner = codex_home.owner()
-    except (KeyError, OSError, NotImplementedError):
-        return None
-    return owner if owner and owner != "root" else None
-
-
-def codex_run(messages, permissions=None):
-    if not shutil.which("codex"):
-        raise ValueError("Codex CLI is not installed")
-    if not isinstance(messages, list) or not messages:
-        raise ValueError("Message history is required")
-
-    permissions = codex_permissions(permissions)
-    sandbox = permissions["sandbox"]
-    approval = permissions["approval"]
-    model = permissions["model"]
-
-    clean_messages = []
-    for item in messages[-16:]:
-        role = item.get("role", "")
-        content = str(item.get("content", "")).strip()
-        attachments = codex_clean_attachments(item.get("attachments", []))
-        if role not in {"user", "assistant"} or (not content and not attachments):
-            continue
-        attachment_text = codex_attachment_prompt(attachments)
-        full_content = content[:4000]
-        if attachment_text:
-            full_content = f"{full_content}\n\n{attachment_text}".strip()
-        clean_messages.append({"role": role, "content": full_content[:16000], "attachments": attachments})
-
-    if not clean_messages or clean_messages[-1]["role"] != "user":
-        raise ValueError("The latest message must be from the user")
-
-    transcript = "\n\n".join(
-        f"{item['role'].upper()}:\n{item['content']}" for item in clean_messages
-    )
-    prompt = (
-        "You are Codex CLI answering through the HomeStart dashboard.\n"
-        "Reply to the latest user message using the conversation for context.\n"
-        "Use the same language as the user. Keep the answer concise unless detail is needed.\n"
-        f"You are running with model={model or 'default'}, sandbox={sandbox}, and approval_policy={approval}.\n"
-        "Explain before risky system changes and respect the current permission level.\n\n"
-        f"{transcript}"
-    )
-
-    output_path = None
-    temp_attachments = []
-    try:
-        with tempfile.NamedTemporaryFile(prefix="homestart-codex-", suffix=".txt", delete=False) as file:
-            output_path = file.name
-
-        home_path, codex_home, run_user = codex_runtime_paths()
-        if run_user:
-            os.chmod(output_path, 0o666)
-        env = os.environ.copy()
-        env["HOME"] = str(home_path)
-        env["CODEX_HOME"] = str(codex_home)
-        command = ["codex"]
-        if model:
-            command.extend(["-m", model])
-        command.extend([
-            "-C",
-            str(home_path),
-            "--ask-for-approval",
-            approval,
-            "exec",
-            "--sandbox",
-            sandbox,
-            "--skip-git-repo-check",
-            "--color",
-            "never",
-            "--output-last-message",
-            output_path,
-            "-",
-        ])
-        for item in clean_messages[-1].get("attachments", []):
-            if item.get("kind") != "image":
-                continue
-            try:
-                _, encoded = item.get("content", "").split(",", 1)
-                suffix = mimetypes.guess_extension(item.get("mime", "")) or ".png"
-                with tempfile.NamedTemporaryFile(prefix="homestart-codex-image-", suffix=suffix, delete=False) as image:
-                    image.write(base64.b64decode(encoded))
-                    temp_attachments.append(image.name)
-                    if run_user:
-                        os.chmod(image.name, 0o644)
-                    command.extend(["-i", image.name])
-            except (ValueError, OSError, binascii.Error):
-                continue
-
-        run_env = env
-        if run_user:
-            command = [
-                "sudo",
-                "-H",
-                "-u",
-                run_user,
-                "env",
-                f"HOME={home_path}",
-                f"CODEX_HOME={codex_home}",
-                f"PATH={env.get('PATH', '')}",
-                *command,
-            ]
-            run_env = os.environ.copy()
-
-        result = subprocess.run(
-            command,
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=180,
-            env=run_env,
-            cwd=str(home_path),
-        )
-
-        output = ""
-        if output_path and Path(output_path).exists():
-            output = Path(output_path).read_text(encoding="utf-8", errors="replace").strip()
-        if not output:
-            output = (result.stdout or result.stderr).strip()
-        if result.returncode != 0:
-            if "401 Unauthorized" in output:
-                raise ValueError("Codex CLI is installed, but it is not authenticated on this server.")
-            raise ValueError(output or "Codex CLI failed")
-
-        return {"ok": True, "reply": output}
-    except subprocess.TimeoutExpired as error:
-        raise ValueError("Codex CLI timed out") from error
-    finally:
-        if output_path:
-            try:
-                Path(output_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        for path in temp_attachments:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def speedtest_run():
@@ -2405,56 +1984,6 @@ def speedtest_history(limit=20):
             for row in rows
         ],
     }
-
-
-def codex_send_message(chat_id, content, permissions=None, attachments=None):
-    content = str(content or "").strip()
-    attachments = codex_clean_attachments(attachments)
-    if not content and not attachments:
-        raise ValueError("Message is required")
-
-    if chat_id:
-        chat_payload = codex_get_chat(chat_id)
-        codex_update_chat(chat_id, permissions or chat_payload["chat"]["permissions"])
-    else:
-        chat_payload = codex_create_chat(permissions=permissions)
-        chat_id = chat_payload["chat"]["id"]
-
-    timestamp = now_ms()
-    with codex_db() as connection:
-        connection.execute(
-            "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, "user", content[:12000], json.dumps(attachments), timestamp),
-        )
-        messages = [
-            {
-                "role": row["role"],
-                "content": row["content"],
-                "attachments": json.loads(row["attachments"] or "[]"),
-            }
-            for row in connection.execute(
-                "SELECT role, content, attachments FROM codex_messages WHERE chat_id = ? ORDER BY id",
-                (chat_id,),
-            ).fetchall()
-        ]
-
-    permissions_payload = codex_get_chat(chat_id)["chat"]["permissions"]
-    result = codex_run(messages, permissions_payload)
-    timestamp = now_ms()
-    with codex_db() as connection:
-        connection.execute(
-            "INSERT INTO codex_messages (chat_id, role, content, attachments, created_at) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, "assistant", result["reply"], "[]", timestamp),
-        )
-        connection.execute(
-            "UPDATE codex_chats SET title = ?, updated_at = ? WHERE id = ?",
-            (codex_title(messages), timestamp, chat_id),
-        )
-
-    payload = codex_get_chat(chat_id)
-    payload["ok"] = True
-    payload["reply"] = result["reply"]
-    return payload
 
 
 def app_payload():
@@ -2744,6 +2273,11 @@ def apply_update_package(filename, content):
             if not members:
                 raise ValueError("No updatable files found in package")
 
+            packaged_static = {
+                relative_target
+                for _member, relative_target in members
+                if relative_target.parts and relative_target.parts[0] == "static"
+            }
             for member, relative_target in members:
                 target = BASE_DIR / relative_target
                 if target.exists():
@@ -2760,6 +2294,19 @@ def apply_update_package(filename, content):
                 if mode:
                     os.chmod(target, mode)
                 changed.append(str(relative_target))
+
+            if packaged_static:
+                for existing in STATIC_DIR.rglob("*"):
+                    if not existing.is_file():
+                        continue
+                    relative_existing = existing.relative_to(BASE_DIR)
+                    if relative_existing in packaged_static:
+                        continue
+                    backup_target = backup_root / relative_existing
+                    backup_target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(existing, backup_target)
+                    existing.unlink()
+                    changed.append(f"removed {relative_existing}")
     finally:
         archive_path.unlink(missing_ok=True)
 
@@ -2900,26 +2447,10 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json(app_payload())
             return
 
-        if route in {"/codex", "/codex/"}:
-            self.path = "/codex.html"
-            super().do_GET()
-            return
 
         if route in {"/speedtest", "/speedtest/"}:
             self.path = "/speedtest.html"
             super().do_GET()
-            return
-
-        if route == "/api/codex/chats":
-            self.send_json(codex_list_chats())
-            return
-
-        if route == "/api/codex/chat":
-            query = parse_qs(parsed.query)
-            try:
-                self.send_json(codex_get_chat(query.get("id", [""])[0]))
-            except ValueError as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
         if route == "/api/icon":
@@ -3023,52 +2554,6 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
-        if route == "/api/codex/chats":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                self.send_json(codex_create_chat(payload.get("messages", []), payload.get("permissions", {})))
-            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-            return
-
-        if route == "/api/codex/chat/update":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                self.send_json(codex_update_chat(payload.get("chat_id", ""), payload.get("permissions", {})))
-            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-            return
-
-        if route == "/api/codex/chat/delete":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                self.send_json(codex_delete_chat(payload.get("chat_id", "")))
-            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-            return
-
-        if route == "/api/codex/chat":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if "content" in payload:
-                    self.send_json(
-                        codex_send_message(
-                            payload.get("chat_id", ""),
-                            payload.get("content", ""),
-                            payload.get("permissions", {}),
-                            payload.get("attachments", []),
-                        )
-                    )
-                else:
-                    self.send_json(codex_run(payload.get("messages", []), payload.get("permissions", {})))
-            except (json.JSONDecodeError, ValueError, OSError, sqlite3.Error) as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-            return
-
         if route == "/api/speedtest/run":
             try:
                 self.send_json(speedtest_run())
@@ -3146,3 +2631,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

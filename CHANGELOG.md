@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
@@ -6,6 +6,8 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Removed the experimental CLI chat feature completely from distributable code,
+  static assets, routes, styles, and package contents.
 - Added File Browser actions to mount unmounted partitions read-only under
   `/mnt/homestart` using `ro,nosuid,nodev,noexec`, plus unmount support for
   HomeStart-managed mounts.
@@ -44,10 +46,8 @@ packaging, security, and migration notes.
 
 - Reworked File Browser colors back into the dark HomeStart dashboard theme
   while keeping the new visual grid explorer.
-- Removed Codex CLI Chat from the default Supported Apps list because it is not
-  practical enough as a normal app card.
-- Removed Codex-specific default configuration and public README promotion from
-  the distributable package.
+- Removed the experimental CLI chat integration from the default Supported Apps list.
+- Removed experimental CLI-chat default configuration and public README promotion from the distributable package.
 
 ## 20260713-1445
 
@@ -67,7 +67,7 @@ packaging, security, and migration notes.
   usage tutorial, configuration notes, update flow, packaging, and security
   model.
 - Added `.gitignore` to keep local config, runtime databases, packages,
-  backups, logs, and local Codex/plugin artifacts out of source control.
+  backups, logs, and local development artifacts out of source control.
 
 ## 20260710-1720
 
@@ -123,16 +123,16 @@ packaging, security, and migration notes.
 
 ## 20260710-1636
 
-- Reworked Codex CLI supported-app detection to avoid hardcoded user home
+- Reworked  CLI supported-app detection to avoid hardcoded user home
   paths from development machines.
-- Codex now looks for authenticated config in a portable order:
-  `supported_apps.codex.codex_home`, `CODEX_HOME`, `$HOME/.codex`, standard
-  `/home/*/.codex` locations, and `/root/.codex`.
-- If multiple authenticated Codex homes are found, HomeStart now asks the user
-  to configure `supported_apps.codex.codex_home` instead of guessing.
-- When HomeStart runs as root, Codex commands run as the owner of the selected
+-  now looks for authenticated config in a portable order:
+  `supported_apps.._home`, `_HOME`, `$HOME/.`, standard
+  `/home/*/.` locations, and `/root/.`.
+- If multiple authenticated  homes are found, HomeStart now asks the user
+  to configure `supported_apps.._home` instead of guessing.
+- When HomeStart runs as root,  commands run as the owner of the selected
   auth directory to avoid creating root-owned files in a user profile.
-- Removed personal path assumptions from Speedtest/Codex supported-app
+- Removed personal path assumptions from Speedtest/ supported-app
   wrappers.
 
 ## 20260710-1623
@@ -149,9 +149,9 @@ packaging, security, and migration notes.
 - Added a real Ookla Speedtest supported-app wrapper at `/speedtest`.
 - Speedtest can now run the installed `speedtest` CLI from HomeStart and show
   download, upload, ping, ISP, and selected server details.
-- Fixed Codex CLI Chat configuration that previously relied on development
+- Fixed  CLI Chat configuration that previously relied on development
   machine paths.
-- Updated Codex CLI Chat toward portable runtime paths; unauthenticated Codex
+- Updated  CLI Chat toward portable runtime paths; unauthenticated 
   installations now report that authentication is required instead of failing
   on missing local development paths.
 
@@ -172,7 +172,7 @@ packaging, security, and migration notes.
 
 ## 20260710-1508
 
-- Added this changelog to the installable and update packages so future Codex
+- Added this changelog to the installable and update packages so future 
   chats can quickly recover project history from the distributed artifact.
 - Updated the package builder to copy `CHANGELOG.md` into every generated
   installer and update archive.
@@ -202,4 +202,6 @@ packaging, security, and migration notes.
   units.
 - Updated `README.md` and `config.example.json` for uninstall and packaging
   behavior.
+
+
 

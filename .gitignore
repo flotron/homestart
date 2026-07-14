@@ -1,4 +1,4 @@
-# Local configuration and runtime data
+﻿# Local configuration and runtime data
 config.json
 data/
 dist/
@@ -24,7 +24,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local Codex/plugin runtime directories that must never be published
+# Local development runtime directories that must never be published
 .tmp/
 skills/
 goals_*.sqlite*
