@@ -124,7 +124,11 @@ async function runAppAction(app, action) {
     const typed = window.prompt(
       `This will remove ${app.name} from HomeStart.\n\nFor Docker apps, only the container is removed. Images and volumes are preserved.\n\nType "${confirmation}" to continue.`
     );
-    if (typed !== confirmation) return;
+    if (typed === null) return;
+    if (typed !== confirmation) {
+      window.alert(`Confirmation did not match.\n\nExpected exactly:\n${confirmation}`);
+      return;
+    }
   } else {
     const confirmed = window.confirm(`Confirm ${label} for ${app.name}. This action can interrupt the service.`);
     if (!confirmed) return;

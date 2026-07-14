@@ -6,6 +6,8 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Uninstall confirmation now shows an explicit mismatch message when the typed
+  confirmation text is incorrect, instead of silently cancelling.
 - Hardened Docker app actions so uninstall verifies the container exists before
   removal, confirms it is gone afterward, returns Docker errors clearly, and
   shows a success message in the UI.
