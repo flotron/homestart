@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added Windows-style sorting controls to the System Resources process viewer,
+  so CPU and memory usage can be toggled from highest-to-lowest or
+  lowest-to-highest.
 - Docker app URLs now prefer HTTP-like container ports over non-web ports such
   as SSH, databases, or mail ports, so apps exposing both web and SSH choose
   the browser port instead of the first published port.

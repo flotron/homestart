@@ -14,6 +14,8 @@ const state = {
   networkInterfaces: [],
   selectedNetwork: null,
   githubUpdate: null,
+  resourceProcesses: [],
+  processSort: { key: "cpu_percent", direction: "desc" },
 };
 
 const navItems = [...document.querySelectorAll(".nav-item")];
@@ -47,6 +49,7 @@ const resourceMemory = document.querySelector("#resource-memory");
 const resourceContainers = document.querySelector("#resource-containers");
 const resourceProcesses = document.querySelector("#resource-processes");
 const resourceTasks = document.querySelector("#resource-tasks");
+const processSortButtons = [...document.querySelectorAll("[data-process-sort]")];
 const filesNode = document.querySelector("#files");
 const filePathNode = document.querySelector("#file-path");
 const filePathForm = document.querySelector("#file-path-form");
@@ -417,6 +420,29 @@ function renderResourceProcess(process) {
   return node;
 }
 
+function sortedResourceProcesses() {
+  const { key, direction } = state.processSort;
+  const multiplier = direction === "asc" ? 1 : -1;
+  return [...state.resourceProcesses].sort((left, right) => {
+    const leftValue = Number(left?.[key]) || 0;
+    const rightValue = Number(right?.[key]) || 0;
+    if (leftValue !== rightValue) return (leftValue - rightValue) * multiplier;
+    return String(left.command || "").localeCompare(String(right.command || ""));
+  });
+}
+
+function renderResourceProcesses() {
+  const { key, direction } = state.processSort;
+  processSortButtons.forEach((button) => {
+    const active = button.dataset.processSort === key;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-sort", active ? (direction === "desc" ? "descending" : "ascending") : "none");
+    const label = button.dataset.processSort === "memory_percent" ? "MEM" : "CPU";
+    button.textContent = active ? `${label} ${direction === "desc" ? "↓" : "↑"}` : label;
+  });
+  resourceProcesses.replaceChildren(...sortedResourceProcesses().map(renderResourceProcess));
+}
+
 async function loadStatus() {
   const response = await fetch("/api/status", { cache: "no-store" });
   const data = await response.json();
@@ -461,7 +487,8 @@ async function loadResources() {
   resourceMemory.textContent = `${data.memory?.used_label || "--"} / ${data.memory?.total_label || "--"}`;
   resourceTasks.textContent = `Tasks ${data.tasks?.total ?? "--"} (${data.tasks?.threads ?? "--"} threads), ${data.tasks?.running ?? "--"} running, ${data.tasks?.sleeping ?? "--"} sleeping, ${data.tasks?.other ?? "--"} other`;
   resourceContainers.replaceChildren(...(data.containers || []).map(renderResourceContainer));
-  resourceProcesses.replaceChildren(...(data.processes || []).map(renderResourceProcess));
+  state.resourceProcesses = data.processes || [];
+  renderResourceProcesses();
 }
 
 function renderFileEntry(entry) {
@@ -1102,6 +1129,17 @@ typeFilterItems.forEach((item) => {
 refresh.addEventListener("click", load);
 refreshStatus.addEventListener("click", loadStatus);
 resourcesPanel.addEventListener("toggle", () => loadResources().catch(console.error));
+processSortButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const key = button.dataset.processSort;
+    if (state.processSort.key === key) {
+      state.processSort.direction = state.processSort.direction === "desc" ? "asc" : "desc";
+    } else {
+      state.processSort = { key, direction: "desc" };
+    }
+    renderResourceProcesses();
+  });
+});
 refreshNetwork.addEventListener("click", () => loadNetworkSettings().catch(console.error));
 networkForm.addEventListener("submit", applyNetworkSettings);
 updateForm.addEventListener("submit", applyUpdate);

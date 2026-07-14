@@ -72,7 +72,7 @@
           <details class="resources-panel" id="resources-panel">
             <summary>
               <span>System resources</span>
-              <small>Containers and processes sorted by CPU usage</small>
+              <small>Containers and sortable process usage</small>
             </summary>
             <div class="resources-body">
               <div class="resource-summary">
@@ -113,8 +113,8 @@
                 <p id="resource-tasks">Tasks loading...</p>
                 <div class="resource-table resource-processes">
                   <div class="resource-row resource-head">
-                    <span>CPU</span>
-                    <span>MEM</span>
+                    <span><button class="resource-sort active" type="button" data-process-sort="cpu_percent" aria-sort="descending">CPU ↓</button></span>
+                    <span><button class="resource-sort" type="button" data-process-sort="memory_percent" aria-sort="none">MEM</button></span>
                     <span>PID</span>
                     <span>User</span>
                     <span>Command</span>

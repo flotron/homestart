@@ -676,6 +676,25 @@ button:disabled {
   font-weight: 800;
 }
 
+.resource-sort {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.resource-sort.active {
+  color: var(--accent);
+}
+
+.resource-sort:hover {
+  color: var(--text);
+}
+
 .resource-containers .resource-row {
   grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.5fr) 80px minmax(150px, 1fr) minmax(120px, 1fr);
 }
