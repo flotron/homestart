@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Fixed per-process CPU usage reporting so HomeStart no longer divides `ps`
+  CPU percentages by the number of CPU cores, which made active processes show
+  as `0.0%` on multi-core systems.
 - Added Windows-style sorting controls to the System Resources process viewer,
   so CPU and memory usage can be toggled from highest-to-lowest or
   lowest-to-highest.

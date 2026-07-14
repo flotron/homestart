@@ -1296,7 +1296,6 @@ def process_payload(limit=12):
         return []
 
     processes = []
-    cpu_count = max(1, os.cpu_count() or 1)
     for line in output.splitlines()[1:]:
         parts = line.split(None, 5)
         if len(parts) < 6:
@@ -1318,7 +1317,7 @@ def process_payload(limit=12):
             {
                 "pid": pid,
                 "user": user,
-                "cpu_percent": clamp_percent(raw_cpu / cpu_count),
+                "cpu_percent": clamp_percent(raw_cpu),
                 "cpu_raw_percent": raw_cpu,
                 "memory_percent": memory_percent,
                 "memory": format_bytes(rss_bytes),
