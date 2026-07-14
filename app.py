@@ -480,6 +480,130 @@ def docker_map(host):
     return {normalized_name(app["name"]): app for app in docker_apps(host)}
 
 
+def conf_text(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def strip_config_comments(text):
+    lines = []
+    for line in text.splitlines():
+        clean = line.split("#", 1)[0].strip()
+        if clean:
+            lines.append(clean)
+    return "\n".join(lines)
+
+
+def clean_config_value(value):
+    return str(value or "").strip().strip(";").strip('"').strip("'")
+
+
+def web_root_name(root):
+    path = Path(root)
+    name = path.name
+    if name.lower() in {"html", "htdocs", "public", "public_html", "web", "www"} and path.parent.name:
+        name = path.parent.name
+    return re.sub(r"[-_]+", " ", name).strip().title() or str(path)
+
+
+def local_web_url(host, port, tls=False):
+    scheme = "https" if tls or str(port) == "443" else "http"
+    port = str(port or ("443" if scheme == "https" else "80"))
+    default = (scheme == "http" and port == "80") or (scheme == "https" and port == "443")
+    return f"{scheme}://{host}" if default else f"{scheme}://{host}:{port}"
+
+
+def detected_native_web_app(root, port, host, server="Web server", tls=False):
+    try:
+        resolved_root = Path(root).expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved_root.exists() or not resolved_root.is_dir():
+        return None
+    if str(resolved_root) in {"/", "/var/www", "/srv", "/opt"}:
+        return None
+
+    name = web_root_name(resolved_root)
+    return with_icon(
+        {
+            "name": name,
+            "kind": "Native Linux",
+            "status": f"Detected {server} web root",
+            "description": str(resolved_root),
+            "url": local_web_url(host, port, tls),
+            "source": "native-discovery",
+            "app_type": "native",
+            "app_type_label": "Native Linux",
+            "tags": ["Native Linux", server],
+            "available": True,
+        }
+    )
+
+
+def apache_vhost_apps(host):
+    apps = []
+    paths = [
+        *Path("/etc/apache2/sites-enabled").glob("*"),
+        *Path("/etc/httpd/conf.d").glob("*.conf"),
+        *Path("/etc/apache2/conf-enabled").glob("*.conf"),
+    ]
+    for path in paths:
+        if not path.is_file():
+            continue
+        text = strip_config_comments(conf_text(path))
+        roots = [clean_config_value(match) for match in re.findall(r"(?im)^\s*DocumentRoot\s+(.+)$", text)]
+        if not roots:
+            continue
+        ports = re.findall(r"(?i)<VirtualHost\s+[^>]*:(\d+)[^>]*>", text)
+        port = ports[0] if ports else "443" if re.search(r"(?im)^\s*SSLEngine\s+on\b", text) else "80"
+        tls = str(port) == "443" or bool(re.search(r"(?im)^\s*SSLEngine\s+on\b", text))
+        for root in roots:
+            app = detected_native_web_app(root, port, host, "Apache", tls)
+            if app:
+                apps.append(app)
+    return apps
+
+
+def nginx_vhost_apps(host):
+    apps = []
+    paths = [
+        *Path("/etc/nginx/sites-enabled").glob("*"),
+        *Path("/etc/nginx/conf.d").glob("*.conf"),
+    ]
+    for path in paths:
+        if not path.is_file():
+            continue
+        text = strip_config_comments(conf_text(path))
+        roots = [clean_config_value(match) for match in re.findall(r"(?im)^\s*root\s+(.+)$", text)]
+        if not roots:
+            continue
+        listens = [clean_config_value(match) for match in re.findall(r"(?im)^\s*listen\s+([^;]+)", text)]
+        listen = listens[0] if listens else "80"
+        port_match = re.search(r"(?<!:)\b(\d{2,5})\b", listen)
+        port = port_match.group(1) if port_match else "443" if "ssl" in listen.lower() else "80"
+        tls = str(port) == "443" or "ssl" in listen.lower()
+        for root in roots:
+            app = detected_native_web_app(root, port, host, "Nginx", tls)
+            if app:
+                apps.append(app)
+    return apps
+
+
+def native_web_apps(host):
+    apps = []
+    seen = set()
+    for app in [*apache_vhost_apps(host), *nginx_vhost_apps(host)]:
+        key = (normalized_name(app.get("name", "")), app.get("url", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        apply_uninstall_metadata(app)
+        apps.append(app)
+    return apps
+
+
 def with_icon(app):
     key = app_icon_key(app)
     app["icon_key"] = key
@@ -2047,6 +2171,7 @@ def app_payload():
     host = local_ip()
     containers = docker_map(host)
     configured = load_config()
+    discovered_native = native_web_apps(host)
 
     for app in configured:
         container = containers.get(normalized_name(app.get("name", "")))
@@ -2062,16 +2187,25 @@ def app_payload():
         with_icon(app)
 
     seen = {normalized_name(app.get("name", "")) for app in configured}
+    seen_urls = {str(app.get("url") or "") for app in configured if app.get("url")}
     discovered = [
         app for app in containers.values() if normalized_name(app.get("name", "")) not in seen
     ]
     for app in discovered:
         apply_uninstall_metadata(app)
+        if app.get("url"):
+            seen_urls.add(app["url"])
+
+    native_discovered = [
+        app
+        for app in discovered_native
+        if normalized_name(app.get("name", "")) not in seen and str(app.get("url") or "") not in seen_urls
+    ]
 
     return {
         "dashboard": load_config_file().get("dashboard", {}),
         "host": host,
-        "apps": configured + discovered,
+        "apps": configured + discovered + native_discovered,
         "features": load_config_file().get("features", {}),
     }
 

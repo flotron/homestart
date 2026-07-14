@@ -13,6 +13,7 @@ and apply local or GitHub release updates without bundling private runtime data.
 - System status: CPU, memory, GPU usage, physical disks, processes, and Docker resources.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
+- Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts with icons, upload by drag and drop, copy/paste, delete, and new folder.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through netplan, GitHub release update checks, and update uploads.

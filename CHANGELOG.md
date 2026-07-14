@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added generic native web-app discovery from Apache and Nginx virtual host
+  configuration, using detected document roots and listen ports instead of
+  app-specific rules.
 - Removed the experimental CLI chat feature completely from distributable code,
   static assets, routes, styles, and package contents.
 - Added a startup migration that removes the old preserved CLI-chat app entry
