@@ -16,6 +16,8 @@ const state = {
   githubUpdate: null,
   resourceProcesses: [],
   processSort: { key: "cpu_percent", direction: "desc" },
+  storeResults: [],
+  selectedStoreApp: null,
 };
 
 const navItems = [...document.querySelectorAll(".nav-item")];
@@ -28,6 +30,25 @@ const dashboardSubtitle = document.querySelector("#dashboard-subtitle");
 const template = document.querySelector("#app-card");
 const search = document.querySelector("#search");
 const refresh = document.querySelector("#refresh");
+const openAppStore = document.querySelector("#open-app-store");
+const closeAppStore = document.querySelector("#close-app-store");
+const appStorePanel = document.querySelector("#app-store-panel");
+const storeSearchForm = document.querySelector("#store-search-form");
+const storeSearch = document.querySelector("#store-search");
+const storeStatus = document.querySelector("#store-status");
+const storeResults = document.querySelector("#store-results");
+const storeInstallDialog = document.querySelector("#store-install-dialog");
+const storeInstallForm = document.querySelector("#store-install-form");
+const storeInstallTitle = document.querySelector("#store-install-title");
+const storeInstallImage = document.querySelector("#store-install-image");
+const storeInstallName = document.querySelector("#store-install-name");
+const storeInstallHostPort = document.querySelector("#store-install-host-port");
+const storeInstallContainerPort = document.querySelector("#store-install-container-port");
+const storeInstallEnv = document.querySelector("#store-install-env");
+const storeInstallVolumes = document.querySelector("#store-install-volumes");
+const storeInstallRestart = document.querySelector("#store-install-restart");
+const storeInstallCancel = document.querySelector("#store-install-cancel");
+const storeInstallSubmit = document.querySelector("#store-install-submit");
 const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
 const cpuBar = document.querySelector("#cpu-bar");
@@ -267,6 +288,132 @@ function render() {
 
 function formatPercent(value) {
   return Number.isFinite(value) ? `${value.toFixed(1)}%` : "--";
+}
+
+function compactNumber(value) {
+  const number = Number(value) || 0;
+  if (number >= 1_000_000_000) return `${(number / 1_000_000_000).toFixed(1)}B`;
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  return String(number);
+}
+
+function suggestedContainerName(image) {
+  return String(image || "app")
+    .split("/")
+    .pop()
+    .split(":")[0]
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "app";
+}
+
+function renderStoreResult(item) {
+  const node = document.createElement("article");
+  node.className = "store-card";
+  node.innerHTML = `
+    <div class="store-card-head">
+      <span class="store-icon"></span>
+      <div>
+        <h3></h3>
+        <p></p>
+      </div>
+    </div>
+    <div class="store-meta"></div>
+    <button type="button">Install</button>
+  `;
+  node.querySelector(".store-icon").textContent = (item.name || "?").slice(0, 1).toUpperCase();
+  node.querySelector("h3").textContent = item.name;
+  node.querySelector("p").textContent = item.description || "Docker Hub image";
+  node.querySelector(".store-meta").textContent = [
+    item.official ? "Official" : "",
+    `${compactNumber(item.stars)} stars`,
+    `${compactNumber(item.pulls)} pulls`,
+  ].filter(Boolean).join(" · ");
+  node.querySelector("button").addEventListener("click", () => openStoreInstall(item));
+  return node;
+}
+
+function renderStoreResults() {
+  if (!state.storeResults.length) {
+    storeResults.replaceChildren();
+    return;
+  }
+  storeResults.replaceChildren(...state.storeResults.map(renderStoreResult));
+}
+
+async function searchStore(event) {
+  event.preventDefault();
+  const query = storeSearch.value.trim();
+  if (query.length < 2) {
+    storeStatus.textContent = "Type at least 2 characters to search Docker Hub.";
+    return;
+  }
+  storeStatus.textContent = "Searching Docker Hub...";
+  storeResults.replaceChildren();
+  const response = await fetch(`/api/store/search?query=${encodeURIComponent(query)}`, { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok || !result.ok) {
+    storeStatus.textContent = result.error || "Could not search Docker Hub.";
+    return;
+  }
+  state.storeResults = result.results || [];
+  storeStatus.textContent = state.storeResults.length
+    ? `${state.storeResults.length} Docker Hub results`
+    : "No Docker Hub results found.";
+  renderStoreResults();
+}
+
+function openStoreInstall(item) {
+  state.selectedStoreApp = item;
+  storeInstallTitle.textContent = item.name;
+  storeInstallImage.textContent = item.image;
+  storeInstallName.value = suggestedContainerName(item.image);
+  storeInstallHostPort.value = "";
+  storeInstallContainerPort.value = "";
+  storeInstallEnv.value = "";
+  storeInstallVolumes.value = "";
+  storeInstallRestart.value = "unless-stopped";
+  storeInstallDialog.showModal();
+}
+
+async function installStoreApp(event) {
+  event.preventDefault();
+  const item = state.selectedStoreApp;
+  if (!item) return;
+  const payload = {
+    image: item.image,
+    name: storeInstallName.value.trim(),
+    host_port: storeInstallHostPort.value.trim(),
+    container_port: storeInstallContainerPort.value.trim(),
+    env: storeInstallEnv.value.split("\n").map((line) => line.trim()).filter(Boolean),
+    volumes: storeInstallVolumes.value.split("\n").map((line) => line.trim()).filter(Boolean),
+    restart_policy: storeInstallRestart.value,
+  };
+  const confirmed = window.confirm(`Install ${payload.image} as Docker container "${payload.name}"?`);
+  if (!confirmed) return;
+
+  storeInstallSubmit.disabled = true;
+  storeInstallSubmit.textContent = "Installing...";
+  try {
+    const response = await fetch("/api/store/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      window.alert(result.error || "Could not install Docker app.");
+      return;
+    }
+    storeInstallDialog.close();
+    window.alert(result.message || `${payload.name} installed.`);
+    await load();
+    await loadStatus();
+  } finally {
+    storeInstallSubmit.disabled = false;
+    storeInstallSubmit.textContent = "Install";
+  }
 }
 
 function setMeter(valueNode, barNode, value) {
@@ -1086,6 +1233,10 @@ async function load() {
   dashboardSubtitle.textContent = data.dashboard?.subtitle || "Dashboard";
   document.title = `${dashboardTitle.textContent} dashboard`;
   state.features = data.features || {};
+  if (openAppStore) {
+    openAppStore.hidden = state.features.docker_app_store === false || state.features.docker_actions === false;
+    if (openAppStore.hidden) appStorePanel.hidden = true;
+  }
   state.apps = data.apps || [];
   if (state.view === "files") updateFileControls();
 
@@ -1127,6 +1278,20 @@ typeFilterItems.forEach((item) => {
 });
 
 refresh.addEventListener("click", load);
+openAppStore.addEventListener("click", () => {
+  appStorePanel.hidden = false;
+  storeSearch.focus();
+});
+closeAppStore.addEventListener("click", () => {
+  appStorePanel.hidden = true;
+});
+storeSearchForm.addEventListener("submit", (event) => searchStore(event).catch((error) => {
+  storeStatus.textContent = error.message;
+}));
+storeInstallForm.addEventListener("submit", (event) => installStoreApp(event).catch((error) => {
+  window.alert(error.message);
+}));
+storeInstallCancel.addEventListener("click", () => storeInstallDialog.close());
 refreshStatus.addEventListener("click", loadStatus);
 resourcesPanel.addEventListener("toggle", () => loadResources().catch(console.error));
 processSortButtons.forEach((button) => {

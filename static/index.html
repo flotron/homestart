@@ -137,8 +137,28 @@
               <p class="eyebrow">Linux and Docker discovery</p>
               <h1>Apps</h1>
             </div>
-            <button id="refresh" type="button">Refresh apps</button>
+            <div class="topbar-actions">
+              <button id="open-app-store" type="button">App Store</button>
+              <button id="refresh" type="button">Refresh apps</button>
+            </div>
           </header>
+
+          <section class="store-panel" id="app-store-panel" hidden>
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Docker Hub</p>
+                <h2>App Store</h2>
+                <p>Search Docker images and install containers directly from HomeStart.</p>
+              </div>
+              <button id="close-app-store" type="button">Close</button>
+            </div>
+            <form id="store-search-form" class="store-search">
+              <input id="store-search" type="search" autocomplete="off" placeholder="Search Docker Hub, e.g. nginx, jellyfin, postgres" />
+              <button type="submit">Search</button>
+            </form>
+            <p id="store-status" class="form-note">Search Docker Hub to install a container.</p>
+            <div id="store-results" class="store-results"></div>
+          </section>
 
           <section class="toolbar">
             <label class="search">
@@ -154,6 +174,54 @@
           </section>
 
           <section class="grid" id="apps" aria-live="polite"></section>
+
+          <dialog id="store-install-dialog" class="store-dialog">
+            <form id="store-install-form" method="dialog">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Install Docker app</p>
+                  <h2 id="store-install-title">Install app</h2>
+                  <p id="store-install-image">Image</p>
+                </div>
+              </div>
+              <label>
+                Container name
+                <input id="store-install-name" type="text" autocomplete="off" required />
+              </label>
+              <div class="split-fields">
+                <label>
+                  Host port
+                  <input id="store-install-host-port" type="number" min="1" max="65535" placeholder="8080" />
+                </label>
+                <label>
+                  Container port
+                  <input id="store-install-container-port" type="number" min="1" max="65535" placeholder="80" />
+                </label>
+              </div>
+              <label>
+                Environment variables
+                <textarea id="store-install-env" rows="3" placeholder="KEY=value, one per line"></textarea>
+              </label>
+              <label>
+                Volumes
+                <textarea id="store-install-volumes" rows="3" placeholder="/host/path:/container/path[:ro], one per line"></textarea>
+              </label>
+              <label>
+                Restart policy
+                <select id="store-install-restart">
+                  <option value="unless-stopped">unless-stopped</option>
+                  <option value="always">always</option>
+                  <option value="on-failure">on-failure</option>
+                  <option value="no">no</option>
+                </select>
+              </label>
+              <p class="form-note">Only install images you trust. HomeStart will pull the image and run it as a Docker container.</p>
+              <div class="dialog-actions">
+                <button id="store-install-cancel" type="button">Cancel</button>
+                <button id="store-install-submit" type="submit">Install</button>
+              </div>
+            </form>
+          </dialog>
         </section>
 
         <section class="view" id="view-files" data-view-panel="files">

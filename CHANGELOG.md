@@ -6,6 +6,11 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added an Apps section App Store backed by Docker Hub search, allowing users
+  to find images and install Docker containers from HomeStart with optional
+  port, environment, volume, and restart-policy settings.
+- Added `features.docker_app_store` so the Docker Hub installer can be disabled
+  independently from the rest of the Apps UI.
 - Fixed per-process CPU usage reporting so HomeStart no longer divides `ps`
   CPU percentages by the number of CPU cores, which made active processes show
   as `0.0%` on multi-core systems.

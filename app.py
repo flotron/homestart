@@ -22,7 +22,7 @@ import yaml
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -62,6 +62,7 @@ DEFAULT_CONFIG = {
         "file_operations": True,
         "file_mounts": True,
         "app_uninstall": True,
+        "docker_app_store": True,
     },
     "updates": {
         "github_repo": "flotron/homestart",
@@ -2130,6 +2131,156 @@ def docker_action(name, action):
     return {"ok": True, "container": docker_name, "action": action, "message": output}
 
 
+def docker_app_store_enabled():
+    features = load_config_file().get("features", {})
+    return features.get("docker_app_store", True) and features.get("docker_actions", True)
+
+
+def dockerhub_search(query, limit=12):
+    if not docker_app_store_enabled():
+        raise ValueError("Docker app store is disabled")
+
+    query = str(query or "").strip()
+    if len(query) < 2:
+        return {"ok": True, "results": []}
+    try:
+        limit = max(1, min(25, int(limit)))
+    except (TypeError, ValueError):
+        limit = 12
+
+    url = "https://hub.docker.com/v2/search/repositories/?" + urlencode(
+        {
+            "query": query,
+            "page_size": limit,
+        }
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "HomeStart/1.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise ValueError(f"Could not search Docker Hub: {error}") from error
+
+    results = []
+    for item in payload.get("results", []):
+        name = str(item.get("repo_name") or "").strip()
+        if not name:
+            continue
+        results.append(
+            {
+                "name": name,
+                "image": name,
+                "description": item.get("short_description") or "",
+                "stars": item.get("star_count") or 0,
+                "pulls": item.get("pull_count") or 0,
+                "official": bool(item.get("is_official")),
+                "automated": bool(item.get("is_automated")),
+            }
+        )
+    return {"ok": True, "results": results}
+
+
+def normalize_docker_image(image):
+    image = str(image or "").strip()
+    if not image:
+        raise ValueError("Docker image is required")
+    if len(image) > 200:
+        raise ValueError("Docker image is too long")
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$", image):
+        raise ValueError("Docker image contains invalid characters")
+    if ".." in image or image.startswith(("-", "/")):
+        raise ValueError("Docker image is invalid")
+    return image
+
+
+def normalize_container_port(value):
+    port = str(value or "").strip()
+    if not port:
+        return ""
+    if not port.isdigit():
+        raise ValueError("Ports must be numeric")
+    number = int(port)
+    if number < 1 or number > 65535:
+        raise ValueError("Ports must be between 1 and 65535")
+    return str(number)
+
+
+def safe_env_assignment(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if "\x00" in value or "\n" in value or "=" not in value:
+        raise ValueError("Environment variables must use KEY=value")
+    key, raw = value.split("=", 1)
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        raise ValueError(f"Invalid environment variable name: {key}")
+    if len(raw) > 2048:
+        raise ValueError(f"Environment variable {key} is too long")
+    return f"{key}={raw}"
+
+
+def safe_volume_mapping(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if "\x00" in value or "\n" in value:
+        raise ValueError("Volume mappings must be one per line")
+    parts = value.split(":")
+    if len(parts) not in {2, 3}:
+        raise ValueError("Volumes must use /host/path:/container/path[:ro]")
+    host_path, container_path = parts[0], parts[1]
+    mode = parts[2] if len(parts) == 3 else ""
+    if not host_path.startswith("/") or not container_path.startswith("/"):
+        raise ValueError("Volume paths must be absolute")
+    if mode and mode not in {"ro", "rw"}:
+        raise ValueError("Volume mode must be ro or rw")
+    return value
+
+
+def docker_store_install(payload):
+    if not docker_app_store_enabled():
+        raise ValueError("Docker app store is disabled")
+
+    image = normalize_docker_image(payload.get("image", ""))
+    container_name = normalize_docker_name(payload.get("name") or image.rsplit("/", 1)[-1].split(":", 1)[0])
+    host_port = normalize_container_port(payload.get("host_port"))
+    container_port = normalize_container_port(payload.get("container_port"))
+    restart_policy = str(payload.get("restart_policy") or "unless-stopped").strip()
+    if restart_policy not in {"no", "always", "unless-stopped", "on-failure"}:
+        raise ValueError("Invalid restart policy")
+    if docker_container_exists(container_name):
+        raise ValueError(f"A Docker container named {container_name} already exists")
+
+    env_values = [safe_env_assignment(item) for item in payload.get("env", []) if str(item or "").strip()]
+    volume_values = [safe_volume_mapping(item) for item in payload.get("volumes", []) if str(item or "").strip()]
+
+    run_docker_command(["pull", image], timeout=600)
+
+    command = ["run", "-d", "--name", container_name, "--restart", restart_policy]
+    if host_port and container_port:
+        command.extend(["-p", f"{host_port}:{container_port}"])
+    for value in env_values:
+        command.extend(["-e", value])
+    for value in volume_values:
+        command.extend(["-v", value])
+    command.append(image)
+
+    container_id = run_docker_command(command, timeout=120).strip()
+    return {
+        "ok": True,
+        "container": container_name,
+        "container_id": container_id[:12],
+        "image": image,
+        "message": f"Installed {container_name} from {image}",
+    }
+
+
 def configured_app(name):
     target = normalized_name(name)
     for app in load_config():
@@ -2810,6 +2961,14 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
+        if route == "/api/store/search":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(dockerhub_search(query.get("query", [""])[0], query.get("limit", ["12"])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/status":
             self.send_json(status_payload())
             return
@@ -2915,6 +3074,15 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_json(save_custom_app_icon(payload))
             except (json.JSONDecodeError, ValueError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/store/install":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(docker_store_install(payload))
+            except (json.JSONDecodeError, ValueError, subprocess.SubprocessError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
