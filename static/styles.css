@@ -556,6 +556,10 @@ button:disabled {
   color: #fb7185;
 }
 
+.actions .uninstall.inactive {
+  opacity: 0.55;
+}
+
 .open[aria-disabled="true"] {
   pointer-events: none;
   opacity: 0.45;

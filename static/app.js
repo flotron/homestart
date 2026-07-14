@@ -109,8 +109,14 @@ function buttonLabel(action) {
 }
 
 async function runAppAction(app, action) {
-  if (action === "uninstall" && !state.features.app_uninstall) return;
-  if (action !== "uninstall" && !state.features.docker_actions) return;
+  if (action === "uninstall" && !state.features.app_uninstall) {
+    window.alert("App uninstall is disabled in HomeStart settings.");
+    return;
+  }
+  if (action !== "uninstall" && !state.features.docker_actions) {
+    window.alert("Docker actions are disabled in HomeStart settings.");
+    return;
+  }
 
   const label = buttonLabel(action);
   if (action === "uninstall") {
@@ -124,14 +130,28 @@ async function runAppAction(app, action) {
     if (!confirmed) return;
   }
 
-  const response = await fetch("/api/apps/action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ docker_name: app.docker_name, app_name: app.name, action }),
-  });
-  const result = await response.json();
-  if (!response.ok || !result.ok) {
-    window.alert(result.error || `Could not ${label} ${app.name}`);
+  const busyButton = document.querySelector(`[data-action-key="${app.action_key || ""}-${action}"]`);
+  if (busyButton) {
+    busyButton.disabled = true;
+    busyButton.textContent = action === "uninstall" ? "Removing..." : "Working...";
+  }
+
+  let result = {};
+  try {
+    const response = await fetch("/api/apps/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docker_name: app.docker_name, app_name: app.name, action }),
+    });
+    result = await response.json();
+    if (!response.ok || !result.ok) {
+      window.alert(result.error || `Could not ${label} ${app.name}`);
+      await load();
+      return;
+    }
+  } catch (error) {
+    window.alert(error.message || `Could not ${label} ${app.name}`);
+    await load();
     return;
   }
 
@@ -139,6 +159,7 @@ async function runAppAction(app, action) {
   await loadStatus();
   if (action === "uninstall") {
     window.alert(result.message || `${app.name} was uninstalled.`);
+    window.setTimeout(() => load().catch(console.error), 900);
   }
 }
 
@@ -160,6 +181,7 @@ function render() {
     const stop = node.querySelector(".stop");
     const restart = node.querySelector(".restart");
     const uninstall = node.querySelector(".uninstall");
+    app.action_key = app.icon_key || normalize(`${app.name}-${app.docker_name || ""}`);
 
     title.textContent = app.name || "App";
     icon.dataset.fallback = (app.name || "?").slice(0, 1).toUpperCase();
@@ -205,6 +227,8 @@ function render() {
     }
 
     if (app.docker_name && state.features.docker_actions) {
+      stop.dataset.actionKey = `${app.action_key}-stop`;
+      restart.dataset.actionKey = `${app.action_key}-restart`;
       stop.addEventListener("click", () => runAppAction(app, "stop"));
       restart.addEventListener("click", () => runAppAction(app, "restart"));
     } else {
@@ -214,11 +238,19 @@ function render() {
       restart.title = "This app has no linked Docker container";
     }
 
+    uninstall.dataset.actionKey = `${app.action_key}-uninstall`;
+    uninstall.addEventListener("click", () => {
+      if (app.uninstallable && state.features.app_uninstall) {
+        runAppAction(app, "uninstall");
+        return;
+      }
+      window.alert(app.uninstall_reason || "This app cannot be uninstalled from HomeStart.");
+    });
     if (app.uninstallable && state.features.app_uninstall) {
-      uninstall.addEventListener("click", () => runAppAction(app, "uninstall"));
       uninstall.title = app.uninstall_reason || "Uninstall this app";
     } else {
-      uninstall.disabled = true;
+      uninstall.classList.add("inactive");
+      uninstall.setAttribute("aria-disabled", "true");
       uninstall.title = app.uninstall_reason || "This app cannot be uninstalled from HomeStart";
     }
 

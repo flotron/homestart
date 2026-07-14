@@ -371,6 +371,25 @@ def docker_inspect(container_name):
     return data
 
 
+def docker_container_diagnostics(container_name):
+    data = docker_inspect(container_name)
+    if not data:
+        return None
+    labels = data.get("Config", {}).get("Labels") or {}
+    restart_policy = data.get("HostConfig", {}).get("RestartPolicy") or {}
+    state = data.get("State") or {}
+    return {
+        "id": str(data.get("Id") or "")[:12],
+        "name": str(data.get("Name") or "").lstrip("/"),
+        "image": data.get("Config", {}).get("Image") or data.get("Image") or "",
+        "state": state.get("Status") or "",
+        "running": bool(state.get("Running")),
+        "restart_policy": restart_policy.get("Name") or "",
+        "compose_project": labels.get("com.docker.compose.project", ""),
+        "compose_service": labels.get("com.docker.compose.service", ""),
+    }
+
+
 def docker_host_mode_ports(container_name):
     data = docker_inspect(container_name)
     if not data:
@@ -2062,16 +2081,34 @@ def app_action(payload):
     docker_name = str(docker_name or "").strip()
     if docker_name:
         docker_name = normalize_docker_name(docker_name)
-        if not docker_container_exists(docker_name):
+        before = docker_container_diagnostics(docker_name)
+        if not before:
             raise ValueError("Docker container was not found")
         output = run_docker_command(["rm", "-f", docker_name], timeout=90)
-        if docker_container_exists(docker_name):
-            raise ValueError("Docker reported success, but the container still exists")
+        time.sleep(0.6)
+        after = docker_container_diagnostics(docker_name)
+        if after:
+            if after.get("id") != before.get("id"):
+                raise ValueError(
+                    "Container was removed, but another container with the same name appeared. "
+                    "Check an external supervisor such as Docker Compose, systemd, or an auto-update service."
+                )
+            raise ValueError("Docker reported success, but the same container still exists")
+        details = []
+        if before.get("restart_policy"):
+            details.append(f"restart policy: {before['restart_policy']}")
+        if before.get("compose_project") or before.get("compose_service"):
+            details.append(
+                "compose: "
+                + "/".join(item for item in [before.get("compose_project"), before.get("compose_service")] if item)
+            )
+        suffix = f" ({', '.join(details)})" if details else ""
         return {
             "ok": True,
             "container": docker_name,
+            "container_id": before.get("id"),
             "action": action,
-            "message": output or "Container removed. Docker images and volumes were preserved.",
+            "message": (output or f"Container {docker_name} removed") + f". Images and volumes were preserved.{suffix}",
         }
 
     app = configured_app(payload.get("app_name", ""))
