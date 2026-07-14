@@ -258,7 +258,7 @@ button:disabled {
   display: grid;
   gap: 12px;
   padding: 14px;
-  min-height: 188px;
+  min-height: 206px;
   border: 1px solid rgb(148 163 184 / 0.18);
   border-radius: 8px;
   background: rgb(15 23 32 / 0.78);
@@ -266,7 +266,7 @@ button:disabled {
 
 .store-card-head {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: 52px minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -279,29 +279,61 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 17px;
+  font-size: 18px;
 }
 
 .store-card p {
   display: -webkit-box;
-  min-height: 40px;
+  min-height: 54px;
   overflow: hidden;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.35;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
 }
 
 .store-icon {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid rgb(56 189 248 / 0.25);
+  background: linear-gradient(180deg, rgb(56 189 248 / 0.16), rgb(14 165 233 / 0.08));
+  color: #06131d;
+  font-weight: 900;
+}
+
+.store-icon img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.store-icon.fallback::before {
+  content: attr(data-fallback);
+  display: grid;
+  width: 34px;
+  height: 34px;
   place-items: center;
   border-radius: 8px;
   background: linear-gradient(180deg, #38bdf8, #0ea5e9);
   color: #06131d;
-  font-weight: 900;
+}
+
+.store-icon.fallback img {
+  display: none;
+}
+
+.store-namespace {
+  display: block;
+  margin: 2px 0 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .store-meta {

@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Improved Docker Hub App Store results with visual icons, namespace/repository
+  labels, automated/official badges, richer cards, and local relevance sorting
+  so stronger image-name matches appear before weak description matches.
 - Added an Apps section App Store backed by Docker Hub search, allowing users
   to find images and install Docker containers from HomeStart with optional
   port, environment, volume, and restart-policy settings.

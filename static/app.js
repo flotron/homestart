@@ -313,20 +313,36 @@ function renderStoreResult(item) {
   node.className = "store-card";
   node.innerHTML = `
     <div class="store-card-head">
-      <span class="store-icon"></span>
+      <span class="store-icon"><img alt="" /></span>
       <div>
         <h3></h3>
+        <span class="store-namespace"></span>
         <p></p>
       </div>
     </div>
     <div class="store-meta"></div>
     <button type="button">Install</button>
   `;
-  node.querySelector(".store-icon").textContent = (item.name || "?").slice(0, 1).toUpperCase();
-  node.querySelector("h3").textContent = item.name;
+  const icon = node.querySelector(".store-icon");
+  const iconImage = node.querySelector(".store-icon img");
+  icon.dataset.fallback = item.icon_label || (item.name || "?").slice(0, 1).toUpperCase();
+  if (item.icon_url) {
+    iconImage.src = item.icon_url;
+    iconImage.addEventListener("error", () => {
+      iconImage.removeAttribute("src");
+      icon.classList.add("fallback");
+    });
+  } else {
+    icon.classList.add("fallback");
+  }
+  node.querySelector("h3").textContent = item.repo || item.name;
+  node.querySelector(".store-namespace").textContent = item.namespace
+    ? `${item.namespace}/${item.repo || ""}`
+    : item.name;
   node.querySelector("p").textContent = item.description || "Docker Hub image";
   node.querySelector(".store-meta").textContent = [
     item.official ? "Official" : "",
+    item.automated ? "Automated" : "",
     `${compactNumber(item.stars)} stars`,
     `${compactNumber(item.pulls)} pulls`,
   ].filter(Boolean).join(" · ");

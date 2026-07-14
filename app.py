@@ -2167,23 +2167,99 @@ def dockerhub_search(query, limit=12):
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ValueError(f"Could not search Docker Hub: {error}") from error
 
+    query_tokens = [token for token in re.split(r"[^a-z0-9]+", query.lower()) if token]
+    compact_query = "".join(query_tokens)
     results = []
     for item in payload.get("results", []):
         name = str(item.get("repo_name") or "").strip()
         if not name:
             continue
+        namespace, _, repo = name.rpartition("/")
+        if not repo:
+            namespace = "library" if item.get("is_official") else ""
+            repo = name
+        description = item.get("short_description") or ""
+        icon_slug = dockerhub_icon_slug(name)
         results.append(
             {
                 "name": name,
                 "image": name,
-                "description": item.get("short_description") or "",
+                "namespace": namespace,
+                "repo": repo,
+                "description": description,
                 "stars": item.get("star_count") or 0,
                 "pulls": item.get("pull_count") or 0,
                 "official": bool(item.get("is_official")),
                 "automated": bool(item.get("is_automated")),
+                "icon_url": f"https://cdn.simpleicons.org/{icon_slug}/38bdf8" if icon_slug else "",
+                "icon_label": repo[:1].upper(),
+                "relevance": dockerhub_result_score(name, description, query_tokens, compact_query, item),
             }
         )
+    results.sort(key=lambda item: (item["relevance"], item["pulls"], item["stars"]), reverse=True)
     return {"ok": True, "results": results}
+
+
+def dockerhub_icon_slug(image):
+    _, _, repo = str(image or "").rpartition("/")
+    repo = repo or str(image or "")
+    repo = repo.split(":", 1)[0].lower()
+    aliases = {
+        "home-assistant": "homeassistant",
+        "homeassistant": "homeassistant",
+        "postgres": "postgresql",
+        "postgresql": "postgresql",
+        "mariadb": "mariadb",
+        "mongo": "mongodb",
+        "mongodb": "mongodb",
+        "node": "nodedotjs",
+        "nextcloud": "nextcloud",
+        "jellyfin": "jellyfin",
+        "grafana": "grafana",
+        "prometheus": "prometheus",
+        "nginx": "nginx",
+        "redis": "redis",
+        "mysql": "mysql",
+        "debian": "debian",
+        "ubuntu": "ubuntu",
+        "alpine": "alpinelinux",
+        "portainer": "portainer",
+        "pihole": "pihole",
+        "vaultwarden": "vaultwarden",
+        "forgejo": "forgejo",
+        "gitea": "gitea",
+        "immich": "immich",
+        "plex": "plex",
+        "sonarr": "sonarr",
+        "radarr": "radarr",
+        "qbittorrent": "qbittorrent",
+    }
+    if repo in aliases:
+        return aliases[repo]
+    slug = re.sub(r"[^a-z0-9]+", "", repo)
+    return slug[:48]
+
+
+def dockerhub_result_score(name, description, tokens, compact_query, item):
+    normalized_name = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+    normalized_description = re.sub(r"[^a-z0-9]+", "", str(description or "").lower())
+    score = 0
+    if compact_query and compact_query in normalized_name:
+        score += 1000
+    if compact_query and compact_query in normalized_description:
+        score += 120
+    for token in tokens:
+        if token in normalized_name:
+            score += 180
+        elif token in normalized_description:
+            score += 25
+    if item.get("is_official"):
+        score += 60
+    pulls = item.get("pull_count") or 0
+    stars = item.get("star_count") or 0
+    score += min(80, int(pulls).bit_length() * 4)
+    score += min(40, int(stars).bit_length() * 3)
+    return score
 
 
 def normalize_docker_image(image):
