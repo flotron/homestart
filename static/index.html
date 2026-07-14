@@ -33,24 +33,36 @@
 
           <section class="monitor" aria-live="polite">
             <article class="metric">
-              <div>
-                <p>CPU</p>
-                <strong id="cpu-value">--</strong>
+              <div class="metric-head">
+                <span class="metric-icon cpu-icon" aria-hidden="true"></span>
+                <div>
+                  <p>CPU</p>
+                  <strong id="cpu-value">--</strong>
+                </div>
               </div>
+              <div class="metric-ring" id="cpu-ring" aria-hidden="true"></div>
               <div class="meter"><span id="cpu-bar"></span></div>
             </article>
             <article class="metric">
-              <div>
-                <p>Memory</p>
-                <strong id="memory-value">--</strong>
+              <div class="metric-head">
+                <span class="metric-icon ram-icon" aria-hidden="true"></span>
+                <div>
+                  <p>Memory</p>
+                  <strong id="memory-value">--</strong>
+                </div>
               </div>
+              <div class="metric-ring" id="memory-ring" aria-hidden="true"></div>
               <div class="meter"><span id="memory-bar"></span></div>
             </article>
             <article class="metric">
-              <div>
-                <p>GPU</p>
-                <strong id="gpu-value">--</strong>
+              <div class="metric-head">
+                <span class="metric-icon gpu-icon" aria-hidden="true"></span>
+                <div>
+                  <p>GPU</p>
+                  <strong id="gpu-value">--</strong>
+                </div>
               </div>
+              <div class="metric-ring" id="gpu-ring" aria-hidden="true"></div>
               <div class="meter"><span id="gpu-bar"></span></div>
               <small id="gpu-detail">Detecting</small>
               <div id="gpu-list" class="gpu-list"></div>
@@ -270,7 +282,13 @@
     <template id="app-card">
       <article class="card">
         <div class="card-head">
-          <div class="icon"><img alt="" /></div>
+          <div class="icon-wrap">
+            <div class="icon"><img alt="" /></div>
+            <label class="icon-upload" title="Upload custom icon">
+              <span>+</span>
+              <input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" />
+            </label>
+          </div>
           <div>
             <h2></h2>
             <p class="kind"></p>

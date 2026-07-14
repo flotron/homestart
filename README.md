@@ -14,6 +14,7 @@ and apply local updates without bundling private runtime data.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
 - File Browser: Windows-like navigation, full path address bar, mounted disk/USB shortcuts, upload by drag and drop, copy/paste, delete, and new folder.
+- Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through netplan and update uploads.
 - Supported apps:
   - Ookla Speedtest CLI wrapper with stored local history.
@@ -130,6 +131,7 @@ Updates preserve:
 - `config.json`
 - `data/`
 - local Speedtest history
+- custom app icons
 - local backups and runtime files
 
 The updater validates package metadata and rejects installer archives.
@@ -153,6 +155,10 @@ Use `Apps` to discover and control services:
 
 Docker images and volumes are preserved by uninstall.
 
+If HomeStart cannot find a useful app icon, hover the app card and use the
+small icon upload control. Uploaded icons are local runtime data and are not
+included in release packages.
+
 ### File Browser
 
 Use `File Browser` like a lightweight OS explorer:
@@ -163,7 +169,7 @@ Use `File Browser` like a lightweight OS explorer:
 - copy an item and paste it into another folder
 - create folders
 - open/view files inline when the browser supports them
-- delete with strong confirmation
+- delete with a simple confirmation prompt
 
 All file operations are constrained by `file_roots`.
 

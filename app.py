@@ -2,6 +2,7 @@
 import json
 import base64
 import binascii
+import hashlib
 import ipaddress
 import mimetypes
 import os
@@ -29,6 +30,8 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
+APP_ICON_DIR = DATA_DIR / "app-icons"
+APP_ICON_INDEX = DATA_DIR / "app-icons.json"
 CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
 CPU_PREV = None
 CPU_DETAIL_PREV = None
@@ -414,6 +417,14 @@ def docker_map(host):
 
 
 def with_icon(app):
+    key = app_icon_key(app)
+    app["icon_key"] = key
+    custom_icon = custom_app_icon_url(key)
+    if custom_icon:
+        app["icon_url"] = custom_icon
+        app["custom_icon"] = True
+        return app
+
     if app.get("icon_url") or not app.get("url"):
         return app
     if urlparse(app.get("url", "")).scheme not in {"http", "https"}:
@@ -508,6 +519,142 @@ def get_icon(app_url):
 
     ICON_CACHE[app_url] = None
     return None
+
+
+def app_icon_key(app):
+    identity = [
+        str(app.get("docker_name") or ""),
+        str(app.get("name") or ""),
+        str(app.get("url") or ""),
+        str(app.get("image") or ""),
+    ]
+    raw = "\n".join(identity).strip().lower()
+    if not raw:
+        raw = str(uuid.uuid4())
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def load_app_icon_index():
+    try:
+        data = json.loads(APP_ICON_INDEX.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_app_icon_index(data):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    APP_ICON_INDEX.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def custom_app_icon(app_key):
+    item = load_app_icon_index().get(str(app_key or ""))
+    if not isinstance(item, dict):
+        return None
+    filename = item.get("filename", "")
+    if not re.fullmatch(r"[a-f0-9]{24}\.(png|jpg|jpeg|gif|webp|svg)", filename):
+        return None
+    path = APP_ICON_DIR / filename
+    if not path.is_file():
+        return None
+    return {
+        "path": path,
+        "content_type": item.get("content_type", "image/png"),
+    }
+
+
+def custom_app_icon_url(app_key):
+    return f"/api/apps/icon?key={quote(str(app_key), safe='')}" if custom_app_icon(app_key) else ""
+
+
+def serve_custom_app_icon(handler, app_key, include_body=True):
+    icon = custom_app_icon(app_key)
+    if not icon:
+        handler.send_response(HTTPStatus.NOT_FOUND)
+        handler.end_headers()
+        return
+
+    body = icon["path"].read_bytes() if include_body else b""
+    stat = icon["path"].stat()
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", icon["content_type"])
+    handler.send_header("Content-Length", str(stat.st_size if include_body else 0))
+    handler.send_header("Cache-Control", "no-store")
+    handler.skip_default_cache = True
+    handler.end_headers()
+    if include_body:
+        handler.wfile.write(body)
+
+
+def save_custom_app_icon(payload):
+    app_key = str(payload.get("app_key") or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{24}", app_key):
+        raise ValueError("Invalid app icon key")
+
+    name = str(payload.get("filename") or "icon").lower()
+    content = str(payload.get("content") or "")
+    header = ""
+    if content.startswith("data:") and "," in content:
+        header, content = content.split(",", 1)
+
+    content_type = ""
+    match = re.match(r"data:([^;]+);base64", header)
+    if match:
+        content_type = match.group(1).lower()
+
+    extension_map = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+    }
+    extension = extension_map.get(content_type)
+    if extension is None:
+        suffix = Path(name).suffix.lower().lstrip(".")
+        if suffix in {"png", "jpg", "jpeg", "gif", "webp", "svg"}:
+            extension = "jpg" if suffix == "jpeg" else suffix
+            content_type = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "gif": "image/gif",
+                "webp": "image/webp",
+                "svg": "image/svg+xml",
+            }[extension]
+
+    if extension is None:
+        raise ValueError("Icon must be a PNG, JPG, GIF, WebP, or SVG image")
+
+    try:
+        body = base64.b64decode(content, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("Invalid icon encoding") from error
+
+    if len(body) > 512 * 1024:
+        raise ValueError("Icon is too large")
+    if extension == "svg" and b"<script" in body.lower():
+        raise ValueError("SVG icons cannot contain scripts")
+
+    APP_ICON_DIR.mkdir(parents=True, exist_ok=True)
+    index = load_app_icon_index()
+    old = custom_app_icon(app_key)
+    if old:
+        old["path"].unlink(missing_ok=True)
+
+    filename = f"{app_key}.{extension}"
+    path = APP_ICON_DIR / filename
+    path.write_bytes(body)
+    index[app_key] = {
+        "filename": filename,
+        "content_type": content_type,
+        "original_name": name[:120],
+        "updated_at": int(time.time()),
+    }
+    save_app_icon_index(index)
+    return {
+        "ok": True,
+        "icon_url": custom_app_icon_url(app_key),
+    }
 
 
 def serve_icon(handler, app_url, include_body=True):
@@ -2392,6 +2539,11 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             serve_icon(self, query.get("url", [""])[0])
             return
 
+        if route == "/api/apps/icon":
+            query = parse_qs(parsed.query)
+            serve_custom_app_icon(self, query.get("key", [""])[0])
+            return
+
         if route == "/api/system":
             self.send_json(system_payload())
             return
@@ -2440,6 +2592,11 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/icon":
             query = parse_qs(parsed.query)
             serve_icon(self, query.get("url", [""])[0], include_body=False)
+            return
+
+        if parsed.path == "/api/apps/icon":
+            query = parse_qs(parsed.query)
+            serve_custom_app_icon(self, query.get("key", [""])[0], include_body=False)
             return
 
         if parsed.path == "/api/file/open":
@@ -2539,6 +2696,15 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_json(file_action(payload))
             except (json.JSONDecodeError, ValueError, OSError, PermissionError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/apps/icon":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(save_custom_app_icon(payload))
+            except (json.JSONDecodeError, ValueError, OSError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 

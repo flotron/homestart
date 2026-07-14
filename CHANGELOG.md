@@ -4,6 +4,19 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260714-1200
+
+- Simplified File Browser delete confirmation to a normal confirmation prompt
+  instead of requiring the file or folder name to be typed.
+- Improved the File Browser sidebar so the current path is shown as an expanded
+  tree branch under the active root.
+- Added a broader liquid-glass visual treatment across dashboard panels,
+  resource sections, app cards, and File Browser surfaces.
+- Added visual CPU, RAM, and GPU icons plus circular usage indicators to the
+  Status summary cards.
+- Added custom app icon uploads from app cards; uploaded icons are stored under
+  local `data/` and are excluded from distributable packages.
+
 ## 20260713-1820
 
 - Fixed File Browser empty Locations view showing "File operations are

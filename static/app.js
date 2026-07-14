@@ -26,10 +26,13 @@ const refresh = document.querySelector("#refresh");
 const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
 const cpuBar = document.querySelector("#cpu-bar");
+const cpuRing = document.querySelector("#cpu-ring");
 const memoryValue = document.querySelector("#memory-value");
 const memoryBar = document.querySelector("#memory-bar");
+const memoryRing = document.querySelector("#memory-ring");
 const gpuValue = document.querySelector("#gpu-value");
 const gpuBar = document.querySelector("#gpu-bar");
+const gpuRing = document.querySelector("#gpu-ring");
 const gpuDetail = document.querySelector("#gpu-detail");
 const gpuList = document.querySelector("#gpu-list");
 const disksNode = document.querySelector("#disks");
@@ -137,6 +140,8 @@ function render() {
     const card = node.querySelector(".card");
     const icon = node.querySelector(".icon");
     const iconImage = node.querySelector(".icon img");
+    const iconUpload = node.querySelector(".icon-upload");
+    const iconUploadInput = node.querySelector(".icon-upload input");
     const title = node.querySelector("h2");
     const kind = node.querySelector(".kind");
     const badges = node.querySelector(".badges");
@@ -154,10 +159,17 @@ function render() {
       iconImage.addEventListener("error", () => {
         iconImage.removeAttribute("src");
         icon.classList.add("fallback");
+        iconUpload.classList.add("visible");
       });
     } else {
       icon.classList.add("fallback");
+      iconUpload.classList.add("visible");
     }
+    if (app.custom_icon) {
+      iconUpload.classList.add("visible");
+      iconUpload.title = "Replace custom icon";
+    }
+    iconUploadInput.addEventListener("change", () => uploadAppIcon(app, iconUploadInput));
     kind.textContent = app.kind || app.app_type_label || "Service";
     badges.replaceChildren(...(app.tags || [app.app_type_label]).filter(Boolean).map((tag) => {
       const badge = document.createElement("span");
@@ -215,6 +227,12 @@ function setMeter(valueNode, barNode, value) {
   barNode.style.width = `${percent}%`;
 }
 
+function setMeterVisual(valueNode, barNode, ringNode, value) {
+  setMeter(valueNode, barNode, value);
+  const percent = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  ringNode?.style.setProperty("--value", `${percent}%`);
+}
+
 function renderGpuList(gpus = []) {
   gpuList.replaceChildren();
   gpus.forEach((gpu) => {
@@ -232,17 +250,17 @@ async function loadSystem() {
   const response = await fetch("/api/system", { cache: "no-store" });
   const data = await response.json();
 
-  setMeter(cpuValue, cpuBar, data.cpu?.percent);
-  setMeter(memoryValue, memoryBar, data.memory?.percent);
+  setMeterVisual(cpuValue, cpuBar, cpuRing, data.cpu?.percent);
+  setMeterVisual(memoryValue, memoryBar, memoryRing, data.memory?.percent);
 
   if (data.gpu?.available) {
-    setMeter(gpuValue, gpuBar, data.gpu.percent);
+    setMeterVisual(gpuValue, gpuBar, gpuRing, data.gpu.percent);
     const freq = data.gpu.frequency_mhz ? `${data.gpu.frequency_mhz} MHz` : "no frequency";
     const count = data.gpu.count > 1 ? `${data.gpu.count} GPUs · ` : "";
     gpuDetail.textContent = data.gpu.percent === null ? `${count}${freq} · calculating usage` : `${count}${freq}`;
     renderGpuList(data.gpus || []);
   } else {
-    setMeter(gpuValue, gpuBar, null);
+    setMeterVisual(gpuValue, gpuBar, gpuRing, null);
     gpuDetail.textContent = "No counter available";
     renderGpuList([]);
   }
@@ -359,6 +377,27 @@ async function loadStatus() {
   const data = await response.json();
 
   disksNode.replaceChildren(...(data.disks || []).map(renderDisk));
+}
+
+async function uploadAppIcon(app, input) {
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !app.icon_key) return;
+  try {
+    const content = await readFileAsDataUrl(file);
+    const response = await fetch("/api/apps/icon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_key: app.icon_key, filename: file.name, content }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || "Could not save icon");
+    }
+    await load();
+  } catch (error) {
+    window.alert(error.message);
+  }
 }
 
 async function loadResources() {
@@ -509,9 +548,8 @@ async function pasteFileEntry() {
 
 async function deleteFileEntry(entry) {
   if (!state.features.file_operations) return;
-  const confirmText = `DELETE ${entry.name}`;
-  const entered = window.prompt(`This will permanently delete "${entry.name}". Type "${confirmText}" to continue.`);
-  if (entered !== confirmText) return;
+  const confirmed = window.confirm(`Delete "${entry.name}" permanently?`);
+  if (!confirmed) return;
   try {
     await runFileAction({ action: "delete", path: entry.path });
   } catch (error) {
@@ -521,6 +559,8 @@ async function deleteFileEntry(entry) {
 
 function renderRoots() {
   fileRoots.replaceChildren(...state.fileRoots.map((root) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "root-tree";
     const node = document.createElement("button");
     node.type = "button";
     node.className = "root-entry";
@@ -535,10 +575,45 @@ function renderRoots() {
     node.querySelector("small").textContent = root;
     if (state.filePath === root || state.filePath.startsWith(`${root}/`)) {
       node.classList.add("active");
+      wrapper.classList.add("active");
     }
     node.addEventListener("click", () => loadFiles(root));
-    return node;
+    wrapper.appendChild(node);
+    renderCurrentPathBranch(wrapper, root);
+    return wrapper;
   }));
+}
+
+function rootContainsPath(root, path) {
+  if (!path) return false;
+  if (root === "/") return path === "/" || path.startsWith("/");
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function renderCurrentPathBranch(wrapper, root) {
+  if (!rootContainsPath(root, state.filePath) || state.filePath === root || !state.filePath) return;
+  const rootParts = root.split("/").filter(Boolean);
+  const pathParts = state.filePath.split("/").filter(Boolean);
+  const branchParts = pathParts.slice(root === "/" ? 0 : rootParts.length);
+  if (!branchParts.length) return;
+
+  const branch = document.createElement("div");
+  branch.className = "root-branch";
+  let current = root === "/" ? "" : root;
+  branchParts.forEach((part, index) => {
+    current = root === "/" ? `${current}/${part}` : `${current}/${part}`;
+    const child = document.createElement("button");
+    child.type = "button";
+    child.className = "root-child";
+    child.style.setProperty("--depth", index);
+    child.innerHTML = "<span></span><strong></strong>";
+    child.querySelector("strong").textContent = part;
+    child.classList.toggle("current", current === state.filePath);
+    const target = current;
+    child.addEventListener("click", () => loadFiles(target));
+    branch.appendChild(child);
+  });
+  wrapper.appendChild(branch);
 }
 
 function renderNetworkInterface(item) {
