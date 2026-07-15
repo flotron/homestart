@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added stop/restart actions for native service apps such as Tailscale, backed
+  by a whitelist of known/configured systemd units and controlled by
+  `features.native_service_actions`.
 - Added native service app discovery for installed system services that do not
   expose a local web UI, starting with Tailscale/tailscaled so it appears in
   Apps as a Native Linux service when installed.

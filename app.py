@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "services": ["homestart.service", "docker.service"],
     "features": {
         "docker_actions": True,
+        "native_service_actions": True,
         "file_browser": True,
         "file_operations": True,
         "file_mounts": True,
@@ -739,6 +740,7 @@ def native_service_apps():
                 "tags": list(dict.fromkeys(["Native Linux", *(definition.get("tags") or [])])),
                 "available": active in {"active", "unknown"} or command_installed,
                 "service_name": service,
+                "service_actionable": bool(service_data and service),
             }
         )
         apply_uninstall_metadata(app)
@@ -2180,6 +2182,60 @@ def docker_action(name, action):
     return {"ok": True, "container": docker_name, "action": action, "message": output}
 
 
+def native_service_actions_enabled():
+    return load_config_file().get("features", {}).get("native_service_actions", True)
+
+
+def allowed_native_service_units():
+    units = {definition.get("service", "") for definition in NATIVE_SERVICE_APP_DEFINITIONS}
+    for app in load_config():
+        if normalize_app_type(app.get("app_type") or app.get("type")) == "native":
+            units.add(str(app.get("service_name") or "").strip())
+    return {unit for unit in units if unit}
+
+
+def normalize_service_unit(unit):
+    unit = str(unit or "").strip()
+    if not unit:
+        raise ValueError("Service name is required")
+    if not unit.endswith(".service"):
+        unit = f"{unit}.service"
+    if not re.match(r"^[A-Za-z0-9_.@:-]+\.service$", unit):
+        raise ValueError("Invalid service name")
+    if unit not in allowed_native_service_units():
+        raise ValueError("This service is not allowed for HomeStart actions")
+    return unit
+
+
+def service_action(unit, action):
+    if not native_service_actions_enabled():
+        raise ValueError("Native service actions are disabled")
+    if action not in {"stop", "restart"}:
+        raise ValueError("Invalid action")
+
+    unit = normalize_service_unit(unit)
+    try:
+        output = subprocess.check_output(
+            ["systemctl", action, unit],
+            text=True,
+            timeout=30,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        raise ValueError((error.output or "").strip() or f"Could not {action} {unit}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"Timed out trying to {action} {unit}") from error
+
+    status = service_status(unit) or {}
+    return {
+        "ok": True,
+        "service": unit,
+        "action": action,
+        "status": status,
+        "message": output or f"{unit} {action} requested",
+    }
+
+
 def docker_app_store_enabled():
     features = load_config_file().get("features", {})
     return features.get("docker_app_store", True) and features.get("docker_actions", True)
@@ -2418,9 +2474,14 @@ def configured_app(name):
 def app_action(payload):
     action = payload.get("action", "")
     docker_name = payload.get("docker_name", "")
+    service_name = payload.get("service_name", "")
 
     if action in {"stop", "restart"}:
-        return docker_action(docker_name, action)
+        if docker_name:
+            return docker_action(docker_name, action)
+        if service_name:
+            return service_action(service_name, action)
+        raise ValueError("No Docker container or native service is linked to this app")
 
     if action != "uninstall":
         raise ValueError("Invalid action")

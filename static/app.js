@@ -137,8 +137,12 @@ async function runAppAction(app, action) {
     window.alert("App uninstall is disabled in HomeStart settings.");
     return;
   }
-  if (action !== "uninstall" && !state.features.docker_actions) {
+  if (action !== "uninstall" && app.docker_name && !state.features.docker_actions) {
     window.alert("Docker actions are disabled in HomeStart settings.");
+    return;
+  }
+  if (action !== "uninstall" && app.service_name && !state.features.native_service_actions) {
+    window.alert("Native service actions are disabled in HomeStart settings.");
     return;
   }
 
@@ -169,7 +173,12 @@ async function runAppAction(app, action) {
     const response = await fetch("/api/apps/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ docker_name: app.docker_name, app_name: app.name, action }),
+      body: JSON.stringify({
+        docker_name: app.docker_name,
+        service_name: app.service_name,
+        app_name: app.name,
+        action,
+      }),
     });
     result = await response.json();
     if (!response.ok || !result.ok) {
@@ -209,7 +218,7 @@ function render() {
     const stop = node.querySelector(".stop");
     const restart = node.querySelector(".restart");
     const uninstall = node.querySelector(".uninstall");
-    app.action_key = app.icon_key || normalize(`${app.name}-${app.docker_name || ""}`);
+    app.action_key = app.icon_key || normalize(`${app.name}-${app.docker_name || app.service_name || ""}`);
 
     title.textContent = app.name || "App";
     icon.dataset.fallback = (app.name || "?").slice(0, 1).toUpperCase();
@@ -254,7 +263,10 @@ function render() {
       card.classList.add("disabled");
     }
 
-    if (app.docker_name && state.features.docker_actions) {
+    if (
+      (app.docker_name && state.features.docker_actions)
+      || (app.service_actionable && app.service_name && state.features.native_service_actions)
+    ) {
       stop.dataset.actionKey = `${app.action_key}-stop`;
       restart.dataset.actionKey = `${app.action_key}-restart`;
       stop.addEventListener("click", () => runAppAction(app, "stop"));
@@ -262,8 +274,8 @@ function render() {
     } else {
       stop.disabled = true;
       restart.disabled = true;
-      stop.title = "This app has no linked Docker container";
-      restart.title = "This app has no linked Docker container";
+      stop.title = "This app has no linked Docker container or native service";
+      restart.title = "This app has no linked Docker container or native service";
     }
 
     uninstall.dataset.actionKey = `${app.action_key}-uninstall`;

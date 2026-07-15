@@ -6,6 +6,7 @@
   },
   "features": {
     "docker_actions": true,
+    "native_service_actions": true,
     "file_browser": true,
     "file_operations": true,
     "file_mounts": true,
