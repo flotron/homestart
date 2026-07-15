@@ -6,6 +6,9 @@ packaging, security, and migration notes.
 
 ## 20260714-1200
 
+- Added native service app discovery for installed system services that do not
+  expose a local web UI, starting with Tailscale/tailscaled so it appears in
+  Apps as a Native Linux service when installed.
 - Added a Docker Hub link to each App Store result so users can inspect the
   image page before installing it.
 - Improved Docker Hub App Store results with visual icons, namespace/repository

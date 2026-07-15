@@ -46,6 +46,17 @@ APP_NAME_ALIASES = {
     "q bittorrent": "qbittorrent",
     "plex": "plex",
 }
+NATIVE_SERVICE_APP_DEFINITIONS = [
+    {
+        "name": "Tailscale",
+        "service": "tailscaled.service",
+        "command": "tailscale",
+        "description": "Mesh VPN service",
+        "tags": ["Native Linux", "Network"],
+        "url_command": ["tailscale", "ip", "-4"],
+        "url_template": "https://login.tailscale.com/admin/machines",
+    },
+]
 DEFAULT_CONFIG = {
     "dashboard": {
         "title": "HomeStart",
@@ -692,6 +703,44 @@ def native_web_apps(host):
         if key in seen:
             continue
         seen.add(key)
+        apply_uninstall_metadata(app)
+        apps.append(app)
+    return apps
+
+
+def native_service_apps():
+    apps = []
+    for definition in NATIVE_SERVICE_APP_DEFINITIONS:
+        service = definition.get("service", "")
+        command = definition.get("command", "")
+        service_data = service_status(service) if service else None
+        command_installed = command_available(command) if command else False
+        if not service_data and not command_installed:
+            continue
+
+        active = (service_data or {}).get("active", "unknown")
+        sub = (service_data or {}).get("sub", "")
+        status = "Installed"
+        if service_data:
+            status = f"{active}{f' ({sub})' if sub else ''}"
+        elif command_installed:
+            status = "Command installed"
+
+        app = with_icon(
+            {
+                "name": definition.get("name") or service or command,
+                "kind": "Native Linux",
+                "status": status,
+                "description": definition.get("description", ""),
+                "url": definition.get("url_template", ""),
+                "source": "native-service-discovery",
+                "app_type": "native",
+                "app_type_label": "Native Linux",
+                "tags": list(dict.fromkeys(["Native Linux", *(definition.get("tags") or [])])),
+                "available": active in {"active", "unknown"} or command_installed,
+                "service_name": service,
+            }
+        )
         apply_uninstall_metadata(app)
         apps.append(app)
     return apps
@@ -2532,6 +2581,7 @@ def app_payload():
     containers = docker_map(host)
     configured = load_config()
     discovered_native = native_web_apps(host)
+    discovered_services = native_service_apps()
 
     for app in configured:
         container = containers.get(normalized_name(app.get("name", "")))
@@ -2561,11 +2611,17 @@ def app_payload():
         for app in discovered_native
         if normalized_name(app.get("name", "")) not in seen and str(app.get("url") or "") not in seen_urls
     ]
+    seen.update(normalized_name(app.get("name", "")) for app in [*discovered, *native_discovered])
+    service_discovered = [
+        app
+        for app in discovered_services
+        if normalized_name(app.get("name", "")) not in seen
+    ]
 
     return {
         "dashboard": load_config_file().get("dashboard", {}),
         "host": host,
-        "apps": configured + discovered + native_discovered,
+        "apps": configured + discovered + native_discovered + service_discovered,
         "features": load_config_file().get("features", {}),
     }
 
