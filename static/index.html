@@ -103,11 +103,11 @@
           <section class="status-panel bandwidth-panel">
             <div class="section-head"><div><h2>Network bandwidth</h2><p id="bandwidth-subtitle">Traffic through the default network interface.</p></div></div>
             <div class="live-bandwidth" aria-live="polite">
-              <article class="download"><span>Live download</span><strong id="live-download">--</strong></article>
-              <article class="upload"><span>Live upload</span><strong id="live-upload">--</strong></article>
+              <article class="download"><span>Live download</span><strong id="live-download">--</strong><small id="live-download-top">Top now: waiting for data…</small></article>
+              <article class="upload"><span>Live upload</span><strong id="live-upload">--</strong><small id="live-upload-top">Top now: waiting for data…</small></article>
               <div class="live-bandwidth-status"><span class="live-dot"></span><strong id="live-interface">Detecting interface</strong><small id="live-updated">Waiting for live data…</small></div>
             </div>
-            <p class="sampling-note">Live values update every second. History stores one sample every 30 seconds and retains seven days.</p>
+            <p class="sampling-note">Live values and top Docker consumers update every 2 seconds. Network history retains seven days.</p>
             <div id="bandwidth-stats" class="history-stats bandwidth-stats"></div>
             <div id="bandwidth-chart" class="history-chart" aria-label="Network bandwidth chart"></div>
             <div id="bandwidth-time-axis" class="history-time-axis"></div>
