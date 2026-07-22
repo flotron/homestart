@@ -1,5 +1,7 @@
 ﻿# HomeStart
 
+[![Checks](https://github.com/flotron/homestart/actions/workflows/checks.yml/badge.svg)](https://github.com/flotron/homestart/actions/workflows/checks.yml)
+
 HomeStart is a small self-hosted dashboard for homelabs, local servers, and
 small office machines. It is written with the Python standard library plus
 PyYAML, and is designed to run as a `systemd` service on a trusted LAN.
@@ -10,11 +12,14 @@ and apply local or GitHub release updates without bundling private runtime data.
 
 ## Features
 
-- System status: CPU, memory, GPU usage, physical disks, processes, and Docker resources.
+- Professional overview with health state, local alerts, seven days of CPU, memory, and GPU history, physical disks, processes, and Docker resources.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
-- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts with icons, upload by drag and drop, copy/paste, delete, and new folder.
+- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste, rename, recoverable trash, downloads, folder ZIPs, and new folders.
+- Docker logs and curated installation templates with suggested ports and volumes.
+- Configurable theme, accent, density, dashboard labels, and alert thresholds.
+- Local backups for configuration, history, and custom icons, with a safety backup before restore.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through netplan, GitHub release update checks, and update uploads.
 - Supported apps:
@@ -251,5 +256,9 @@ Before publishing a release:
 2. Run the package builder.
 3. Confirm archives do not include local data.
 4. Test install/update flow on a clean machine or VM when possible.
+
+Automated checks and tagged release packaging are defined under
+`.github/workflows/`. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more detail.
 
 
