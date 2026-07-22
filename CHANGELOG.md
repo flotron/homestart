@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-0030
+
+- Changed live network polling and background network history sampling to every
+  2 seconds.
+- Added a dedicated raw network history table with seven-day retention, while
+  keeping CPU, memory, and GPU sampling at 30 seconds.
+- Downsampled long ranges to at most about 1,200 displayed points so day-scale
+  charts remain responsive without discarding the stored two-second samples.
+
 ## 20260722-2345
 
 - Hid recommended App Store entries when a container already uses the same
