@@ -126,6 +126,11 @@ const bandwidthStats = document.querySelector("#bandwidth-stats");
 const bandwidthMeta = document.querySelector("#bandwidth-meta");
 const bandwidthTimeAxis = document.querySelector("#bandwidth-time-axis");
 const bandwidthSubtitle = document.querySelector("#bandwidth-subtitle");
+const liveDownload = document.querySelector("#live-download");
+const liveUpload = document.querySelector("#live-upload");
+const liveInterface = document.querySelector("#live-interface");
+const liveUpdated = document.querySelector("#live-updated");
+let liveNetworkLoading = false;
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
 const logsContent = document.querySelector("#logs-content");
@@ -281,6 +286,24 @@ function renderBandwidthHistory(points, hours, interfaceName) {
     return node;
   }));
   bandwidthMeta.textContent = `${points.length} samples · adaptive scale up to ${formatRate(verticalMax)}`;
+}
+
+async function loadLiveNetwork() {
+  if (liveNetworkLoading || document.hidden) return;
+  liveNetworkLoading = true;
+  try {
+    const response = await fetch(`/api/network/live?time=${Date.now()}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Live network unavailable");
+    liveDownload.textContent = formatRate(data.rx_bps);
+    liveUpload.textContent = formatRate(data.tx_bps);
+    liveInterface.textContent = data.interface || "Default interface";
+    liveUpdated.textContent = `Live · updated ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
+  } catch (error) {
+    liveUpdated.textContent = error.message;
+  } finally {
+    liveNetworkLoading = false;
+  }
 }
 
 async function loadHistory() {
@@ -1742,6 +1765,7 @@ loadSystem().catch(console.error);
 loadStatus().catch(console.error);
 loadOverview().catch(console.error);
 loadHistory().catch(console.error);
+loadLiveNetwork().catch(console.error);
 loadGeneralSettings().catch(console.error);
 loadBackups().catch(console.error);
 loadTrash().catch(console.error);
@@ -1750,6 +1774,8 @@ setInterval(() => loadSystem().catch(console.error), 2000);
 setInterval(() => loadStatus().catch(console.error), 15000);
 setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
+setInterval(() => loadLiveNetwork().catch(console.error), 1000);
+setInterval(() => loadHistory().catch(console.error), 30000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
