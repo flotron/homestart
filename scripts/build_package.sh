@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${1:-$(date +%Y%m%d-%H%M%S)}"
+VERSION="${1:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
 WORK_DIR="$(mktemp -d)"
 PACKAGE_DIR="$WORK_DIR/homestart"
 INSTALLER_DIR="$WORK_DIR/installer/homestart"
@@ -16,12 +16,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$PACKAGE_DIR/static" "$PACKAGE_DIR/scripts" "$DIST_DIR"
+mkdir -p "$PACKAGE_DIR/static" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/docs" "$DIST_DIR"
 
 install -m 0755 "$ROOT_DIR/app.py" "$PACKAGE_DIR/app.py"
 install -m 0644 "$ROOT_DIR/config.example.json" "$PACKAGE_DIR/config.example.json"
 install -m 0644 "$ROOT_DIR/README.md" "$PACKAGE_DIR/README.md"
 install -m 0644 "$ROOT_DIR/CHANGELOG.md" "$PACKAGE_DIR/CHANGELOG.md"
+install -m 0644 "$ROOT_DIR/CONTRIBUTING.md" "$PACKAGE_DIR/CONTRIBUTING.md"
+install -m 0644 "$ROOT_DIR/VERSION" "$PACKAGE_DIR/VERSION"
+install -m 0644 "$ROOT_DIR/docs/ARCHITECTURE.md" "$PACKAGE_DIR/docs/ARCHITECTURE.md"
 install -m 0644 "$ROOT_DIR/homestart.service.example" "$PACKAGE_DIR/homestart.service.example"
 install -m 0755 "$ROOT_DIR/install.sh" "$PACKAGE_DIR/install.sh"
 cp -a "$ROOT_DIR/static/." "$PACKAGE_DIR/static/"
