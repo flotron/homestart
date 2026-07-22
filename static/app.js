@@ -18,6 +18,7 @@ const state = {
   processSort: { key: "cpu_percent", direction: "desc" },
   storeResults: [],
   selectedStoreApp: null,
+  favorites: new Set(JSON.parse(localStorage.getItem("homestart-favorites") || "[]")),
 };
 
 const navItems = [...document.querySelectorAll(".nav-item")];
@@ -102,6 +103,102 @@ const updateApply = document.querySelector("#update-apply");
 const githubUpdateStatus = document.querySelector("#github-update-status");
 const githubUpdateCheck = document.querySelector("#github-update-check");
 const githubUpdateApply = document.querySelector("#github-update-apply");
+const healthBanner = document.querySelector("#health-banner");
+const healthLabel = document.querySelector("#health-label");
+const healthHost = document.querySelector("#health-host");
+const healthUptime = document.querySelector("#health-uptime");
+const summaryContainers = document.querySelector("#summary-containers");
+const summaryServices = document.querySelector("#summary-services");
+const summaryAlerts = document.querySelector("#summary-alerts");
+const summaryNetwork = document.querySelector("#summary-network");
+const summaryTemperature = document.querySelector("#summary-temperature");
+const overviewAlerts = document.querySelector("#overview-alerts");
+const historyChart = document.querySelector("#history-chart");
+const historyRange = document.querySelector("#history-range");
+const logsDialog = document.querySelector("#logs-dialog");
+const logsTitle = document.querySelector("#logs-title");
+const logsContent = document.querySelector("#logs-content");
+const logsClose = document.querySelector("#logs-close");
+const toastRegion = document.querySelector("#toast-region");
+const generalSettingsForm = document.querySelector("#general-settings-form");
+const backupCreate = document.querySelector("#backup-create");
+const backupList = document.querySelector("#backup-list");
+const trashList = document.querySelector("#trash-list");
+
+function toast(message, kind = "info") {
+  const node = document.createElement("div");
+  node.className = `toast ${kind}`;
+  node.textContent = message;
+  toastRegion.appendChild(node);
+  requestAnimationFrame(() => node.classList.add("visible"));
+  setTimeout(() => { node.classList.remove("visible"); setTimeout(() => node.remove(), 250); }, 3600);
+}
+
+async function showDockerLogs(app) {
+  logsTitle.textContent = `${app.name} logs`;
+  logsContent.textContent = "Loading…";
+  logsDialog.showModal();
+  try {
+    const response = await fetch(`/api/docker/logs?name=${encodeURIComponent(app.docker_name)}&tail=500`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Could not load logs");
+    logsContent.textContent = data.logs || "No log output.";
+    logsContent.scrollTop = logsContent.scrollHeight;
+  } catch (error) { logsContent.textContent = error.message; }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+  })[character]);
+}
+
+function chartPath(points, key, width, height) {
+  const values = points.map((item) => item[key]);
+  return values.map((value, index) => {
+    if (value === null || value === undefined) return "";
+    const x = points.length <= 1 ? 0 : index / (points.length - 1) * width;
+    const y = height - Math.max(0, Math.min(100, value)) / 100 * height;
+    return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).filter(Boolean).join(" ");
+}
+
+function renderHistory(points) {
+  if (!historyChart) return;
+  if (!points.length) {
+    historyChart.innerHTML = '<div class="empty-state">History will appear after HomeStart collects a few samples.</div>';
+    return;
+  }
+  const width = 800;
+  const height = 220;
+  historyChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="System usage history">
+    <g class="chart-grid"><path d="M0 0H${width} M0 ${height / 2}H${width} M0 ${height}H${width}" /></g>
+    <path class="chart-line cpu" d="${chartPath(points, "cpu", width, height)}" />
+    <path class="chart-line memory" d="${chartPath(points, "memory", width, height)}" />
+    <path class="chart-line gpu" d="${chartPath(points, "gpu", width, height)}" />
+  </svg>`;
+}
+
+async function loadHistory() {
+  const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
+  const data = await response.json();
+  renderHistory(data.points || []);
+}
+
+async function loadOverview() {
+  const response = await fetch("/api/overview", { cache: "no-store" });
+  const data = await response.json();
+  healthBanner.dataset.health = data.health || "healthy";
+  healthLabel.textContent = data.health === "healthy" ? "All systems operational" : data.health === "critical" ? "Action required" : "System needs attention";
+  healthHost.textContent = data.hostname || "--";
+  healthUptime.textContent = `Uptime ${data.uptime || "--"}`;
+  summaryContainers.textContent = `${data.summary.containers_running}/${data.summary.containers_total} running`;
+  summaryServices.textContent = `${data.summary.services_ok}/${data.summary.services_total} active`;
+  summaryAlerts.textContent = String(data.alerts.length);
+  summaryNetwork.textContent = `↓ ${data.system.network?.rx_label || "--"} · ↑ ${data.system.network?.tx_label || "--"}`;
+  summaryTemperature.textContent = data.system.temperature?.available ? `${data.system.temperature.celsius} °C` : "Not detected";
+  overviewAlerts.innerHTML = data.alerts.length ? data.alerts.map((alert) => `<div class="alert-item ${escapeHtml(alert.level)}"><span></span><div><strong>${escapeHtml(alert.title)}</strong><p>${escapeHtml(alert.detail)}</p></div></div>`).join("") : '<div class="empty-state success">No active alerts. Everything looks good.</div>';
+}
 
 function normalize(value) {
   return String(value || "").toLowerCase();
@@ -202,7 +299,7 @@ async function runAppAction(app, action) {
 
 function render() {
   appsNode.replaceChildren();
-  state.apps.filter(matches).forEach((app) => {
+  state.apps.filter(matches).sort((a, b) => Number(state.favorites.has(b.icon_key)) - Number(state.favorites.has(a.icon_key)) || String(a.name).localeCompare(String(b.name))).forEach((app) => {
     const node = template.content.cloneNode(true);
     const card = node.querySelector(".card");
     const icon = node.querySelector(".icon");
@@ -211,14 +308,24 @@ function render() {
     const iconUploadInput = node.querySelector(".icon-upload input");
     const title = node.querySelector("h2");
     const kind = node.querySelector(".kind");
+    const favorite = node.querySelector(".favorite");
     const badges = node.querySelector(".badges");
     const description = node.querySelector(".description");
     const meta = node.querySelector(".meta");
     const open = node.querySelector(".open");
     const stop = node.querySelector(".stop");
     const restart = node.querySelector(".restart");
+    const logs = node.querySelector(".logs");
     const uninstall = node.querySelector(".uninstall");
     app.action_key = app.icon_key || normalize(`${app.name}-${app.docker_name || app.service_name || ""}`);
+    const favoriteKey = app.icon_key || app.action_key;
+    favorite.textContent = state.favorites.has(favoriteKey) ? "★" : "☆";
+    favorite.classList.toggle("active", state.favorites.has(favoriteKey));
+    favorite.addEventListener("click", () => {
+      state.favorites.has(favoriteKey) ? state.favorites.delete(favoriteKey) : state.favorites.add(favoriteKey);
+      localStorage.setItem("homestart-favorites", JSON.stringify([...state.favorites]));
+      render();
+    });
 
     title.textContent = app.name || "App";
     icon.dataset.fallback = (app.name || "?").slice(0, 1).toUpperCase();
@@ -277,6 +384,8 @@ function render() {
       stop.title = "This app has no linked Docker container or native service";
       restart.title = "This app has no linked Docker container or native service";
     }
+    if (app.docker_name) logs.addEventListener("click", () => showDockerLogs(app));
+    else { logs.disabled = true; logs.title = "Logs are available for Docker apps"; }
 
     uninstall.dataset.actionKey = `${app.action_key}-uninstall`;
     uninstall.addEventListener("click", () => {
@@ -403,12 +512,20 @@ function openStoreInstall(item) {
   storeInstallTitle.textContent = item.name;
   storeInstallImage.textContent = item.image;
   storeInstallName.value = suggestedContainerName(item.image);
-  storeInstallHostPort.value = "";
-  storeInstallContainerPort.value = "";
+  storeInstallHostPort.value = item.host_port || "";
+  storeInstallContainerPort.value = item.container_port || "";
   storeInstallEnv.value = "";
-  storeInstallVolumes.value = "";
+  storeInstallVolumes.value = item.volume || "";
   storeInstallRestart.value = "unless-stopped";
   storeInstallDialog.showModal();
+}
+
+async function loadStoreTemplates() {
+  storeStatus.textContent = "Recommended apps";
+  const response = await fetch("/api/store/templates", { cache: "no-store" });
+  const data = await response.json();
+  state.storeResults = (data.templates || []).map((item) => ({ ...item, repo: item.name, namespace: "HomeStart template", page_url: `https://hub.docker.com/search?q=${encodeURIComponent(item.image)}` }));
+  renderStoreResults();
 }
 
 async function installStoreApp(event) {
@@ -688,8 +805,10 @@ function renderFileEntry(entry) {
     <span class="file-modified"></span>
     <span class="file-actions">
       <button class="file-open" type="button"></button>
+      <button class="file-download" type="button">Download</button>
       <button class="file-copy" type="button">Copy</button>
-      <button class="file-delete" type="button">Delete</button>
+      <button class="file-rename" type="button">Rename</button>
+      <button class="file-delete" type="button">Trash</button>
     </span>
   `;
   node.querySelector(".file-icon").textContent = fileIcon(entry);
@@ -714,10 +833,13 @@ function renderFileEntry(entry) {
   };
   node.querySelector(".file-name").addEventListener("click", openEntry);
   node.querySelector(".file-open").addEventListener("click", openEntry);
+  node.querySelector(".file-download").addEventListener("click", () => { window.location.href = `/api/file/download?path=${encodeURIComponent(entry.path)}`; });
   node.querySelector(".file-copy").addEventListener("click", () => copyFileEntry(entry));
+  node.querySelector(".file-rename").addEventListener("click", () => renameFileEntry(entry));
   node.querySelector(".file-delete").addEventListener("click", () => deleteFileEntry(entry));
   if (!state.features.file_operations) {
     node.querySelector(".file-copy").disabled = true;
+    node.querySelector(".file-rename").disabled = true;
     node.querySelector(".file-delete").disabled = true;
   }
   return node;
@@ -830,13 +952,107 @@ async function pasteFileEntry() {
 
 async function deleteFileEntry(entry) {
   if (!state.features.file_operations) return;
-  const confirmed = window.confirm(`Delete "${entry.name}" permanently?`);
+  const confirmed = window.confirm(`Move "${entry.name}" to HomeStart trash?`);
   if (!confirmed) return;
   try {
     await runFileAction({ action: "delete", path: entry.path });
   } catch (error) {
     window.alert(error.message);
   }
+}
+
+async function renameFileEntry(entry) {
+  const name = window.prompt("New name", entry.name);
+  if (!name || name === entry.name) return;
+  try {
+    await runFileAction({ action: "rename", path: entry.path, name });
+    toast(`Renamed to ${name}`, "success");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function loadGeneralSettings() {
+  const response = await fetch("/api/settings/general", { cache: "no-store" });
+  const data = await response.json();
+  document.querySelector("#setting-title").value = data.dashboard?.title || "HomeStart";
+  document.querySelector("#setting-subtitle").value = data.dashboard?.subtitle || "Dashboard";
+  document.querySelector("#setting-accent").value = data.appearance?.accent || "#38bdf8";
+  document.querySelector("#setting-theme").value = data.appearance?.theme || "dark";
+  document.querySelector("#setting-density").value = data.appearance?.density || "comfortable";
+  document.querySelector("#setting-cpu-alert").value = data.alerts?.cpu_percent ?? 90;
+  document.querySelector("#setting-memory-alert").value = data.alerts?.memory_percent ?? 90;
+  document.querySelector("#setting-disk-alert").value = data.alerts?.disk_percent ?? 90;
+  document.querySelector("#setting-temperature-alert").value = data.alerts?.temperature_c ?? 85;
+  document.querySelector("#setting-backup-hours").value = data.backups?.automatic_interval_hours ?? 24;
+  document.documentElement.style.setProperty("--accent", data.appearance?.accent || "#38bdf8");
+  document.documentElement.dataset.theme = data.appearance?.theme || "dark";
+  document.body.dataset.density = data.appearance?.density || "comfortable";
+}
+
+async function saveGeneralSettings(event) {
+  event.preventDefault();
+  const payload = {
+    dashboard: { title: document.querySelector("#setting-title").value.trim(), subtitle: document.querySelector("#setting-subtitle").value.trim() },
+    appearance: { accent: document.querySelector("#setting-accent").value, theme: document.querySelector("#setting-theme").value, density: document.querySelector("#setting-density").value },
+    alerts: { cpu_percent: Number(document.querySelector("#setting-cpu-alert").value), memory_percent: Number(document.querySelector("#setting-memory-alert").value), disk_percent: Number(document.querySelector("#setting-disk-alert").value), temperature_c: Number(document.querySelector("#setting-temperature-alert").value) },
+    backups: { automatic_interval_hours: Number(document.querySelector("#setting-backup-hours").value) },
+  };
+  const response = await fetch("/api/settings/general", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const data = await response.json();
+  if (!response.ok || !data.ok) return toast(data.error || "Could not save settings", "error");
+  toast("Settings saved", "success");
+  await Promise.all([loadGeneralSettings(), loadSystem(), loadOverview()]);
+}
+
+async function loadBackups() {
+  const response = await fetch("/api/backups", { cache: "no-store" });
+  const data = await response.json();
+  backupList.replaceChildren();
+  if (!data.backups?.length) { backupList.innerHTML = '<div class="empty-state">No backups created yet.</div>'; return; }
+  data.backups.forEach((item) => {
+    const row = document.createElement("div"); row.className = "row-card";
+    row.innerHTML = `<div><strong>${escapeHtml(item.name)}</strong><p>${new Date(item.created_at * 1000).toLocaleString()} · ${(item.size / 1048576).toFixed(1)} MB</p></div><button type="button">Restore</button>`;
+    row.querySelector("button").addEventListener("click", () => restoreBackup(item.name));
+    backupList.appendChild(row);
+  });
+}
+
+async function restoreBackup(name) {
+  if (!window.confirm(`Restore ${name}? A safety backup will be created first.`)) return;
+  const response = await fetch("/api/backups/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  const data = await response.json();
+  if (!response.ok || !data.ok) return toast(data.error || "Restore failed", "error");
+  toast(data.message || "Backup restored", "success");
+  await Promise.all([loadGeneralSettings(), loadBackups(), loadSystem(), loadOverview()]);
+}
+
+async function createBackupFromUi() {
+  backupCreate.disabled = true;
+  try {
+    const response = await fetch("/api/backups/create", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Backup failed");
+    toast(`Backup ${data.name} created`, "success");
+    await loadBackups();
+  } catch (error) { toast(error.message, "error"); }
+  finally { backupCreate.disabled = false; }
+}
+
+async function loadTrash() {
+  const response = await fetch("/api/trash", { cache: "no-store" });
+  const data = await response.json();
+  trashList.replaceChildren();
+  if (!data.items?.length) { trashList.innerHTML = '<div class="empty-state">Trash is empty.</div>'; return; }
+  data.items.forEach((item) => {
+    const row = document.createElement("div"); row.className = "row-card";
+    row.innerHTML = `<div><strong>${escapeHtml(item.name)}</strong><p>${escapeHtml(item.original)} · ${new Date(item.deleted_at * 1000).toLocaleString()}</p></div><button type="button">Restore</button>`;
+    row.querySelector("button").addEventListener("click", async () => {
+      const response = await fetch("/api/trash/restore", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key:item.key}) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) return toast(result.error || "Restore failed", "error");
+      toast(`Restored to ${result.path}`, "success"); await loadTrash();
+    });
+    trashList.appendChild(row);
+  });
 }
 
 function renderRoots() {
@@ -1315,6 +1531,7 @@ refresh.addEventListener("click", load);
 openAppStore.addEventListener("click", () => {
   appStorePanel.hidden = false;
   storeSearch.focus();
+  loadStoreTemplates().catch((error) => { storeStatus.textContent = error.message; });
 });
 closeAppStore.addEventListener("click", () => {
   appStorePanel.hidden = true;
@@ -1377,7 +1594,17 @@ load().catch((error) => {
 });
 loadSystem().catch(console.error);
 loadStatus().catch(console.error);
+loadOverview().catch(console.error);
+loadHistory().catch(console.error);
+loadGeneralSettings().catch(console.error);
+loadBackups().catch(console.error);
+loadTrash().catch(console.error);
 loadFiles().catch(console.error);
 setInterval(() => loadSystem().catch(console.error), 2000);
 setInterval(() => loadStatus().catch(console.error), 15000);
+setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
+historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
+logsClose?.addEventListener("click", () => logsDialog.close());
+generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
+backupCreate?.addEventListener("click", createBackupFromUi);
