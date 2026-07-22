@@ -4,6 +4,16 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1830
+
+- Added a live network panel that updates download and upload every second,
+  including interface name and last update time.
+- Kept historical bandwidth independent: HomeStart still stores one 30-second
+  sample for seven days and refreshes the chart automatically every 30 seconds.
+- Separated live and historical network counters so one-second polling cannot
+  distort the consolidated history samples.
+- Live polling pauses while the browser tab is hidden to avoid needless work.
+
 ## 20260722-1700
 
 - Added an `Available data` history range that expands the samples to a readable

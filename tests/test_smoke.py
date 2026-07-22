@@ -97,6 +97,15 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(points[0]["temperature"], 48.0)
         self.assertEqual(self.app.metrics_history("auto")["hours"], "auto")
 
+    def test_live_and_history_network_counters_are_independent(self):
+        self.app.NETWORK_LIVE_PREV = None
+        self.app.NETWORK_HISTORY_PREV = None
+        self.app.network_payload("live")
+        self.assertIsNotNone(self.app.NETWORK_LIVE_PREV)
+        self.assertIsNone(self.app.NETWORK_HISTORY_PREV)
+        self.app.network_payload("history")
+        self.assertIsNotNone(self.app.NETWORK_HISTORY_PREV)
+
 
 if __name__ == "__main__":
     unittest.main()
