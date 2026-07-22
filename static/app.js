@@ -1355,8 +1355,13 @@ async function applyUpdate(event) {
       throw new Error(result.error || "Could not apply update");
     }
     updateStatus.textContent = `Update applied. ${result.changed?.length || 0} files changed. Backup: ${result.backup}. Restarting...`;
-    window.setTimeout(() => window.location.reload(), 3500);
+    waitForHomeStartRestart(updateStatus);
   } catch (error) {
+    if (error instanceof TypeError || /failed to fetch/i.test(error.message || "")) {
+      updateStatus.textContent = "Connection interrupted while HomeStart restarted. Waiting for the server…";
+      waitForHomeStartRestart(updateStatus);
+      return;
+    }
     updateStatus.textContent = error.message;
     updateApply.disabled = false;
   }
@@ -1410,13 +1415,36 @@ async function applyGithubUpdate() {
       return;
     }
     githubUpdateStatus.textContent = `Update applied from GitHub. ${result.changed?.length || 0} files changed. Restarting...`;
-    window.setTimeout(() => window.location.reload(), 3500);
+    waitForHomeStartRestart(githubUpdateStatus);
   } catch (error) {
+    if (error instanceof TypeError || /failed to fetch/i.test(error.message || "")) {
+      githubUpdateStatus.textContent = "Connection interrupted while HomeStart restarted. Waiting for the server…";
+      waitForHomeStartRestart(githubUpdateStatus);
+      return;
+    }
     githubUpdateStatus.textContent = error.message;
     githubUpdateApply.disabled = !state.githubUpdate?.update_available;
   } finally {
     githubUpdateCheck.disabled = false;
   }
+}
+
+async function waitForHomeStartRestart(statusNode) {
+  const deadline = Date.now() + 90000;
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`/health?restart=${Date.now()}`, { cache: "no-store" });
+      if (response.ok) {
+        statusNode.textContent = "HomeStart is back online. Reloading…";
+        window.setTimeout(() => window.location.reload(), 400);
+        return;
+      }
+    } catch { /* A temporary connection failure is expected during restart. */ }
+    statusNode.textContent = "HomeStart is restarting…";
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  statusNode.textContent = "HomeStart did not return automatically. Reload this page to check the service.";
 }
 
 async function loadFiles(path = "") {
