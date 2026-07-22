@@ -7,7 +7,10 @@ const state = {
   fileRoots: [],
   fileRootEntries: [],
   fileDriveEntries: [],
-  fileClipboard: null,
+  fileClipboard: (() => {
+    try { return JSON.parse(sessionStorage.getItem("homestart-file-clipboard") || "null"); }
+    catch { return null; }
+  })(),
   fileView: "grid",
   features: { file_operations: true },
   view: "status",
@@ -937,16 +940,29 @@ async function copyFileEntry(entry) {
     name: entry.name,
     type: entry.type,
   };
+  sessionStorage.setItem("homestart-file-clipboard", JSON.stringify(state.fileClipboard));
   updateFileControls();
-  loadFiles(state.filePath).catch(console.error);
+  document.querySelectorAll(".file-entry.copied").forEach((item) => item.classList.remove("copied"));
+  const matchingEntry = [...document.querySelectorAll(".file-entry")].find((item) => item.querySelector(".file-label")?.textContent === entry.name);
+  matchingEntry?.classList.add("copied");
+  fileDropStatus.textContent = `Copied ${entry.name}. Open the destination folder and press Paste.`;
+  toast(`${entry.name} copied`, "success");
 }
 
 async function pasteFileEntry() {
   if (!state.filePath || !state.fileClipboard || !state.features.file_operations) return;
+  const destination = state.filePath;
+  const clipboard = { ...state.fileClipboard };
+  filePaste.disabled = true;
+  filePaste.textContent = `Pasting ${clipboard.name}…`;
   try {
-    await runFileAction({ action: "copy", source: state.fileClipboard.path, destination: state.filePath });
+    const result = await postFileAction({ action: "copy", source: clipboard.path, destination });
+    await loadFiles(destination);
+    toast(result.message || `${clipboard.name} pasted`, "success");
   } catch (error) {
-    window.alert(error.message);
+    toast(error.message, "error");
+  } finally {
+    updateFileControls();
   }
 }
 
