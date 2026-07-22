@@ -125,6 +125,10 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.app.network_payload("history")
         self.assertIsNotNone(self.app.NETWORK_HISTORY_PREV)
 
+    def test_network_device_totals_exclude_loopback(self):
+        content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
+        self.assertEqual(self.app.network_device_totals(content), (3000, 900))
+
     def test_network_history_is_stored_separately_at_fine_resolution(self):
         self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
         now = int(__import__("time").time())

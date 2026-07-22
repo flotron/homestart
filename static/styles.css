@@ -150,6 +150,7 @@ body {
 .live-bandwidth { display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) minmax(220px,.8fr); gap:10px; margin:14px 0 8px; }
 .live-bandwidth article { display:grid; gap:5px; padding:15px; border:1px solid var(--glass-line); border-radius:12px; background:linear-gradient(135deg,rgb(255 255 255 / .04),var(--glass)); }
 .live-bandwidth article span { color:var(--muted); }.live-bandwidth article strong { font-size:26px; line-height:1; font-variant-numeric:tabular-nums; }
+.live-bandwidth article small { overflow:hidden; color:var(--muted); text-overflow:ellipsis; white-space:nowrap; }
 .live-bandwidth article.download { border-left:3px solid #22d3ee; }.live-bandwidth article.upload { border-left:3px solid #fb923c; }
 .live-bandwidth-status { display:grid; grid-template-columns:auto 1fr; align-content:center; gap:4px 8px; padding:12px; border:1px solid var(--glass-line); border-radius:12px; background:var(--glass); }
 .live-bandwidth-status small { grid-column:2; color:var(--muted); }.live-dot { width:8px; height:8px; margin-top:5px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); }

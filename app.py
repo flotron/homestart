@@ -46,6 +46,11 @@ NETWORK_LIVE_PREV = None
 INSTALL_JOBS = {}
 INSTALL_JOBS_LOCK = threading.Lock()
 NETWORK_HISTORY_PREV = None
+CONTAINER_NETWORK_PREV = {}
+CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
+CONTAINER_NETWORK_TARGETS = []
+CONTAINER_NETWORK_TARGETS_AT = 0
+CONTAINER_NETWORK_LOCK = threading.Lock()
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -1465,6 +1470,7 @@ def network_metrics_sampler():
         try:
             network = network_payload("history")
             record_network_metric({"timestamp": int(time.time()), **network})
+            update_container_network_top()
         except Exception as error:
             print(f"HomeStart network sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
@@ -1512,6 +1518,81 @@ def overview_payload():
     }
 
 
+def network_device_totals(content):
+    received = transmitted = 0
+    for line in str(content or "").splitlines()[2:]:
+        if ":" not in line:
+            continue
+        interface, values = line.split(":", 1)
+        if interface.strip() == "lo":
+            continue
+        fields = values.split()
+        if len(fields) >= 9:
+            received += int(fields[0])
+            transmitted += int(fields[8])
+    return received, transmitted
+
+
+def container_network_targets():
+    global CONTAINER_NETWORK_TARGETS, CONTAINER_NETWORK_TARGETS_AT
+    now = time.monotonic()
+    if now - CONTAINER_NETWORK_TARGETS_AT < 15:
+        return CONTAINER_NETWORK_TARGETS
+    try:
+        ids = run_docker_command(["ps", "-q"], timeout=10).split()
+        if not ids:
+            targets = []
+        else:
+            details = json.loads(run_docker_command(["inspect", *ids], timeout=15))
+            targets = []
+            seen_namespaces = set()
+            for item in details:
+                pid = int((item.get("State") or {}).get("Pid") or 0)
+                network_mode = str((item.get("HostConfig") or {}).get("NetworkMode") or "")
+                namespace = str((item.get("NetworkSettings") or {}).get("SandboxKey") or pid)
+                if pid <= 0 or network_mode == "host" or namespace in seen_namespaces:
+                    continue
+                seen_namespaces.add(namespace)
+                labels = (item.get("Config") or {}).get("Labels") or {}
+                name = (labels.get("com.docker.compose.service") or str(item.get("Name") or "").lstrip("/") or item.get("Id", "")[:12])
+                targets.append({"key": namespace, "pid": pid, "name": name})
+    except (ValueError, OSError, json.JSONDecodeError, subprocess.SubprocessError):
+        targets = []
+    CONTAINER_NETWORK_TARGETS = targets
+    CONTAINER_NETWORK_TARGETS_AT = now
+    return targets
+
+
+def update_container_network_top():
+    global CONTAINER_NETWORK_PREV, CONTAINER_NETWORK_TOP
+    now = time.monotonic()
+    samples = []
+    current = {}
+    for target in container_network_targets():
+        try:
+            content = Path(f"/proc/{target['pid']}/net/dev").read_text(encoding="utf-8")
+            received, transmitted = network_device_totals(content)
+        except (OSError, ValueError, IndexError):
+            continue
+        current[target["key"]] = (now, received, transmitted)
+        previous = CONTAINER_NETWORK_PREV.get(target["key"])
+        if not previous:
+            continue
+        elapsed = max(.001, now - previous[0])
+        samples.append({"name": target["name"], "kind": "container",
+                        "rx_bps": max(0, round((received - previous[1]) / elapsed)),
+                        "tx_bps": max(0, round((transmitted - previous[2]) / elapsed))})
+    download = max(samples, key=lambda item: item["rx_bps"], default=None)
+    upload = max(samples, key=lambda item: item["tx_bps"], default=None)
+    if download and not download["rx_bps"]:
+        download = None
+    if upload and not upload["tx_bps"]:
+        upload = None
+    with CONTAINER_NETWORK_LOCK:
+        CONTAINER_NETWORK_PREV = current
+        CONTAINER_NETWORK_TOP = {"download": download, "upload": upload}
+
+
 def network_payload(channel="live"):
     global NETWORK_LIVE_PREV, NETWORK_HISTORY_PREV
     received = transmitted = 0
@@ -1538,7 +1619,11 @@ def network_payload(channel="live"):
         NETWORK_HISTORY_PREV = (now, received, transmitted)
     else:
         NETWORK_LIVE_PREV = (now, received, transmitted)
-    return {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+    result = {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+    if channel == "live":
+        with CONTAINER_NETWORK_LOCK:
+            result["top_consumers"] = dict(CONTAINER_NETWORK_TOP)
+    return result
 
 
 def default_network_interface():
