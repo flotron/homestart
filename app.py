@@ -3284,7 +3284,9 @@ def restart_service_later():
     def restart():
       subprocess.run(["systemctl", "restart", "homestart.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    threading.Timer(1.0, restart).start()
+    # Leave enough time for ThreadingHTTPServer to flush the successful update
+    # response before systemd terminates this process.
+    threading.Timer(3.0, restart).start()
 
 
 def apply_update_package(filename, content):
@@ -3762,6 +3764,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
 
 def main():
