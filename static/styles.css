@@ -131,11 +131,17 @@ body {
 .history-chart { min-height: 220px; margin-top: 14px; border-radius: 10px; overflow: hidden; background: linear-gradient(180deg, rgb(255 255 255 / .025), transparent); }
 .history-chart svg { display: block; width: 100%; height: 220px; overflow: visible; }
 .chart-grid path { fill: none; stroke: rgb(148 163 184 / .16); stroke-width: 1; }
+.chart-axis text { fill:var(--muted); font-size:11px; }
 .chart-line { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .chart-line.cpu { stroke: #38bdf8; }.chart-line.memory { stroke: #a78bfa; }.chart-line.gpu { stroke: #41d19b; }
 .chart-legend { display: flex; gap: 18px; color: var(--muted); font-size: 12px; }
 .chart-legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; margin: 0 7px 3px 0; border-radius: 3px; }
 .chart-legend .cpu::before { background:#38bdf8; }.chart-legend .memory::before { background:#a78bfa; }.chart-legend .gpu::before { background:#41d19b; }
+.history-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0 8px; }
+.history-stat { display:grid; grid-template-columns:1fr auto; gap:3px 10px; padding:10px 12px; border:1px solid var(--glass-line); border-radius:10px; background:rgb(255 255 255 / .025); }
+.history-stat span { color:var(--muted); }.history-stat strong { font-size:18px; }.history-stat small { grid-column:1/-1; color:var(--muted); }
+.history-stat.cpu { border-top-color:#38bdf8; }.history-stat.memory { border-top-color:#a78bfa; }.history-stat.gpu { border-top-color:#41d19b; }
+.history-meta { margin:0 0 10px; color:var(--muted); font-size:12px; }
 .alert-item { display:flex; gap:10px; padding:11px; border:1px solid var(--glass-line); border-radius:10px; background:rgb(255 255 255 / .025); }
 .alert-item > span { width:8px; height:8px; margin-top:5px; flex:none; border-radius:50%; background:#38bdf8; }
 .alert-item.warning > span { background:#facc15; }.alert-item.critical > span { background:#f87171; }
@@ -2068,6 +2074,7 @@ button:disabled {
   .health-banner { grid-template-columns: 1fr; gap: 6px; }
   .overview-summary, .overview-grid { grid-template-columns: 1fr; }
   .settings-grid-form { grid-template-columns:1fr; }
+  .history-stats { grid-template-columns:1fr; }
 
   .resource-summary {
     grid-template-columns: 1fr;
