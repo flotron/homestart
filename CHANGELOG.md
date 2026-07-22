@@ -4,6 +4,25 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1200
+
+- Added a professional Overview with system health, host summary, local alerts,
+  and responsive CPU, memory, and GPU history charts.
+- Added seven-day metric retention in the existing local SQLite database.
+- Added configurable alert thresholds, dashboard title, subtitle, accent color,
+  theme, and interface density in Settings.
+- Added Docker log viewing from app cards and favorite app ordering.
+- Added curated Docker templates with suggested ports and persistent volumes.
+- Added local HomeStart backups for configuration, history, and custom icons,
+  including restore with an automatic pre-restore safety backup.
+- Changed File Browser deletion to a recoverable HomeStart trash operation.
+- Added file and folder rename, direct downloads, and ZIP downloads for folders.
+- Added toast notifications for new workflows and improved responsive Overview
+  layouts for phones.
+- Added automated tests, package validation, GitHub Actions checks, and tagged
+  release generation with installer and online-update assets.
+- Added contributor and architecture documentation and expanded the README.
+
 ## 20260714-1200
 
 - Added stop/restart actions for native service apps such as Tailscale, backed
