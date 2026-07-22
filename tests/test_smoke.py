@@ -98,6 +98,20 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(self.app.dockerhub_repository_from_url("https://hub.docker.com/_/nginx"), "nginx")
         self.assertEqual(self.app.dockerhub_repository_from_url("https://example.com/r/kasmweb/workspaces"), "")
 
+    def test_verified_store_results_are_prioritized(self):
+        results = [
+            {"name": "community/app", "official": False, "relevance": 100, "pulls": 1000, "stars": 10},
+            {"name": "trusted/app", "official": False, "relevance": 10, "pulls": 10, "stars": 1},
+        ]
+        checks = {
+            "community/app": {"verified": False, "verification_label": "", "trusted_rank": 0},
+            "trusted/app": {"verified": True, "verification_label": "Verified Publisher", "trusted_rank": 2},
+        }
+        with mock.patch.object(self.app, "dockerhub_verification", side_effect=lambda name, official=False: checks[name]):
+            self.app.add_dockerhub_verification(results)
+        results.sort(key=lambda item: (item.get("trusted_rank", 0), item["relevance"]), reverse=True)
+        self.assertEqual(results[0]["name"], "trusted/app")
+
     def test_metric_history_is_stored_without_browser_state(self):
         self.app.DB_PATH = Path(self.temp.name) / "metrics.db"
         self.app.METRIC_LAST_WRITE = 0
