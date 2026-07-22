@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1530
+
+- Fixed performance history depending on an open browser: HomeStart now samples
+  CPU, memory, GPU, network, and temperature every 30 seconds in a background
+  worker even when nobody has the dashboard open.
+- Reworked the performance chart to use real timestamps and break lines across
+  collection gaps instead of stretching a few samples across the full period.
+- Added an adaptive vertical scale so low but meaningful server activity is no
+  longer flattened against a fixed 0–100% axis.
+- Added current, average, and maximum values plus sample count and capture range.
+
 ## 20260722-1400
 
 - Fixed online updates sometimes showing `Failed to fetch` when systemd

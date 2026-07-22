@@ -1400,6 +1400,18 @@ def metrics_history(hours=24):
     return {"ok": True, "hours": hours, "points": [dict(row) for row in rows]}
 
 
+def metrics_sampler():
+    """Collect history independently from browser activity."""
+    while True:
+        started = time.monotonic()
+        try:
+            system_payload()
+        except Exception as error:
+            print(f"HomeStart metrics sampler: {error}", flush=True)
+        elapsed = time.monotonic() - started
+        time.sleep(max(1, 30 - elapsed))
+
+
 def overview_payload():
     maybe_scheduled_backup()
     system = system_payload()
@@ -3769,6 +3781,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", "80"))
+    threading.Thread(target=metrics_sampler, name="homestart-metrics", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), HomeStartHandler)
     print(f"HomeStart listening on 0.0.0.0:{port}", flush=True)
     server.serve_forever()

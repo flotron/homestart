@@ -79,6 +79,23 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(copied.name, "manual - copy.pdf")
         self.assertEqual(copied.read_bytes(), b"pdf")
 
+    def test_metric_history_is_stored_without_browser_state(self):
+        self.app.DB_PATH = Path(self.temp.name) / "metrics.db"
+        self.app.METRIC_LAST_WRITE = 0
+        now = int(__import__("time").time())
+        self.app.record_system_metric({
+            "timestamp": now,
+            "cpu": {"percent": 7.5},
+            "memory": {"percent": 22.0},
+            "gpu": {"percent": 3.0},
+            "network": {"rx_bps": 1000, "tx_bps": 500},
+            "temperature": {"celsius": 48.0},
+        })
+        points = self.app.metrics_history(1)["points"]
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["cpu"], 7.5)
+        self.assertEqual(points[0]["temperature"], 48.0)
+
 
 if __name__ == "__main__":
     unittest.main()
