@@ -42,7 +42,8 @@ CPU_PREV = None
 CPU_DETAIL_PREV = None
 GPU_PREV = None
 METRIC_LAST_WRITE = 0
-NETWORK_PREV = None
+NETWORK_LIVE_PREV = None
+NETWORK_HISTORY_PREV = None
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -1313,7 +1314,7 @@ def summarize_gpus(gpus):
     }
 
 
-def system_payload():
+def system_payload(network_channel="live"):
     gpus = nvidia_gpus_payload()
     if gpus:
         gpu = summarize_gpus(gpus)
@@ -1336,10 +1337,9 @@ def system_payload():
         "memory": memory_payload(),
         "gpu": gpu,
         "gpus": gpus,
-        "network": network_payload(),
+        "network": network_payload(network_channel),
         "temperature": temperature_payload(),
     }
-    record_system_metric(payload)
     return payload
 
 
@@ -1406,7 +1406,7 @@ def metrics_sampler():
     while True:
         started = time.monotonic()
         try:
-            system_payload()
+            record_system_metric(system_payload("history"))
         except Exception as error:
             print(f"HomeStart metrics sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
@@ -1455,8 +1455,8 @@ def overview_payload():
     }
 
 
-def network_payload():
-    global NETWORK_PREV
+def network_payload(channel="live"):
+    global NETWORK_LIVE_PREV, NETWORK_HISTORY_PREV
     received = transmitted = 0
     selected_interface = default_network_interface()
     try:
@@ -1472,11 +1472,15 @@ def network_payload():
         return {"interface": selected_interface, "rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
     now = time.monotonic()
     rx_bps = tx_bps = 0
-    if NETWORK_PREV:
-        elapsed = max(.001, now - NETWORK_PREV[0])
-        rx_bps = max(0, (received - NETWORK_PREV[1]) / elapsed)
-        tx_bps = max(0, (transmitted - NETWORK_PREV[2]) / elapsed)
-    NETWORK_PREV = (now, received, transmitted)
+    previous = NETWORK_HISTORY_PREV if channel == "history" else NETWORK_LIVE_PREV
+    if previous:
+        elapsed = max(.001, now - previous[0])
+        rx_bps = max(0, (received - previous[1]) / elapsed)
+        tx_bps = max(0, (transmitted - previous[2]) / elapsed)
+    if channel == "history":
+        NETWORK_HISTORY_PREV = (now, received, transmitted)
+    else:
+        NETWORK_LIVE_PREV = (now, received, transmitted)
     return {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
 
 
@@ -3554,6 +3558,10 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 
         if route == "/api/system":
             self.send_json(system_payload())
+            return
+
+        if route == "/api/network/live":
+            self.send_json({"ok": True, "timestamp": int(time.time()), **network_payload("live")})
             return
 
         if route == "/api/overview":
