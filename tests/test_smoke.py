@@ -90,6 +90,14 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertNotIn("jellyfin/jellyfin:latest", images)
         self.assertIn("grafana/grafana:latest", images)
 
+    def test_dockerhub_direct_links_are_parsed(self):
+        self.assertEqual(
+            self.app.dockerhub_repository_from_url("https://hub.docker.com/r/kasmweb/workspaces"),
+            "kasmweb/workspaces",
+        )
+        self.assertEqual(self.app.dockerhub_repository_from_url("https://hub.docker.com/_/nginx"), "nginx")
+        self.assertEqual(self.app.dockerhub_repository_from_url("https://example.com/r/kasmweb/workspaces"), "")
+
     def test_metric_history_is_stored_without_browser_state(self):
         self.app.DB_PATH = Path(self.temp.name) / "metrics.db"
         self.app.METRIC_LAST_WRITE = 0

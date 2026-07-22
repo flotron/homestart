@@ -2771,11 +2771,29 @@ def docker_app_store_enabled():
     return features.get("docker_app_store", True) and features.get("docker_actions", True)
 
 
+def dockerhub_repository_from_url(value):
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"hub.docker.com", "www.hub.docker.com"}:
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 3 and parts[0] == "r":
+        repository = "/".join(parts[1:3])
+    elif len(parts) >= 2 and parts[0] == "_":
+        repository = parts[1]
+    else:
+        return ""
+    return repository if re.match(r"^[a-z0-9][a-z0-9_.-]*(/[a-z0-9][a-z0-9_.-]*)?$", repository, re.I) else ""
+
+
 def dockerhub_search(query, limit=12):
     if not docker_app_store_enabled():
         raise ValueError("Docker app store is disabled")
 
     query = str(query or "").strip()
+    direct_repository = dockerhub_repository_from_url(query)
     if len(query) < 2:
         return {"ok": True, "results": []}
     try:
@@ -2783,12 +2801,13 @@ def dockerhub_search(query, limit=12):
     except (TypeError, ValueError):
         limit = 12
 
-    url = "https://hub.docker.com/v2/search/repositories/?" + urlencode(
-        {
-            "query": query,
-            "page_size": limit,
-        }
-    )
+    if direct_repository:
+        api_repository = direct_repository if "/" in direct_repository else f"library/{direct_repository}"
+        url = f"https://hub.docker.com/v2/repositories/{quote(api_repository, safe='/')}/"
+    else:
+        url = "https://hub.docker.com/v2/search/repositories/?" + urlencode(
+            {"query": query, "page_size": limit}
+        )
     request = urllib.request.Request(
         url,
         headers={
@@ -2802,6 +2821,16 @@ def dockerhub_search(query, limit=12):
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ValueError(f"Could not search Docker Hub: {error}") from error
 
+    if direct_repository:
+        payload = {"results": [{
+            "repo_name": direct_repository,
+            "short_description": payload.get("description") or payload.get("full_description") or "Docker Hub image",
+            "star_count": payload.get("star_count") or 0,
+            "pull_count": payload.get("pull_count") or 0,
+            "is_official": "/" not in direct_repository,
+            "is_automated": False,
+        }]}
+        query = direct_repository
     query_tokens = [token for token in re.split(r"[^a-z0-9]+", query.lower()) if token]
     compact_query = "".join(query_tokens)
     results = []

@@ -4,6 +4,13 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1000
+
+- Added direct Docker Hub URL recognition to App Store search, including both
+  namespaced `/r/owner/image` and official `/_/image` pages.
+- A pasted image URL now loads that exact repository card instead of treating
+  the full URL as search keywords.
+
 ## 20260723-0130
 
 - Fixed new network history collapsing into one invisible point because its
