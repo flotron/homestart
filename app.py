@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 import yaml
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +31,8 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
+TRASH_DIR = DATA_DIR / "trash"
+TRASH_INDEX = DATA_DIR / "trash.json"
 APP_ICON_DIR = DATA_DIR / "app-icons"
 APP_ICON_INDEX = DATA_DIR / "app-icons.json"
 PACKAGE_PATH = BASE_DIR / "package.json"
@@ -38,6 +41,8 @@ CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
 CPU_PREV = None
 CPU_DETAIL_PREV = None
 GPU_PREV = None
+METRIC_LAST_WRITE = 0
+NETWORK_PREV = None
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -79,7 +84,19 @@ DEFAULT_CONFIG = {
     "updates": {
         "github_repo": "flotron/homestart",
     },
+    "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
+    "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
+    "backups": {"automatic_interval_hours": 24},
 }
+
+CURATED_APPS = [
+    {"name": "Uptime Kuma", "image": "louislam/uptime-kuma:1", "container_port": 3001, "host_port": 3001, "description": "Self-hosted uptime monitoring", "volume": "/opt/uptime-kuma:/app/data"},
+    {"name": "Home Assistant", "image": "ghcr.io/home-assistant/home-assistant:stable", "container_port": 8123, "host_port": 8123, "description": "Open source home automation", "volume": "/opt/homeassistant:/config"},
+    {"name": "Jellyfin", "image": "jellyfin/jellyfin:latest", "container_port": 8096, "host_port": 8096, "description": "Personal media server", "volume": "/opt/jellyfin:/config"},
+    {"name": "Nginx Proxy Manager", "image": "jc21/nginx-proxy-manager:latest", "container_port": 81, "host_port": 81, "description": "Visual reverse proxy manager", "volume": "/opt/nginx-proxy-manager:/data"},
+    {"name": "Grafana", "image": "grafana/grafana:latest", "container_port": 3000, "host_port": 3000, "description": "Metrics dashboards and visualization", "volume": "/opt/grafana:/var/lib/grafana"},
+    {"name": "Forgejo", "image": "codeberg.org/forgejo/forgejo:latest", "container_port": 3000, "host_port": 3000, "description": "Lightweight Git service", "volume": "/opt/forgejo:/data"},
+]
 INLINE_EXTENSIONS = {
     ".bmp",
     ".css",
@@ -113,10 +130,13 @@ ICON_CANDIDATES = [
 ]
 VIRTUAL_INTERFACE_PREFIXES = ("br-", "docker", "veth")
 UPDATE_EXCLUDED = {"config.json", "data", ".git", "__pycache__", "dist", "backups", ".env", "homestart.service"}
-UPDATE_ALLOWED_PREFIXES = {"static", "scripts"}
+UPDATE_ALLOWED_PREFIXES = {"static", "scripts", "docs"}
 UPDATE_ALLOWED_FILES = {
     ".gitignore",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "VERSION",
     "app.py",
     "config.example.json",
     "homestart.service.example",
@@ -147,6 +167,39 @@ def load_config_file():
     if not isinstance(data, dict):
         data = {}
     return deep_merge(DEFAULT_CONFIG, data)
+
+
+def load_json_file(path, fallback):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, type(fallback)) else fallback
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+
+def save_config_file(config):
+    if not isinstance(config, dict):
+        raise ValueError("Invalid configuration")
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(CONFIG_PATH)
+    return load_config_file()
+
+
+def settings_payload():
+    config = load_config_file()
+    return {"ok": True, "dashboard": config["dashboard"], "appearance": config["appearance"], "alerts": config["alerts"], "backups": config["backups"]}
+
+
+def update_settings(payload):
+    config = load_config_file()
+    for section in ("dashboard", "appearance", "alerts", "backups"):
+        values = payload.get(section)
+        if isinstance(values, dict):
+            config[section] = deep_merge(config.get(section, {}), values)
+    save_config_file(config)
+    return settings_payload()
 
 
 def clamp_percent(value):
@@ -574,6 +627,7 @@ def docker_apps(host, all_containers=True):
                     "tags": ["Docker"],
                     "available": True,
                     "docker_name": item.get("Names", ""),
+                    "docker_running": str(item.get("State", "")).lower() == "running",
                 }
             )
         )
@@ -1276,13 +1330,151 @@ def system_payload():
         }
         gpus = [intel_gpu] if intel_gpu["available"] else []
         gpu = summarize_gpus(gpus)
-    return {
+    payload = {
         "timestamp": int(time.time()),
         "cpu": {"percent": cpu_percent()},
         "memory": memory_payload(),
         "gpu": gpu,
         "gpus": gpus,
+        "network": network_payload(),
+        "temperature": temperature_payload(),
     }
+    record_system_metric(payload)
+    return payload
+
+
+def metrics_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_metrics (
+          captured_at INTEGER PRIMARY KEY,
+          cpu REAL,
+          memory REAL,
+          gpu REAL
+        )
+        """
+    )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(system_metrics)")}
+    for name in ("rx_bps", "tx_bps", "temperature"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE system_metrics ADD COLUMN {name} REAL")
+    return connection
+
+
+def record_system_metric(payload):
+    global METRIC_LAST_WRITE
+    captured_at = int(payload.get("timestamp") or time.time())
+    if captured_at - METRIC_LAST_WRITE < 30:
+        return
+    METRIC_LAST_WRITE = captured_at
+    with metrics_db() as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO system_metrics (captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                captured_at,
+                payload.get("cpu", {}).get("percent"),
+                payload.get("memory", {}).get("percent"),
+                payload.get("gpu", {}).get("percent"),
+                payload.get("network", {}).get("rx_bps"),
+                payload.get("network", {}).get("tx_bps"),
+                payload.get("temperature", {}).get("celsius"),
+            ),
+        )
+        connection.execute("DELETE FROM system_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
+
+
+def metrics_history(hours=24):
+    try:
+        hours = max(1, min(168, int(hours)))
+    except (TypeError, ValueError):
+        hours = 24
+    since = int(time.time()) - hours * 3600
+    with metrics_db() as connection:
+        rows = connection.execute(
+            "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
+            (since,),
+        ).fetchall()
+    return {"ok": True, "hours": hours, "points": [dict(row) for row in rows]}
+
+
+def overview_payload():
+    maybe_scheduled_backup()
+    system = system_payload()
+    status = status_payload()
+    alerts = []
+    cpu = system.get("cpu", {}).get("percent")
+    memory = system.get("memory", {}).get("percent")
+    temperature = system.get("temperature", {}).get("celsius")
+    thresholds = load_config_file().get("alerts", {})
+    if cpu is not None and cpu >= float(thresholds.get("cpu_percent", 90)):
+        alerts.append({"level": "warning", "title": "High CPU usage", "detail": f"CPU is at {cpu:.0f}%"})
+    if memory is not None and memory >= float(thresholds.get("memory_percent", 90)):
+        alerts.append({"level": "warning", "title": "High memory usage", "detail": f"Memory is at {memory:.0f}%"})
+    if temperature is not None and temperature >= float(thresholds.get("temperature_c", 85)):
+        alerts.append({"level": "critical", "title": "High temperature", "detail": f"Host temperature is {temperature:.0f} °C"})
+    for disk in status["disks"]:
+        if disk.get("percent", 0) >= float(thresholds.get("disk_percent", 90)):
+            alerts.append({"level": "critical", "title": "Disk almost full", "detail": f"{disk['device']} is at {disk['percent']:.0f}%"})
+    for service in status["services"]:
+        if service.get("active") != "active":
+            alerts.append({"level": "critical", "title": "Service unavailable", "detail": service.get("name", "Service")})
+    stopped = [item for item in status["containers"] if not item.get("docker_running")]
+    if stopped:
+        alerts.append({"level": "info", "title": "Stopped containers", "detail": f"{len(stopped)} container(s) are stopped"})
+    health = "critical" if any(item["level"] == "critical" for item in alerts) else "warning" if alerts else "healthy"
+    return {
+        "ok": True,
+        "health": health,
+        "hostname": socket.gethostname(),
+        "uptime": uptime_label(),
+        "system": system,
+        "status": status,
+        "alerts": alerts,
+        "summary": {
+            "containers_running": len(status["containers"]) - len(stopped),
+            "containers_total": len(status["containers"]),
+            "services_ok": sum(1 for item in status["services"] if item.get("active") == "active"),
+            "services_total": len(status["services"]),
+        },
+    }
+
+
+def network_payload():
+    global NETWORK_PREV
+    received = transmitted = 0
+    try:
+        for line in Path("/proc/net/dev").read_text(encoding="utf-8").splitlines()[2:]:
+            interface, values = line.split(":", 1)
+            if interface.strip() == "lo":
+                continue
+            fields = values.split()
+            received += int(fields[0])
+            transmitted += int(fields[8])
+    except (OSError, ValueError, IndexError):
+        return {"rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
+    now = time.monotonic()
+    rx_bps = tx_bps = 0
+    if NETWORK_PREV:
+        elapsed = max(.001, now - NETWORK_PREV[0])
+        rx_bps = max(0, (received - NETWORK_PREV[1]) / elapsed)
+        tx_bps = max(0, (transmitted - NETWORK_PREV[2]) / elapsed)
+    NETWORK_PREV = (now, received, transmitted)
+    return {"rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+
+
+def temperature_payload():
+    values = []
+    for path in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+        try:
+            value = float(path.read_text().strip())
+            values.append(value / 1000 if value > 1000 else value)
+        except (OSError, ValueError):
+            continue
+    celsius = max(values) if values else None
+    return {"celsius": round(celsius, 1) if celsius is not None else None, "available": celsius is not None}
 
 
 def uptime_label():
@@ -1984,7 +2176,9 @@ def file_action(payload):
     if action == "mkdir":
         return create_folder(payload.get("parent", ""), payload.get("name", ""))
     if action == "delete":
-        return delete_file_path(payload.get("path", ""))
+        return trash_file_path(payload.get("path", ""))
+    if action == "rename":
+        return rename_file_path(payload.get("path", ""), payload.get("name", ""))
     if action == "copy":
         return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
     if action == "upload":
@@ -1994,6 +2188,63 @@ def file_action(payload):
     if action == "unmount":
         return unmount_homestart_device(payload.get("device", ""))
     raise ValueError("Invalid file action")
+
+
+def trash_file_path(raw_path):
+    ensure_file_operations_enabled()
+    target = resolve_file_path(raw_path)
+    if target is None or not target.exists():
+        raise FileNotFoundError("The file does not exist")
+    if any(target == root for root in allowed_roots()):
+        raise PermissionError("Allowed roots cannot be moved to trash")
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
+    destination = TRASH_DIR / f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{target.name}"
+    index = load_json_file(TRASH_INDEX, {})
+    index[destination.name] = {"original": str(target), "name": target.name, "deleted_at": int(time.time())}
+    shutil.move(str(target), destination)
+    TRASH_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "message": f"Moved {target.name} to HomeStart trash", "trash_path": str(destination)}
+
+
+def trash_listing():
+    index = load_json_file(TRASH_INDEX, {})
+    items = []
+    for key, metadata in index.items():
+        path = TRASH_DIR / key
+        if path.exists():
+            items.append({"key": key, **metadata, "size": path.stat().st_size if path.is_file() else None})
+    return {"ok": True, "items": sorted(items, key=lambda item: item.get("deleted_at", 0), reverse=True)}
+
+
+def restore_trash_item(key):
+    key = Path(str(key or "")).name
+    index = load_json_file(TRASH_INDEX, {})
+    metadata = index.get(key)
+    source = TRASH_DIR / key
+    if not metadata or not source.exists():
+        raise FileNotFoundError("Trash item not found")
+    destination = resolve_file_path(metadata["original"])
+    if destination.exists():
+        destination = destination.with_name(f"{destination.stem}-restored{destination.suffix}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), destination)
+    index.pop(key, None)
+    TRASH_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "path": str(destination)}
+
+
+def rename_file_path(raw_path, raw_name):
+    ensure_file_operations_enabled()
+    target = resolve_file_path(raw_path)
+    name = Path(str(raw_name or "")).name.strip()
+    if not name or name in {".", ".."}:
+        raise ValueError("Invalid name")
+    destination = target.with_name(name)
+    resolve_file_path(str(destination))
+    if destination.exists():
+        raise FileExistsError("A file with that name already exists")
+    target.rename(destination)
+    return {"ok": True, "path": str(destination)}
 
 
 def serve_file(handler, raw_path, include_body=True):
@@ -2160,6 +2411,131 @@ def run_docker_command(command, timeout=60):
         raise ValueError(output or "Docker command failed") from error
     except subprocess.TimeoutExpired as error:
         raise ValueError("Docker command timed out") from error
+
+
+def docker_logs(name, tail=300):
+    name = normalize_docker_name(name)
+    try:
+        tail = max(20, min(2000, int(tail)))
+    except (TypeError, ValueError):
+        tail = 300
+    return {"ok": True, "name": name, "logs": run_docker_command(["logs", "--tail", str(tail), "--timestamps", name], timeout=15)}
+
+
+def create_backup():
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    destination = BACKUP_DIR / f"homestart-backup-{stamp}.tar.gz"
+    with tarfile.open(destination, "w:gz") as archive:
+        if CONFIG_PATH.exists():
+            archive.add(CONFIG_PATH, arcname="config.json")
+        if DB_PATH.exists():
+            archive.add(DB_PATH, arcname="data/homestart.db")
+        if APP_ICON_DIR.exists():
+            archive.add(APP_ICON_DIR, arcname="data/app-icons")
+        if APP_ICON_INDEX.exists():
+            archive.add(APP_ICON_INDEX, arcname="data/app-icons.json")
+    return {"ok": True, "name": destination.name, "size": destination.stat().st_size, "created_at": int(destination.stat().st_mtime)}
+
+
+def list_backups():
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    items = [{"name": item.name, "size": item.stat().st_size, "created_at": int(item.stat().st_mtime)} for item in BACKUP_DIR.glob("homestart-backup-*.tar.gz")]
+    return {"ok": True, "backups": sorted(items, key=lambda item: item["created_at"], reverse=True)}
+
+
+def maybe_scheduled_backup():
+    try:
+        interval = max(0, float(load_config_file().get("backups", {}).get("automatic_interval_hours", 24)))
+    except (TypeError, ValueError):
+        interval = 24
+    if not interval:
+        return
+    existing = list_backups()["backups"]
+    if not existing or time.time() - existing[0]["created_at"] >= interval * 3600:
+        create_backup()
+
+
+def backup_path(name):
+    clean = Path(str(name or "")).name
+    target = BACKUP_DIR / clean
+    if not clean.startswith("homestart-backup-") or not clean.endswith(".tar.gz") or not target.is_file():
+        raise FileNotFoundError("Backup not found")
+    return target
+
+
+def safe_extract_tar(archive, destination):
+    destination = destination.resolve()
+    for member in archive.getmembers():
+        member_path = (destination / member.name).resolve()
+        if destination != member_path and destination not in member_path.parents:
+            raise ValueError("Backup contains an invalid path")
+        if member.issym() or member.islnk() or member.isdev():
+            raise ValueError("Backup contains an unsupported entry")
+    archive.extractall(destination)
+
+
+def restore_backup(name):
+    source = backup_path(name)
+    create_backup()
+    with tempfile.TemporaryDirectory(prefix="homestart-restore-") as directory:
+        target = Path(directory)
+        with tarfile.open(source, "r:gz") as archive:
+            safe_extract_tar(archive, target)
+        restored = []
+        config = target / "config.json"
+        if config.exists():
+            save_config_file(json.loads(config.read_text(encoding="utf-8")))
+            restored.append("config.json")
+        database = target / "data/homestart.db"
+        if database.exists():
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(database, DB_PATH)
+            restored.append("data/homestart.db")
+        icons = target / "data/app-icons"
+        if icons.exists():
+            if APP_ICON_DIR.exists():
+                shutil.rmtree(APP_ICON_DIR)
+            shutil.copytree(icons, APP_ICON_DIR)
+            restored.append("data/app-icons")
+        index = target / "data/app-icons.json"
+        if index.exists():
+            shutil.copy2(index, APP_ICON_INDEX)
+            restored.append("data/app-icons.json")
+    return {"ok": True, "restored": restored, "message": f"Restored {source.name}"}
+
+
+def serve_download(handler, raw_path, include_body=True):
+    target = resolve_file_path(raw_path)
+    if target is None or not target.exists():
+        raise FileNotFoundError("The path does not exist")
+    temporary = None
+    if target.is_dir():
+        temporary = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        temporary.close()
+        with zipfile.ZipFile(temporary.name, "w", zipfile.ZIP_DEFLATED) as archive:
+            for item in target.rglob("*"):
+                if item.is_file():
+                    archive.write(item, item.relative_to(target.parent))
+        download = Path(temporary.name)
+        filename = f"{target.name}.zip"
+        content_type = "application/zip"
+    else:
+        download = target
+        filename = target.name
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    try:
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(download.stat().st_size))
+        handler.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
+        handler.end_headers()
+        if include_body:
+            with download.open("rb") as file:
+                shutil.copyfileobj(file, handler.wfile)
+    finally:
+        if temporary:
+            Path(temporary.name).unlink(missing_ok=True)
 
 
 def docker_container_exists(name):
@@ -3135,6 +3511,47 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json(system_payload())
             return
 
+        if route == "/api/overview":
+            self.send_json(overview_payload())
+            return
+
+        if route == "/api/metrics/history":
+            query = parse_qs(parsed.query)
+            self.send_json(metrics_history(query.get("hours", ["24"])[0]))
+            return
+
+        if route == "/api/settings/general":
+            self.send_json(settings_payload())
+            return
+
+        if route == "/api/store/templates":
+            self.send_json({"ok": True, "templates": CURATED_APPS})
+            return
+
+        if route == "/api/docker/logs":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(docker_logs(query.get("name", [""])[0], query.get("tail", ["300"])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/backups":
+            self.send_json(list_backups())
+            return
+
+        if route == "/api/trash":
+            self.send_json(trash_listing())
+            return
+
+        if route == "/api/file/download":
+            query = parse_qs(parsed.query)
+            try:
+                serve_download(self, query.get("path", [""])[0])
+            except (FileNotFoundError, PermissionError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/resources":
             self.send_json(resources_payload())
             return
@@ -3214,6 +3631,38 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = urlparse(self.path).path
+        if route == "/api/settings/general":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                self.send_json(update_settings(json.loads(self.rfile.read(length).decode("utf-8"))))
+            except (json.JSONDecodeError, ValueError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/backups/create":
+            try:
+                self.send_json(create_backup())
+            except OSError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/backups/restore":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(restore_backup(payload.get("name", "")))
+            except (json.JSONDecodeError, ValueError, OSError, tarfile.TarError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/trash/restore":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(restore_trash_item(payload.get("key", "")))
+            except (json.JSONDecodeError, ValueError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
         if route == "/api/update":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
