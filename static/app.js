@@ -138,7 +138,6 @@ const logsClose = document.querySelector("#logs-close");
 const toastRegion = document.querySelector("#toast-region");
 const generalSettingsForm = document.querySelector("#general-settings-form");
 const backupCreate = document.querySelector("#backup-create");
-const backupList = document.querySelector("#backup-list");
 const trashList = document.querySelector("#trash-list");
 
 function toast(message, kind = "info") {
@@ -1126,7 +1125,6 @@ async function loadGeneralSettings() {
   document.querySelector("#setting-memory-alert").value = data.alerts?.memory_percent ?? 90;
   document.querySelector("#setting-disk-alert").value = data.alerts?.disk_percent ?? 90;
   document.querySelector("#setting-temperature-alert").value = data.alerts?.temperature_c ?? 85;
-  document.querySelector("#setting-backup-hours").value = data.backups?.automatic_interval_hours ?? 24;
   document.documentElement.style.setProperty("--accent", data.appearance?.accent || "#38bdf8");
   document.documentElement.dataset.theme = data.appearance?.theme || "dark";
   document.body.dataset.density = data.appearance?.density || "comfortable";
@@ -1138,7 +1136,6 @@ async function saveGeneralSettings(event) {
     dashboard: { title: document.querySelector("#setting-title").value.trim(), subtitle: document.querySelector("#setting-subtitle").value.trim() },
     appearance: { accent: document.querySelector("#setting-accent").value, theme: document.querySelector("#setting-theme").value, density: document.querySelector("#setting-density").value },
     alerts: { cpu_percent: Number(document.querySelector("#setting-cpu-alert").value), memory_percent: Number(document.querySelector("#setting-memory-alert").value), disk_percent: Number(document.querySelector("#setting-disk-alert").value), temperature_c: Number(document.querySelector("#setting-temperature-alert").value) },
-    backups: { automatic_interval_hours: Number(document.querySelector("#setting-backup-hours").value) },
   };
   const response = await fetch("/api/settings/general", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   const data = await response.json();
@@ -1147,36 +1144,22 @@ async function saveGeneralSettings(event) {
   await Promise.all([loadGeneralSettings(), loadSystem(), loadOverview()]);
 }
 
-async function loadBackups() {
-  const response = await fetch("/api/backups", { cache: "no-store" });
-  const data = await response.json();
-  backupList.replaceChildren();
-  if (!data.backups?.length) { backupList.innerHTML = '<div class="empty-state">No backups created yet.</div>'; return; }
-  data.backups.forEach((item) => {
-    const row = document.createElement("div"); row.className = "row-card";
-    row.innerHTML = `<div><strong>${escapeHtml(item.name)}</strong><p>${new Date(item.created_at * 1000).toLocaleString()} · ${(item.size / 1048576).toFixed(1)} MB</p></div><button type="button">Restore</button>`;
-    row.querySelector("button").addEventListener("click", () => restoreBackup(item.name));
-    backupList.appendChild(row);
-  });
-}
-
-async function restoreBackup(name) {
-  if (!window.confirm(`Restore ${name}? A safety backup will be created first.`)) return;
-  const response = await fetch("/api/backups/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
-  const data = await response.json();
-  if (!response.ok || !data.ok) return toast(data.error || "Restore failed", "error");
-  toast(data.message || "Backup restored", "success");
-  await Promise.all([loadGeneralSettings(), loadBackups(), loadSystem(), loadOverview()]);
-}
-
 async function createBackupFromUi() {
   backupCreate.disabled = true;
   try {
-    const response = await fetch("/api/backups/create", { method: "POST" });
-    const data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.error || "Backup failed");
-    toast(`Backup ${data.name} created`, "success");
-    await loadBackups();
+    const response = await fetch("/api/backups/download", { cache: "no-store" });
+    if (!response.ok) throw new Error("Backup failed");
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename = disposition.match(/filename=([^;]+)/i)?.[1]?.replace(/["']/g, "") || "homestart-backup.tar.gz";
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`Backup ${filename} ready to save`, "success");
   } catch (error) { toast(error.message, "error"); }
   finally { backupCreate.disabled = false; }
 }
@@ -1770,7 +1753,6 @@ loadOverview().catch(console.error);
 loadHistory().catch(console.error);
 loadLiveNetwork().catch(console.error);
 loadGeneralSettings().catch(console.error);
-loadBackups().catch(console.error);
 loadTrash().catch(console.error);
 loadFiles().catch(console.error);
 setInterval(() => loadSystem().catch(console.error), 2000);
