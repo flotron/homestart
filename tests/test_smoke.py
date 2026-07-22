@@ -120,12 +120,13 @@ class HomeStartSmokeTests(unittest.TestCase):
     def test_network_history_is_stored_separately_at_fine_resolution(self):
         self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
         now = int(__import__("time").time())
-        self.app.record_network_metric({"timestamp": now, "rx_bps": 7000, "tx_bps": 900})
+        for offset, rx in ((-4, 5000), (-2, 6000), (0, 7000)):
+            self.app.record_network_metric({"timestamp": now + offset, "rx_bps": rx, "tx_bps": 900})
         history = self.app.metrics_history(1)
         self.assertEqual(history["network_sample_seconds"], 2)
         self.assertEqual(history["retention_days"], 7)
-        self.assertEqual(len(history["network_points"]), 1)
-        self.assertEqual(history["network_points"][0]["rx_bps"], 7000)
+        self.assertEqual(len(history["network_points"]), 3)
+        self.assertEqual(history["network_points"][-1]["rx_bps"], 7000)
 
 
 if __name__ == "__main__":
