@@ -120,6 +120,12 @@ const historyChart = document.querySelector("#history-chart");
 const historyRange = document.querySelector("#history-range");
 const historyStats = document.querySelector("#history-stats");
 const historyMeta = document.querySelector("#history-meta");
+const historyTimeAxis = document.querySelector("#history-time-axis");
+const bandwidthChart = document.querySelector("#bandwidth-chart");
+const bandwidthStats = document.querySelector("#bandwidth-stats");
+const bandwidthMeta = document.querySelector("#bandwidth-meta");
+const bandwidthTimeAxis = document.querySelector("#bandwidth-time-axis");
+const bandwidthSubtitle = document.querySelector("#bandwidth-subtitle");
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
 const logsContent = document.querySelector("#logs-content");
@@ -178,18 +184,38 @@ function metricStats(points, key) {
   return { current: values.at(-1), average: values.reduce((sum, value) => sum + value, 0) / values.length, maximum: Math.max(...values) };
 }
 
+function historyWindow(points, hours) {
+  const now = Math.floor(Date.now() / 1000);
+  if (hours !== "auto") return { start: now - Number(hours || 24) * 3600, end: now };
+  const first = Number(points[0]?.captured_at) || now;
+  const last = Number(points.at(-1)?.captured_at) || now;
+  const span = Math.max(60, last - first);
+  const padding = Math.max(15, span * 0.04);
+  return { start: first - padding, end: last + padding };
+}
+
+function renderTimeAxis(node, startTime, endTime) {
+  const formatter = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", ...(endTime - startTime > 86400 ? { day: "2-digit", month: "2-digit" } : {}) });
+  node.replaceChildren(...[0, .25, .5, .75, 1].map((position) => {
+    const label = document.createElement("span");
+    label.textContent = formatter.format(new Date((startTime + (endTime - startTime) * position) * 1000));
+    return label;
+  }));
+}
+
 function renderHistory(points, hours) {
   if (!historyChart) return;
   if (!points.length) {
     historyChart.innerHTML = '<div class="empty-state">History will appear after HomeStart collects a few samples.</div>';
     historyStats.replaceChildren();
+    historyTimeAxis.replaceChildren();
     historyMeta.textContent = "No samples in this period yet. HomeStart now collects one every 30 seconds in the background.";
     return;
   }
   const width = 800;
   const height = 220;
-  const endTime = Math.floor(Date.now() / 1000);
-  const startTime = endTime - Number(hours || 24) * 3600;
+  const window = historyWindow(points, hours);
+  const { start: startTime, end: endTime } = window;
   const allValues = points.flatMap((item) => [item.cpu, item.memory, item.gpu]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
   const observedMax = Math.max(1, ...allValues);
   const verticalMax = Math.min(100, Math.max(10, Math.ceil(observedMax * 1.2 / 10) * 10));
@@ -201,6 +227,7 @@ function renderHistory(points, hours) {
     <path class="chart-line memory" d="${chartPath(points, "memory", width, height, startTime, endTime, verticalMax)}" />
     <path class="chart-line gpu" d="${chartPath(points, "gpu", width, height, startTime, endTime, verticalMax)}" />
   </svg>`;
+  renderTimeAxis(historyTimeAxis, startTime, endTime);
   const labels = { cpu: "CPU", memory: "Memory", gpu: "GPU" };
   historyStats.replaceChildren(...Object.entries(labels).map(([key, label]) => {
     const stats = metricStats(points, key);
@@ -211,13 +238,56 @@ function renderHistory(points, hours) {
   }));
   const first = new Date(points[0].captured_at * 1000).toLocaleString();
   const last = new Date(points.at(-1).captured_at * 1000).toLocaleString();
-  historyMeta.textContent = `${points.length} samples · ${first} to ${last} · adaptive scale 0–${verticalMax}%`;
+  const rangeLabel = hours === "auto" ? "showing all available data" : `selected range ${hours}h`;
+  historyMeta.textContent = `${points.length} samples · ${first} to ${last} · ${rangeLabel} · scale 0–${verticalMax}%`;
+}
+
+function formatRate(bytesPerSecond) {
+  const bits = Math.max(0, Number(bytesPerSecond) || 0) * 8;
+  if (bits >= 1_000_000_000) return `${(bits / 1_000_000_000).toFixed(1)} Gbps`;
+  if (bits >= 1_000_000) return `${(bits / 1_000_000).toFixed(1)} Mbps`;
+  if (bits >= 1_000) return `${(bits / 1_000).toFixed(1)} Kbps`;
+  return `${bits.toFixed(0)} bps`;
+}
+
+function bandwidthScale(maximum) {
+  const steps = [1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000, 500_000_000, 1_000_000_000, 5_000_000_000];
+  return steps.find((step) => step >= maximum * 1.15) || Math.ceil(maximum / 1_000_000_000) * 1_000_000_000;
+}
+
+function renderBandwidthHistory(points, hours, interfaceName) {
+  const values = points.flatMap((item) => [item.rx_bps, item.tx_bps]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
+  bandwidthSubtitle.textContent = `Traffic through ${interfaceName || "the default network interface"}.`;
+  if (!values.length) {
+    bandwidthChart.innerHTML = '<div class="empty-state">Bandwidth history will appear after the first background samples.</div>';
+    bandwidthStats.replaceChildren(); bandwidthTimeAxis.replaceChildren();
+    bandwidthMeta.textContent = "No bandwidth samples in this period yet.";
+    return;
+  }
+  const width = 800; const height = 220;
+  const { start, end } = historyWindow(points, hours);
+  const verticalMax = bandwidthScale(Math.max(1, ...values));
+  bandwidthChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Network bandwidth history">
+    <g class="chart-grid"><path d="M0 0H${width} M0 ${height / 2}H${width} M0 ${height}H${width}" /></g>
+    <g class="chart-axis"><text x="4" y="13">${formatRate(verticalMax)}</text><text x="4" y="${height / 2 - 5}">${formatRate(verticalMax / 2)}</text><text x="4" y="${height - 6}">0 bps</text></g>
+    <path class="chart-line download" d="${chartPath(points, "rx_bps", width, height, start, end, verticalMax)}" />
+    <path class="chart-line upload" d="${chartPath(points, "tx_bps", width, height, start, end, verticalMax)}" />
+  </svg>`;
+  renderTimeAxis(bandwidthTimeAxis, start, end);
+  bandwidthStats.replaceChildren(...[["rx_bps", "Download", "download"], ["tx_bps", "Upload", "upload"]].map(([key, label, className]) => {
+    const stats = metricStats(points, key); const node = document.createElement("article");
+    node.className = `history-stat ${className}`;
+    node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(stats?.average)} · max ${formatRate(stats?.maximum)}</small>`;
+    return node;
+  }));
+  bandwidthMeta.textContent = `${points.length} samples · adaptive scale up to ${formatRate(verticalMax)}`;
 }
 
 async function loadHistory() {
   const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
   const data = await response.json();
   renderHistory(data.points || [], data.hours || historyRange?.value || 24);
+  renderBandwidthHistory(data.points || [], data.hours || historyRange?.value || 24, data.network_interface || "");
 }
 
 async function loadOverview() {
