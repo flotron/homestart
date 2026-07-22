@@ -372,6 +372,11 @@ button:disabled {
   font-size: 18px;
 }
 
+.store-title-row { display:flex; min-width:0; align-items:center; gap:7px; }
+.store-title-row h3 { min-width:0; }
+.verified-badge { flex:0 0 auto; display:inline-grid; width:19px; height:19px; place-items:center; border-radius:50%; background:#1d9bf0; color:#fff; box-shadow:0 0 0 2px rgb(29 155 240 / .14); font-size:13px; font-weight:900; line-height:1; }
+.verified-badge[hidden] { display:none; }
+
 .store-card p {
   display: -webkit-box;
   min-height: 54px;
