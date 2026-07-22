@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-2100
+
+- Removed scheduled automatic backups and their interval setting.
+- Changed manual backup creation to download the archive through the browser,
+  allowing the user to choose a folder on Windows or a network drive when the
+  browser is configured to ask where downloads should be saved.
+- Stopped retaining newly created manual backups on the HomeStart server.
+
 ## 20260722-1930
 
 - Smoothed the adaptive network chart scale by replacing large fixed jumps with
