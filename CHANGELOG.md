@@ -4,6 +4,13 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1130
+
+- Added the current top downloading and uploading Docker container beside the
+  live host bandwidth values, including each winner's two-second rate.
+- Read per-container Linux network namespaces without requiring an additional
+  monitoring package, and refresh container discovery every 15 seconds.
+
 ## 20260723-1000
 
 - Added direct Docker Hub URL recognition to App Store search, including both
