@@ -4,6 +4,13 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-2230
+
+- Moved Docker App Store installations into background jobs so the request and
+  interface no longer remain blocked during large image downloads.
+- Added live installation stages, approximate progress, the latest Docker layer
+  messages, a details log, and the final container state.
+
 ## 20260722-2100
 
 - Removed scheduled automatic backups and their interval setting.
