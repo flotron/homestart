@@ -15,9 +15,6 @@
     "disk_percent": 90,
     "temperature_c": 85
   },
-  "backups": {
-    "automatic_interval_hours": 24
-  },
   "features": {
     "docker_actions": true,
     "native_service_actions": true,

@@ -87,7 +87,6 @@ DEFAULT_CONFIG = {
     },
     "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
     "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
-    "backups": {"automatic_interval_hours": 24},
 }
 
 CURATED_APPS = [
@@ -190,12 +189,12 @@ def save_config_file(config):
 
 def settings_payload():
     config = load_config_file()
-    return {"ok": True, "dashboard": config["dashboard"], "appearance": config["appearance"], "alerts": config["alerts"], "backups": config["backups"]}
+    return {"ok": True, "dashboard": config["dashboard"], "appearance": config["appearance"], "alerts": config["alerts"]}
 
 
 def update_settings(payload):
     config = load_config_file()
-    for section in ("dashboard", "appearance", "alerts", "backups"):
+    for section in ("dashboard", "appearance", "alerts"):
         values = payload.get(section)
         if isinstance(values, dict):
             config[section] = deep_merge(config.get(section, {}), values)
@@ -1414,7 +1413,6 @@ def metrics_sampler():
 
 
 def overview_payload():
-    maybe_scheduled_backup()
     system = system_payload()
     status = status_payload()
     alerts = []
@@ -2469,10 +2467,13 @@ def docker_logs(name, tail=300):
     return {"ok": True, "name": name, "logs": run_docker_command(["logs", "--tail", str(tail), "--timestamps", name], timeout=15)}
 
 
-def create_backup():
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+def create_backup(destination=None):
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    destination = BACKUP_DIR / f"homestart-backup-{stamp}.tar.gz"
+    if destination is None:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        destination = BACKUP_DIR / f"homestart-backup-{stamp}.tar.gz"
+    else:
+        destination = Path(destination)
     with tarfile.open(destination, "w:gz") as archive:
         if CONFIG_PATH.exists():
             archive.add(CONFIG_PATH, arcname="config.json")
@@ -2485,22 +2486,30 @@ def create_backup():
     return {"ok": True, "name": destination.name, "size": destination.stat().st_size, "created_at": int(destination.stat().st_mtime)}
 
 
+def serve_backup_download(handler):
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"homestart-backup-{stamp}.tar.gz"
+    with tempfile.NamedTemporaryFile(prefix="homestart-backup-", suffix=".tar.gz", delete=False) as temporary:
+        destination = Path(temporary.name)
+    try:
+        create_backup(destination)
+        size = destination.stat().st_size
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", "application/gzip")
+        handler.send_header("Content-Disposition", f"attachment; filename={filename}")
+        handler.send_header("Content-Length", str(size))
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        with destination.open("rb") as source:
+            shutil.copyfileobj(source, handler.wfile)
+    finally:
+        destination.unlink(missing_ok=True)
+
+
 def list_backups():
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     items = [{"name": item.name, "size": item.stat().st_size, "created_at": int(item.stat().st_mtime)} for item in BACKUP_DIR.glob("homestart-backup-*.tar.gz")]
     return {"ok": True, "backups": sorted(items, key=lambda item: item["created_at"], reverse=True)}
-
-
-def maybe_scheduled_backup():
-    try:
-        interval = max(0, float(load_config_file().get("backups", {}).get("automatic_interval_hours", 24)))
-    except (TypeError, ValueError):
-        interval = 24
-    if not interval:
-        return
-    existing = list_backups()["backups"]
-    if not existing or time.time() - existing[0]["created_at"] >= interval * 3600:
-        create_backup()
 
 
 def backup_path(name):
@@ -3593,6 +3602,13 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json(list_backups())
             return
 
+        if route == "/api/backups/download":
+            try:
+                serve_backup_download(self)
+            except OSError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/trash":
             self.send_json(trash_listing())
             return
@@ -3689,13 +3705,6 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 self.send_json(update_settings(json.loads(self.rfile.read(length).decode("utf-8"))))
             except (json.JSONDecodeError, ValueError, OSError) as error:
-                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-            return
-
-        if route == "/api/backups/create":
-            try:
-                self.send_json(create_backup())
-            except OSError as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
