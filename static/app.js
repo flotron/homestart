@@ -176,13 +176,14 @@ function escapeHtml(value) {
 
 function chartPath(points, key, width, height, startTime, endTime, verticalMax) {
   let previousTime = null;
+  const gapLimit = Math.max(120, (endTime - startTime) / 1200 * 3);
   return points.map((item) => {
     const value = item[key];
     if (value === null || value === undefined) return "";
     const timestamp = Number(item.captured_at) || startTime;
     const x = (timestamp - startTime) / Math.max(1, endTime - startTime) * width;
     const y = height - Math.max(0, Math.min(verticalMax, value)) / verticalMax * height;
-    const command = previousTime === null || timestamp - previousTime > 120 ? "M" : "L";
+    const command = previousTime === null || timestamp - previousTime > gapLimit ? "M" : "L";
     previousTime = timestamp;
     return `${command}${x.toFixed(1)},${y.toFixed(1)}`;
   }).filter(Boolean).join(" ");
@@ -293,7 +294,7 @@ function renderBandwidthHistory(points, hours, interfaceName) {
     node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(stats?.average)} · max ${formatRate(stats?.maximum)}</small>`;
     return node;
   }));
-  bandwidthMeta.textContent = `${points.length} samples · adaptive scale up to ${formatRate(verticalMax)}`;
+  bandwidthMeta.textContent = `${points.length} displayed points · sampled every 2 seconds · retained for 7 days · adaptive scale up to ${formatRate(verticalMax)}`;
 }
 
 async function loadLiveNetwork() {
@@ -318,7 +319,7 @@ async function loadHistory() {
   const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
   const data = await response.json();
   renderHistory(data.points || [], data.hours || historyRange?.value || 24);
-  renderBandwidthHistory(data.points || [], data.hours || historyRange?.value || 24, data.network_interface || "");
+  renderBandwidthHistory(data.network_points || data.points || [], data.hours || historyRange?.value || 24, data.network_interface || "");
 }
 
 async function loadOverview() {
@@ -1801,8 +1802,8 @@ setInterval(() => loadSystem().catch(console.error), 2000);
 setInterval(() => loadStatus().catch(console.error), 15000);
 setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
-setInterval(() => loadLiveNetwork().catch(console.error), 1000);
-setInterval(() => loadHistory().catch(console.error), 30000);
+setInterval(() => loadLiveNetwork().catch(console.error), 2000);
+setInterval(() => loadHistory().catch(console.error), 2000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
