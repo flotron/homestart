@@ -590,7 +590,7 @@ function renderStoreResult(item) {
     <div class="store-card-head">
       <span class="store-icon"><img alt="" /></span>
       <div>
-        <h3></h3>
+        <div class="store-title-row"><h3></h3><span class="verified-badge" hidden aria-label="Verified">✓</span></div>
         <span class="store-namespace"></span>
         <p></p>
       </div>
@@ -614,12 +614,19 @@ function renderStoreResult(item) {
     icon.classList.add("fallback");
   }
   node.querySelector("h3").textContent = item.repo || item.name;
+  const verifiedBadge = node.querySelector(".verified-badge");
+  if (item.verified) {
+    verifiedBadge.hidden = false;
+    verifiedBadge.title = item.verification_label || "Verified Publisher";
+    verifiedBadge.setAttribute("aria-label", item.verification_label || "Verified Publisher");
+  }
   node.querySelector(".store-namespace").textContent = item.namespace
     ? `${item.namespace}/${item.repo || ""}`
     : item.name;
   node.querySelector("p").textContent = item.description || "Docker Hub image";
   node.querySelector(".store-meta").textContent = [
     item.official ? "Official" : "",
+    !item.official && item.verification_label ? item.verification_label : "",
     item.automated ? "Automated" : "",
     `${compactNumber(item.stars)} stars`,
     `${compactNumber(item.pulls)} pulls`,

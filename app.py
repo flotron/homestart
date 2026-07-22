@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 import zipfile
 import yaml
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -51,6 +52,8 @@ CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
 CONTAINER_NETWORK_TARGETS = []
 CONTAINER_NETWORK_TARGETS_AT = 0
 CONTAINER_NETWORK_LOCK = threading.Lock()
+DOCKERHUB_VERIFICATION_CACHE = {}
+DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -2785,6 +2788,43 @@ def dockerhub_page_url(name, official=False):
     return f"https://hub.docker.com/r/{quote(clean, safe='/')}"
 
 
+def dockerhub_verification(name, official=False):
+    if official:
+        return {"verified": True, "verification_label": "Docker Official Image", "trusted_rank": 3}
+    key = str(name or "").strip().lower()
+    now = time.time()
+    with DOCKERHUB_VERIFICATION_LOCK:
+        cached = DOCKERHUB_VERIFICATION_CACHE.get(key)
+        if cached and now - cached[0] < 21600:
+            return dict(cached[1])
+    result = {"verified": False, "verification_label": "", "trusted_rank": 0}
+    try:
+        request = urllib.request.Request(dockerhub_page_url(key), headers={"User-Agent": "HomeStart/1.0"})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            page = response.read(1_500_000).decode("utf-8", errors="ignore")
+        if "Verified Publisher" in page:
+            result = {"verified": True, "verification_label": "Verified Publisher", "trusted_rank": 2}
+        elif "Docker-Sponsored Open Source" in page:
+            result = {"verified": True, "verification_label": "Docker-Sponsored Open Source", "trusted_rank": 1}
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+    with DOCKERHUB_VERIFICATION_LOCK:
+        DOCKERHUB_VERIFICATION_CACHE[key] = (now, result)
+    return dict(result)
+
+
+def add_dockerhub_verification(results):
+    pending = [item for item in results if not item.get("official")]
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(pending)))) as executor:
+        checks = list(executor.map(lambda item: dockerhub_verification(item.get("name")), pending))
+    for item in results:
+        if item.get("official"):
+            item.update(dockerhub_verification(item.get("name"), True))
+    for item, verification in zip(pending, checks):
+        item.update(verification)
+    return results
+
+
 def docker_action(name, action):
     if not load_config_file().get("features", {}).get("docker_actions", True):
         raise ValueError("Docker actions are disabled")
@@ -2949,7 +2989,8 @@ def dockerhub_search(query, limit=12):
                 "installed_containers": installed.get(image_repository(name), []),
             }
         )
-    results.sort(key=lambda item: (item["relevance"], item["pulls"], item["stars"]), reverse=True)
+    add_dockerhub_verification(results)
+    results.sort(key=lambda item: (item.get("trusted_rank", 0), item["relevance"], item["pulls"], item["stars"]), reverse=True)
     return {"ok": True, "results": results}
 
 
