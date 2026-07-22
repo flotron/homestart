@@ -1387,8 +1387,9 @@ def record_system_metric(payload):
 
 
 def metrics_history(hours=24):
+    automatic = str(hours).lower() == "auto"
     try:
-        hours = max(1, min(168, int(hours)))
+        hours = 168 if automatic else max(1, min(168, int(hours)))
     except (TypeError, ValueError):
         hours = 24
     since = int(time.time()) - hours * 3600
@@ -1397,7 +1398,7 @@ def metrics_history(hours=24):
             "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
             (since,),
         ).fetchall()
-    return {"ok": True, "hours": hours, "points": [dict(row) for row in rows]}
+    return {"ok": True, "hours": "auto" if automatic else hours, "network_interface": default_network_interface(), "points": [dict(row) for row in rows]}
 
 
 def metrics_sampler():
@@ -1457,16 +1458,18 @@ def overview_payload():
 def network_payload():
     global NETWORK_PREV
     received = transmitted = 0
+    selected_interface = default_network_interface()
     try:
         for line in Path("/proc/net/dev").read_text(encoding="utf-8").splitlines()[2:]:
             interface, values = line.split(":", 1)
-            if interface.strip() == "lo":
+            interface = interface.strip()
+            if interface == "lo" or (selected_interface and interface != selected_interface):
                 continue
             fields = values.split()
             received += int(fields[0])
             transmitted += int(fields[8])
     except (OSError, ValueError, IndexError):
-        return {"rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
+        return {"interface": selected_interface, "rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
     now = time.monotonic()
     rx_bps = tx_bps = 0
     if NETWORK_PREV:
@@ -1474,7 +1477,27 @@ def network_payload():
         rx_bps = max(0, (received - NETWORK_PREV[1]) / elapsed)
         tx_bps = max(0, (transmitted - NETWORK_PREV[2]) / elapsed)
     NETWORK_PREV = (now, received, transmitted)
-    return {"rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+    return {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+
+
+def default_network_interface():
+    try:
+        for line in Path("/proc/net/route").read_text(encoding="utf-8").splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
+                return fields[0]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        interfaces = []
+        for path in Path("/sys/class/net").iterdir():
+            if path.name == "lo" or path.name.startswith(VIRTUAL_INTERFACE_PREFIXES):
+                continue
+            if (path / "device").exists() or (path / "wireless").exists():
+                interfaces.append(path.name)
+        return sorted(interfaces)[0] if interfaces else ""
+    except OSError:
+        return ""
 
 
 def temperature_payload():
