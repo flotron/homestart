@@ -5,6 +5,7 @@ import tempfile
 import io
 import tarfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -78,6 +79,16 @@ class HomeStartSmokeTests(unittest.TestCase):
         copied = Path(result["path"])
         self.assertEqual(copied.name, "manual - copy.pdf")
         self.assertEqual(copied.read_bytes(), b"pdf")
+
+    def test_docker_image_matching_ignores_registry_tag(self):
+        self.assertEqual(self.app.image_repository("docker.io/library/redis:7"), "redis")
+        self.assertEqual(self.app.image_repository("jellyfin/jellyfin:latest"), "jellyfin/jellyfin")
+
+    def test_installed_recommended_images_are_hidden(self):
+        with mock.patch.object(self.app, "installed_docker_images", return_value={"jellyfin/jellyfin": ["media"]}):
+            images = [item["image"] for item in self.app.curated_store_apps()]
+        self.assertNotIn("jellyfin/jellyfin:latest", images)
+        self.assertIn("grafana/grafana:latest", images)
 
     def test_metric_history_is_stored_without_browser_state(self):
         self.app.DB_PATH = Path(self.temp.name) / "metrics.db"
