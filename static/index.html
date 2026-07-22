@@ -14,7 +14,7 @@
           <strong id="dashboard-title">HomeStart</strong>
         </div>
         <nav class="nav" aria-label="Main navigation">
-          <button class="nav-item active" type="button" data-view="status">Status</button>
+          <button class="nav-item active" type="button" data-view="status"><span aria-hidden="true">⌂</span> Overview</button>
           <button class="nav-item" type="button" data-view="apps">Apps</button>
           <button class="nav-item" type="button" data-view="files">File Browser</button>
           <button class="nav-item" type="button" data-view="settings">Settings</button>
@@ -26,10 +26,24 @@
           <header class="topbar">
             <div>
               <p class="eyebrow">System overview</p>
-              <h1>Status</h1>
+              <h1>Overview</h1>
             </div>
             <button id="refresh-status" type="button">Refresh status</button>
           </header>
+
+          <section class="health-banner" id="health-banner" aria-live="polite">
+            <div><span id="health-dot"></span><strong id="health-label">Checking system</strong></div>
+            <span id="health-host">--</span>
+            <span id="health-uptime">Uptime --</span>
+          </section>
+
+          <section class="overview-summary" aria-label="System summary">
+            <article><span>Containers</span><strong id="summary-containers">--</strong></article>
+            <article><span>Services</span><strong id="summary-services">--</strong></article>
+            <article><span>Alerts</span><strong id="summary-alerts">--</strong></article>
+            <article><span>Network</span><strong id="summary-network">--</strong></article>
+            <article><span>Temperature</span><strong id="summary-temperature">--</strong></article>
+          </section>
 
           <section class="monitor" aria-live="polite">
             <article class="metric">
@@ -66,6 +80,20 @@
               <div class="meter"><span id="gpu-bar"></span></div>
               <small id="gpu-detail">Detecting</small>
               <div id="gpu-list" class="gpu-list"></div>
+            </article>
+          </section>
+
+          <section class="overview-grid">
+            <article class="status-panel history-panel">
+              <div class="section-head"><div><h2>Performance history</h2><p>CPU, memory and GPU during the selected period.</p></div>
+                <select id="history-range" aria-label="History range"><option value="1">1 hour</option><option value="6">6 hours</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+              </div>
+              <div id="history-chart" class="history-chart" aria-label="Performance chart"></div>
+              <div class="chart-legend"><span class="cpu">CPU</span><span class="memory">Memory</span><span class="gpu">GPU</span></div>
+            </article>
+            <article class="status-panel alerts-panel">
+              <div class="section-head"><div><h2>Attention</h2><p>Current local alerts and noteworthy conditions.</p></div></div>
+              <div id="overview-alerts" class="stack"></div>
             </article>
           </section>
 
@@ -284,6 +312,33 @@
           </header>
 
           <section class="settings-panel">
+            <div class="section-head"><div><h2>Appearance and alerts</h2><p>Customize HomeStart without editing config.json.</p></div></div>
+            <form id="general-settings-form" class="settings-grid-form">
+              <label>Dashboard title<input id="setting-title" required /></label>
+              <label>Subtitle<input id="setting-subtitle" /></label>
+              <label>Accent color<input id="setting-accent" type="color" /></label>
+              <label>Theme<select id="setting-theme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label>
+              <label>Density<select id="setting-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+              <label>CPU alert (%)<input id="setting-cpu-alert" type="number" min="1" max="100" /></label>
+              <label>Memory alert (%)<input id="setting-memory-alert" type="number" min="1" max="100" /></label>
+              <label>Disk alert (%)<input id="setting-disk-alert" type="number" min="1" max="100" /></label>
+              <label>Temperature alert (°C)<input id="setting-temperature-alert" type="number" min="1" max="150" /></label>
+              <label>Automatic backup (hours)<input id="setting-backup-hours" type="number" min="0" max="8760" /></label>
+              <button type="submit">Save settings</button>
+            </form>
+          </section>
+
+          <section class="settings-panel">
+            <div class="section-head"><div><h2>Backups</h2><p>Back up HomeStart configuration, history and custom app icons.</p></div><button id="backup-create" type="button">Create backup</button></div>
+            <div id="backup-list" class="stack"><p class="form-note">Loading backups…</p></div>
+          </section>
+
+          <section class="settings-panel">
+            <div class="section-head"><div><h2>Trash</h2><p>Restore files and folders removed from File Browser.</p></div></div>
+            <div id="trash-list" class="stack"><p class="form-note">Loading trash…</p></div>
+          </section>
+
+          <section class="settings-panel">
             <div class="section-head">
               <div>
                 <h2>Network</h2>
@@ -371,6 +426,7 @@
             <h2></h2>
             <p class="kind"></p>
           </div>
+          <button class="favorite" type="button" aria-label="Toggle favorite" title="Favorite">☆</button>
         </div>
         <div class="badges"></div>
         <p class="description"></p>
@@ -379,10 +435,18 @@
           <a class="open" target="_blank" rel="noreferrer">Open</a>
           <button class="stop" type="button">Stop</button>
           <button class="restart" type="button">Restart</button>
+          <button class="logs" type="button">Logs</button>
           <button class="uninstall" type="button">Uninstall</button>
         </div>
       </article>
     </template>
+
+    <dialog id="logs-dialog" class="store-dialog logs-dialog">
+      <div class="section-head"><div><p class="eyebrow">Docker logs</p><h2 id="logs-title">Container logs</h2></div><button id="logs-close" type="button">Close</button></div>
+      <pre id="logs-content">Loading…</pre>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
 
     <script src="/app.js"></script>
   </body>
