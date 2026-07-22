@@ -1338,7 +1338,7 @@ def system_payload(network_channel="live"):
         "memory": memory_payload(),
         "gpu": gpu,
         "gpus": gpus,
-        "network": network_payload(network_channel),
+        "network": network_payload(network_channel) if network_channel else {},
         "temperature": temperature_payload(),
     }
     return payload
@@ -1355,6 +1355,15 @@ def metrics_db():
           cpu REAL,
           memory REAL,
           gpu REAL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS network_metrics (
+          captured_at INTEGER PRIMARY KEY,
+          rx_bps REAL,
+          tx_bps REAL
         )
         """
     )
@@ -1387,6 +1396,16 @@ def record_system_metric(payload):
         connection.execute("DELETE FROM system_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
 
 
+def record_network_metric(payload):
+    captured_at = int(payload.get("timestamp") or time.time())
+    with metrics_db() as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO network_metrics (captured_at, rx_bps, tx_bps) VALUES (?, ?, ?)",
+            (captured_at, payload.get("rx_bps"), payload.get("tx_bps")),
+        )
+        connection.execute("DELETE FROM network_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
+
+
 def metrics_history(hours=24):
     automatic = str(hours).lower() == "auto"
     try:
@@ -1394,12 +1413,32 @@ def metrics_history(hours=24):
     except (TypeError, ValueError):
         hours = 24
     since = int(time.time()) - hours * 3600
+    bucket_seconds = max(2, int((hours * 3600 + 1199) // 1200))
     with metrics_db() as connection:
         rows = connection.execute(
             "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
             (since,),
         ).fetchall()
-    return {"ok": True, "hours": "auto" if automatic else hours, "network_interface": default_network_interface(), "points": [dict(row) for row in rows]}
+        network_rows = connection.execute(
+            """
+            SELECT (captured_at / ?) * ? AS captured_at,
+                   AVG(rx_bps) AS rx_bps,
+                   AVG(tx_bps) AS tx_bps
+            FROM network_metrics
+            WHERE captured_at >= ?
+            GROUP BY captured_at / ?
+            ORDER BY captured_at
+            """,
+            (bucket_seconds, bucket_seconds, since, bucket_seconds),
+        ).fetchall()
+        if not network_rows:
+            network_rows = connection.execute(
+                "SELECT captured_at, rx_bps, tx_bps FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
+                (since,),
+            ).fetchall()
+    return {"ok": True, "hours": "auto" if automatic else hours, "network_interface": default_network_interface(),
+            "points": [dict(row) for row in rows], "network_points": [dict(row) for row in network_rows],
+            "network_sample_seconds": 2, "retention_days": 7}
 
 
 def metrics_sampler():
@@ -1407,11 +1446,24 @@ def metrics_sampler():
     while True:
         started = time.monotonic()
         try:
-            record_system_metric(system_payload("history"))
+            record_system_metric(system_payload(None))
         except Exception as error:
             print(f"HomeStart metrics sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
         time.sleep(max(1, 30 - elapsed))
+
+
+def network_metrics_sampler():
+    """Collect two-second network history independently from the browser."""
+    while True:
+        started = time.monotonic()
+        try:
+            network = network_payload("history")
+            record_network_metric({"timestamp": int(time.time()), **network})
+        except Exception as error:
+            print(f"HomeStart network sampler: {error}", flush=True)
+        elapsed = time.monotonic() - started
+        time.sleep(max(.25, 2 - elapsed))
 
 
 def overview_payload():
@@ -3955,6 +4007,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", "80"))
     threading.Thread(target=metrics_sampler, name="homestart-metrics", daemon=True).start()
+    threading.Thread(target=network_metrics_sampler, name="homestart-network-metrics", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), HomeStartHandler)
     print(f"HomeStart listening on 0.0.0.0:{port}", flush=True)
     server.serve_forever()
