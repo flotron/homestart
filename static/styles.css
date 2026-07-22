@@ -135,6 +135,7 @@ body {
 .chart-line { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .chart-line.cpu { stroke: #38bdf8; }.chart-line.memory { stroke: #a78bfa; }.chart-line.gpu { stroke: #41d19b; }
 .chart-line.download { stroke:#22d3ee; }.chart-line.upload { stroke:#fb923c; }
+.chart-point.download { fill:#22d3ee; }.chart-point.upload { fill:#fb923c; }
 .chart-legend { display: flex; gap: 18px; color: var(--muted); font-size: 12px; }
 .chart-legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; margin: 0 7px 3px 0; border-radius: 3px; }
 .chart-legend .cpu::before { background:#38bdf8; }.chart-legend .memory::before { background:#a78bfa; }.chart-legend .gpu::before { background:#41d19b; }
