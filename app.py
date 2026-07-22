@@ -92,12 +92,12 @@ DEFAULT_CONFIG = {
 }
 
 CURATED_APPS = [
-    {"name": "Uptime Kuma", "image": "louislam/uptime-kuma:1", "container_port": 3001, "host_port": 3001, "description": "Self-hosted uptime monitoring", "volume": "/opt/uptime-kuma:/app/data"},
-    {"name": "Home Assistant", "image": "ghcr.io/home-assistant/home-assistant:stable", "container_port": 8123, "host_port": 8123, "description": "Open source home automation", "volume": "/opt/homeassistant:/config"},
-    {"name": "Jellyfin", "image": "jellyfin/jellyfin:latest", "container_port": 8096, "host_port": 8096, "description": "Personal media server", "volume": "/opt/jellyfin:/config"},
-    {"name": "Nginx Proxy Manager", "image": "jc21/nginx-proxy-manager:latest", "container_port": 81, "host_port": 81, "description": "Visual reverse proxy manager", "volume": "/opt/nginx-proxy-manager:/data"},
-    {"name": "Grafana", "image": "grafana/grafana:latest", "container_port": 3000, "host_port": 3000, "description": "Metrics dashboards and visualization", "volume": "/opt/grafana:/var/lib/grafana"},
-    {"name": "Forgejo", "image": "codeberg.org/forgejo/forgejo:latest", "container_port": 3000, "host_port": 3000, "description": "Lightweight Git service", "volume": "/opt/forgejo:/data"},
+    {"name": "Uptime Kuma", "image": "louislam/uptime-kuma:1", "page_url": "https://hub.docker.com/r/louislam/uptime-kuma", "container_port": 3001, "host_port": 3001, "description": "Self-hosted uptime monitoring", "volume": "/opt/uptime-kuma:/app/data"},
+    {"name": "Home Assistant", "image": "ghcr.io/home-assistant/home-assistant:stable", "page_url": "https://github.com/home-assistant/core/pkgs/container/home-assistant", "link_label": "GHCR", "container_port": 8123, "host_port": 8123, "description": "Open source home automation", "volume": "/opt/homeassistant:/config"},
+    {"name": "Jellyfin", "image": "jellyfin/jellyfin:latest", "page_url": "https://hub.docker.com/r/jellyfin/jellyfin", "container_port": 8096, "host_port": 8096, "description": "Personal media server", "volume": "/opt/jellyfin:/config"},
+    {"name": "Nginx Proxy Manager", "image": "jc21/nginx-proxy-manager:latest", "page_url": "https://hub.docker.com/r/jc21/nginx-proxy-manager", "container_port": 81, "host_port": 81, "description": "Visual reverse proxy manager", "volume": "/opt/nginx-proxy-manager:/data"},
+    {"name": "Grafana", "image": "grafana/grafana:latest", "page_url": "https://hub.docker.com/r/grafana/grafana", "container_port": 3000, "host_port": 3000, "description": "Metrics dashboards and visualization", "volume": "/opt/grafana:/var/lib/grafana"},
+    {"name": "Forgejo", "image": "codeberg.org/forgejo/forgejo:latest", "page_url": "https://codeberg.org/forgejo/forgejo", "link_label": "Codeberg", "container_port": 3000, "host_port": 3000, "description": "Lightweight Git service", "volume": "/opt/forgejo:/data"},
 ]
 INLINE_EXTENSIONS = {
     ".bmp",
@@ -2604,6 +2604,45 @@ def docker_container_exists(name):
         return False
 
 
+def image_repository(image):
+    value = str(image or "").strip().lower().split("@", 1)[0]
+    last_slash = value.rfind("/")
+    last_colon = value.rfind(":")
+    if last_colon > last_slash:
+        value = value[:last_colon]
+    if value.startswith("docker.io/"):
+        value = value[len("docker.io/"):]
+    if value.startswith("library/"):
+        value = value[len("library/"):]
+    return value
+
+
+def installed_docker_images():
+    try:
+        output = run_docker_command(["ps", "-a", "--format", "{{.Image}}\t{{.Names}}"], timeout=15)
+    except ValueError:
+        return {}
+    installed = {}
+    for line in output.splitlines():
+        image, separator, name = line.partition("\t")
+        repository = image_repository(image)
+        if separator and repository:
+            installed.setdefault(repository, []).append(name.strip())
+    return installed
+
+
+def curated_store_apps():
+    installed = installed_docker_images()
+    return [dict(item) for item in CURATED_APPS if image_repository(item.get("image")) not in installed]
+
+
+def dockerhub_page_url(name, official=False):
+    clean = str(name or "").strip()
+    if official and "/" not in clean:
+        return f"https://hub.docker.com/_/{quote(clean)}"
+    return f"https://hub.docker.com/r/{quote(clean, safe='/')}"
+
+
 def docker_action(name, action):
     if not load_config_file().get("features", {}).get("docker_actions", True):
         raise ValueError("Docker actions are disabled")
@@ -2709,6 +2748,7 @@ def dockerhub_search(query, limit=12):
     query_tokens = [token for token in re.split(r"[^a-z0-9]+", query.lower()) if token]
     compact_query = "".join(query_tokens)
     results = []
+    installed = installed_docker_images()
     for item in payload.get("results", []):
         name = str(item.get("repo_name") or "").strip()
         if not name:
@@ -2725,7 +2765,7 @@ def dockerhub_search(query, limit=12):
                 "image": name,
                 "namespace": namespace,
                 "repo": repo,
-                "page_url": f"https://hub.docker.com/r/{name}",
+                "page_url": dockerhub_page_url(name, bool(item.get("is_official"))),
                 "description": description,
                 "stars": item.get("star_count") or 0,
                 "pulls": item.get("pull_count") or 0,
@@ -2734,6 +2774,8 @@ def dockerhub_search(query, limit=12):
                 "icon_url": f"https://cdn.simpleicons.org/{icon_slug}/38bdf8" if icon_slug else "",
                 "icon_label": repo[:1].upper(),
                 "relevance": dockerhub_result_score(name, description, query_tokens, compact_query, item),
+                "installed": image_repository(name) in installed,
+                "installed_containers": installed.get(image_repository(name), []),
             }
         )
     results.sort(key=lambda item: (item["relevance"], item["pulls"], item["stars"]), reverse=True)
@@ -2899,6 +2941,10 @@ def docker_store_install(payload, job_id=None):
         raise ValueError("Docker app store is disabled")
 
     image = normalize_docker_image(payload.get("image", ""))
+    installed = installed_docker_images()
+    if image_repository(image) in installed:
+        names = ", ".join(installed[image_repository(image)])
+        raise ValueError(f"This image is already installed as {names}")
     container_name = normalize_docker_name(payload.get("name") or image.rsplit("/", 1)[-1].split(":", 1)[0])
     host_port = normalize_container_port(payload.get("host_port"))
     container_port = normalize_container_port(payload.get("container_port"))
@@ -3666,7 +3712,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             return
 
         if route == "/api/store/templates":
-            self.send_json({"ok": True, "templates": CURATED_APPS})
+            self.send_json({"ok": True, "templates": curated_store_apps()})
             return
 
         if route == "/api/store/install/status":

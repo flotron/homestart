@@ -608,8 +608,17 @@ function renderStoreResult(item) {
   ].filter(Boolean).join(" · ");
   const link = node.querySelector(".store-link");
   link.href = item.page_url || `https://hub.docker.com/r/${encodeURIComponent(item.image || item.name)}`;
-  link.title = `Open ${item.name} on Docker Hub`;
-  node.querySelector("button").addEventListener("click", () => openStoreInstall(item));
+  link.textContent = item.link_label || "Docker Hub";
+  link.title = `Open the image page for ${item.name}`;
+  const install = node.querySelector("button");
+  if (item.installed) {
+    install.textContent = "Installed";
+    install.disabled = true;
+    install.title = `Installed as ${(item.installed_containers || []).join(", ")}`;
+    node.classList.add("installed");
+  } else {
+    install.addEventListener("click", () => openStoreInstall(item));
+  }
   return node;
 }
 
@@ -690,7 +699,7 @@ async function loadStoreTemplates() {
   storeStatus.textContent = "Recommended apps";
   const response = await fetch("/api/store/templates", { cache: "no-store" });
   const data = await response.json();
-  state.storeResults = (data.templates || []).map((item) => ({ ...item, repo: item.name, namespace: "HomeStart template", page_url: `https://hub.docker.com/search?q=${encodeURIComponent(item.image)}` }));
+  state.storeResults = (data.templates || []).map((item) => ({ ...item, repo: item.name, namespace: "HomeStart template" }));
   renderStoreResults();
 }
 

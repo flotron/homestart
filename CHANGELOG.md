@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-2345
+
+- Hid recommended App Store entries when a container already uses the same
+  Docker image, regardless of its container name or image tag.
+- Marked installed images in manual Docker Hub search results and disabled
+  duplicate installation from those cards and from the install API.
+- Replaced recommended-app search links with direct image pages on Docker Hub,
+  GHCR, or Codeberg as appropriate.
+
 ## 20260722-2230
 
 - Moved Docker App Store installations into background jobs so the request and
