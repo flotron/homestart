@@ -19,7 +19,7 @@ and apply local or GitHub release updates without bundling private runtime data.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste, rename, recoverable trash, downloads, folder ZIPs, and new folders.
 - Docker logs and curated installation templates with suggested ports and volumes.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
-- Local backups for configuration, history, and custom icons, with a safety backup before restore.
+- Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through netplan, GitHub release update checks, and update uploads.
 - Supported apps:
