@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-0130
+
+- Fixed new network history collapsing into one invisible point because its
+  downsampling bucket was based on the selected range instead of available data.
+- Kept full two-second resolution until the available series exceeds roughly
+  1,200 points, then increases aggregation progressively.
+- Added visible markers for the first single download/upload sample.
+
 ## 20260723-0030
 
 - Changed live network polling and background network history sampling to every

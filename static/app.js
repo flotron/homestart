@@ -189,6 +189,15 @@ function chartPath(points, key, width, height, startTime, endTime, verticalMax) 
   }).filter(Boolean).join(" ");
 }
 
+function chartPoint(points, key, width, height, startTime, endTime, verticalMax, className) {
+  if (points.length !== 1 || points[0][key] === null || points[0][key] === undefined) return "";
+  const timestamp = Number(points[0].captured_at) || startTime;
+  const value = Math.max(0, Math.min(verticalMax, Number(points[0][key]) || 0));
+  const x = (timestamp - startTime) / Math.max(1, endTime - startTime) * width;
+  const y = height - value / verticalMax * height;
+  return `<circle class="chart-point ${className}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" />`;
+}
+
 function metricStats(points, key) {
   const values = points.map((item) => item[key]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
   if (!values.length) return null;
@@ -286,6 +295,8 @@ function renderBandwidthHistory(points, hours, interfaceName) {
     <g class="chart-axis"><text x="4" y="13">${formatRate(verticalMax)}</text><text x="4" y="${height / 2 - 5}">${formatRate(verticalMax / 2)}</text><text x="4" y="${height - 6}">0 bps</text></g>
     <path class="chart-line download" d="${chartPath(points, "rx_bps", width, height, start, end, verticalMax)}" />
     <path class="chart-line upload" d="${chartPath(points, "tx_bps", width, height, start, end, verticalMax)}" />
+    ${chartPoint(points, "rx_bps", width, height, start, end, verticalMax, "download")}
+    ${chartPoint(points, "tx_bps", width, height, start, end, verticalMax, "upload")}
   </svg>`;
   renderTimeAxis(bandwidthTimeAxis, start, end);
   bandwidthStats.replaceChildren(...[["rx_bps", "Download", "download"], ["tx_bps", "Upload", "upload"]].map(([key, label, className]) => {

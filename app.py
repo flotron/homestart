@@ -1413,12 +1413,17 @@ def metrics_history(hours=24):
     except (TypeError, ValueError):
         hours = 24
     since = int(time.time()) - hours * 3600
-    bucket_seconds = max(2, int((hours * 3600 + 1199) // 1200))
     with metrics_db() as connection:
         rows = connection.execute(
             "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
             (since,),
         ).fetchall()
+        network_bounds = connection.execute(
+            "SELECT MIN(captured_at), MAX(captured_at) FROM network_metrics WHERE captured_at >= ?",
+            (since,),
+        ).fetchone()
+        available_span = max(0, (network_bounds[1] or 0) - (network_bounds[0] or 0))
+        bucket_seconds = max(2, int((available_span + 1199) // 1200))
         network_rows = connection.execute(
             """
             SELECT (captured_at / ?) * ? AS captured_at,
