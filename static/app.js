@@ -118,6 +118,8 @@ const summaryTemperature = document.querySelector("#summary-temperature");
 const overviewAlerts = document.querySelector("#overview-alerts");
 const historyChart = document.querySelector("#history-chart");
 const historyRange = document.querySelector("#history-range");
+const historyStats = document.querySelector("#history-stats");
+const historyMeta = document.querySelector("#history-meta");
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
 const logsContent = document.querySelector("#logs-content");
@@ -156,36 +158,66 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function chartPath(points, key, width, height) {
-  const values = points.map((item) => item[key]);
-  return values.map((value, index) => {
+function chartPath(points, key, width, height, startTime, endTime, verticalMax) {
+  let previousTime = null;
+  return points.map((item) => {
+    const value = item[key];
     if (value === null || value === undefined) return "";
-    const x = points.length <= 1 ? 0 : index / (points.length - 1) * width;
-    const y = height - Math.max(0, Math.min(100, value)) / 100 * height;
-    return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+    const timestamp = Number(item.captured_at) || startTime;
+    const x = (timestamp - startTime) / Math.max(1, endTime - startTime) * width;
+    const y = height - Math.max(0, Math.min(verticalMax, value)) / verticalMax * height;
+    const command = previousTime === null || timestamp - previousTime > 120 ? "M" : "L";
+    previousTime = timestamp;
+    return `${command}${x.toFixed(1)},${y.toFixed(1)}`;
   }).filter(Boolean).join(" ");
 }
 
-function renderHistory(points) {
+function metricStats(points, key) {
+  const values = points.map((item) => item[key]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
+  if (!values.length) return null;
+  return { current: values.at(-1), average: values.reduce((sum, value) => sum + value, 0) / values.length, maximum: Math.max(...values) };
+}
+
+function renderHistory(points, hours) {
   if (!historyChart) return;
   if (!points.length) {
     historyChart.innerHTML = '<div class="empty-state">History will appear after HomeStart collects a few samples.</div>';
+    historyStats.replaceChildren();
+    historyMeta.textContent = "No samples in this period yet. HomeStart now collects one every 30 seconds in the background.";
     return;
   }
   const width = 800;
   const height = 220;
+  const endTime = Math.floor(Date.now() / 1000);
+  const startTime = endTime - Number(hours || 24) * 3600;
+  const allValues = points.flatMap((item) => [item.cpu, item.memory, item.gpu]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
+  const observedMax = Math.max(1, ...allValues);
+  const verticalMax = Math.min(100, Math.max(10, Math.ceil(observedMax * 1.2 / 10) * 10));
+  const half = verticalMax / 2;
   historyChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="System usage history">
     <g class="chart-grid"><path d="M0 0H${width} M0 ${height / 2}H${width} M0 ${height}H${width}" /></g>
-    <path class="chart-line cpu" d="${chartPath(points, "cpu", width, height)}" />
-    <path class="chart-line memory" d="${chartPath(points, "memory", width, height)}" />
-    <path class="chart-line gpu" d="${chartPath(points, "gpu", width, height)}" />
+    <g class="chart-axis"><text x="4" y="13">${verticalMax}%</text><text x="4" y="${height / 2 - 5}">${half}%</text><text x="4" y="${height - 6}">0%</text></g>
+    <path class="chart-line cpu" d="${chartPath(points, "cpu", width, height, startTime, endTime, verticalMax)}" />
+    <path class="chart-line memory" d="${chartPath(points, "memory", width, height, startTime, endTime, verticalMax)}" />
+    <path class="chart-line gpu" d="${chartPath(points, "gpu", width, height, startTime, endTime, verticalMax)}" />
   </svg>`;
+  const labels = { cpu: "CPU", memory: "Memory", gpu: "GPU" };
+  historyStats.replaceChildren(...Object.entries(labels).map(([key, label]) => {
+    const stats = metricStats(points, key);
+    const node = document.createElement("article");
+    node.className = `history-stat ${key}`;
+    node.innerHTML = `<span>${label}</span><strong>${stats ? `${stats.current.toFixed(1)}%` : "--"}</strong><small>${stats ? `avg ${stats.average.toFixed(1)}% · max ${stats.maximum.toFixed(1)}%` : "not detected"}</small>`;
+    return node;
+  }));
+  const first = new Date(points[0].captured_at * 1000).toLocaleString();
+  const last = new Date(points.at(-1).captured_at * 1000).toLocaleString();
+  historyMeta.textContent = `${points.length} samples · ${first} to ${last} · adaptive scale 0–${verticalMax}%`;
 }
 
 async function loadHistory() {
   const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
   const data = await response.json();
-  renderHistory(data.points || []);
+  renderHistory(data.points || [], data.hours || historyRange?.value || 24);
 }
 
 async function loadOverview() {
