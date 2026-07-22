@@ -326,6 +326,13 @@ button:disabled {
   resize: vertical;
 }
 
+.install-progress { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: rgb(15 23 42 / 0.55); }
+.install-progress-head { display: flex; justify-content: space-between; gap: 12px; }
+.install-progress-track { height: 8px; margin-top: 9px; overflow: hidden; border-radius: 999px; background: rgb(148 163 184 / 0.18); }
+.install-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width 300ms ease; }
+.install-progress details { margin-top: 8px; }
+.install-progress pre { max-height: 150px; overflow: auto; white-space: pre-wrap; color: var(--muted); font-size: 12px; }
+
 .store-results {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
