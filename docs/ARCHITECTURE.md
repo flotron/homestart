@@ -6,7 +6,7 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   file operations, metrics, backups, network settings, and updates.
 - `static/` contains the dependency-free browser application.
 - `data/homestart.db` stores local metric and Speedtest history.
-- `data/backups/`, `data/trash/`, and `data/app-icons/` contain local runtime
+- `data/backups/`, `data/trash/`, and `data/app-icons/` contain update/legacy backup and local runtime
   data and are never included in releases.
 - `scripts/build_package.sh` creates separate installer and update archives.
 - `.github/workflows/` validates every change and builds tagged releases.
