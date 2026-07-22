@@ -350,6 +350,8 @@ button:disabled {
   background: rgb(15 23 32 / 0.78);
 }
 
+.store-card.installed { opacity: 0.72; }
+
 .store-card-head {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);
