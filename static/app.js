@@ -134,6 +134,8 @@ const bandwidthTimeAxis = document.querySelector("#bandwidth-time-axis");
 const bandwidthSubtitle = document.querySelector("#bandwidth-subtitle");
 const liveDownload = document.querySelector("#live-download");
 const liveUpload = document.querySelector("#live-upload");
+const liveDownloadTop = document.querySelector("#live-download-top");
+const liveUploadTop = document.querySelector("#live-upload-top");
 const liveInterface = document.querySelector("#live-interface");
 const liveUpdated = document.querySelector("#live-updated");
 let liveNetworkLoading = false;
@@ -317,6 +319,10 @@ async function loadLiveNetwork() {
     if (!response.ok || !data.ok) throw new Error(data.error || "Live network unavailable");
     liveDownload.textContent = formatRate(data.rx_bps);
     liveUpload.textContent = formatRate(data.tx_bps);
+    const downloadTop = data.top_consumers?.download;
+    const uploadTop = data.top_consumers?.upload;
+    liveDownloadTop.textContent = downloadTop ? `Top now: ${downloadTop.name} · ${formatRate(downloadTop.rx_bps)}` : "Top now: no Docker activity";
+    liveUploadTop.textContent = uploadTop ? `Top now: ${uploadTop.name} · ${formatRate(uploadTop.tx_bps)}` : "Top now: no Docker activity";
     liveInterface.textContent = data.interface || "Default interface";
     liveUpdated.textContent = `Live · updated ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
   } catch (error) {
