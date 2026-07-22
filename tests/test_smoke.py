@@ -66,6 +66,19 @@ class HomeStartSmokeTests(unittest.TestCase):
         restored = self.app.restore_trash_item(item["key"])
         self.assertEqual(Path(restored["path"]).read_text(encoding="utf-8"), "recover me")
 
+    def test_copy_in_same_folder_creates_copy_name(self):
+        root = Path(self.temp.name) / "copy-files"
+        root.mkdir()
+        source = root / "manual.pdf"
+        source.write_bytes(b"pdf")
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        result = self.app.copy_file_path(str(source), str(root))
+        copied = Path(result["path"])
+        self.assertEqual(copied.name, "manual - copy.pdf")
+        self.assertEqual(copied.read_bytes(), b"pdf")
+
 
 if __name__ == "__main__":
     unittest.main()

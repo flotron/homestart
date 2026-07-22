@@ -4,6 +4,16 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1320
+
+- Fixed File Browser paste becoming unreliable after navigating to a destination
+  because the copy action triggered an unnecessary asynchronous folder reload.
+- Preserved the copied item in session storage so Paste remains available after
+  a browser refresh during the same session.
+- Added visible copy/paste progress and success feedback.
+- Pasting into a folder that already contains the item now creates `- copy`,
+  `- copy 2`, and so on instead of failing.
+
 ## 20260722-1200
 
 - Added a professional Overview with system health, host summary, local alerts,

@@ -2127,6 +2127,14 @@ def copy_file_path(source_path, destination_path):
         raise FileNotFoundError("The source path does not exist")
 
     target = destination / source.name if destination.exists() and destination.is_dir() else destination
+    if target.exists():
+        stem = source.stem if source.is_file() else source.name
+        suffix = source.suffix if source.is_file() else ""
+        counter = 1
+        while target.exists():
+            label = "copy" if counter == 1 else f"copy {counter}"
+            target = target.with_name(f"{stem} - {label}{suffix}")
+            counter += 1
     resolve_file_path(str(target))
     if source.resolve() == target.resolve():
         raise ValueError("Source and destination are the same")
@@ -2141,7 +2149,7 @@ def copy_file_path(source_path, destination_path):
         shutil.copytree(source, target)
     else:
         shutil.copy2(source, target)
-    return {"ok": True, "path": str(target), "action": "copy"}
+    return {"ok": True, "path": str(target), "action": "copy", "message": f"Pasted as {target.name}"}
 
 
 def decode_data_url(content):
