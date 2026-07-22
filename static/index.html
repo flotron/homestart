@@ -86,10 +86,11 @@
           <section class="overview-grid">
             <article class="status-panel history-panel">
               <div class="section-head"><div><h2>Performance history</h2><p>CPU, memory and GPU during the selected period.</p></div>
-                <select id="history-range" aria-label="History range"><option value="1">1 hour</option><option value="6">6 hours</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+                <select id="history-range" aria-label="History range"><option value="auto" selected>Available data</option><option value="1">1 hour</option><option value="6">6 hours</option><option value="24">24 hours</option><option value="168">7 days</option></select>
               </div>
-              <div id="history-chart" class="history-chart" aria-label="Performance chart"></div>
               <div id="history-stats" class="history-stats"></div>
+              <div id="history-chart" class="history-chart" aria-label="Performance chart"></div>
+              <div id="history-time-axis" class="history-time-axis"></div>
               <p id="history-meta" class="history-meta">Loading metric samples…</p>
               <div class="chart-legend"><span class="cpu">CPU</span><span class="memory">Memory</span><span class="gpu">GPU</span></div>
             </article>
@@ -97,6 +98,15 @@
               <div class="section-head"><div><h2>Attention</h2><p>Current local alerts and noteworthy conditions.</p></div></div>
               <div id="overview-alerts" class="stack"></div>
             </article>
+          </section>
+
+          <section class="status-panel bandwidth-panel">
+            <div class="section-head"><div><h2>Network bandwidth</h2><p id="bandwidth-subtitle">Traffic through the default network interface.</p></div></div>
+            <div id="bandwidth-stats" class="history-stats bandwidth-stats"></div>
+            <div id="bandwidth-chart" class="history-chart" aria-label="Network bandwidth chart"></div>
+            <div id="bandwidth-time-axis" class="history-time-axis"></div>
+            <p id="bandwidth-meta" class="history-meta">Loading bandwidth samples…</p>
+            <div class="chart-legend bandwidth-legend"><span class="download">Download</span><span class="upload">Upload</span></div>
           </section>
 
           <details class="resources-panel" id="resources-panel">
