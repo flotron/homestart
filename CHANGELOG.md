@@ -4,6 +4,13 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1930
+
+- Smoothed the adaptive network chart scale by replacing large fixed jumps with
+  progressive 1, 2, 2.5, 5, and 10 multiples at each order of magnitude.
+- Reduced scale headroom to 10 percent. A measured peak near 7 Gbps now selects
+  a readable 10 Gbps ceiling instead of jumping from 8 Gbps to 40 Gbps.
+
 ## 20260722-1830
 
 - Added a live network panel that updates download and upload every second,
