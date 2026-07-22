@@ -43,6 +43,8 @@ CPU_DETAIL_PREV = None
 GPU_PREV = None
 METRIC_LAST_WRITE = 0
 NETWORK_LIVE_PREV = None
+INSTALL_JOBS = {}
+INSTALL_JOBS_LOCK = threading.Lock()
 NETWORK_HISTORY_PREV = None
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
@@ -2857,7 +2859,42 @@ def safe_volume_mapping(value):
     return value
 
 
-def docker_store_install(payload):
+def update_install_job(job_id, **values):
+    with INSTALL_JOBS_LOCK:
+        job = INSTALL_JOBS.get(job_id)
+        if job:
+            job.update(values)
+            job["updated_at"] = int(time.time())
+
+
+def docker_pull_with_progress(image, job_id):
+    process = subprocess.Popen(
+        ["docker", "pull", image],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    recent = []
+    completed_layers = set()
+    progress = 15
+    for raw_line in process.stdout or []:
+        line = raw_line.strip()
+        if not line:
+            continue
+        recent = (recent + [line])[-12:]
+        layer = line.split(":", 1)[0].strip()
+        if "Pull complete" in line or "Already exists" in line:
+            completed_layers.add(layer)
+        progress = max(progress, min(80, 15 + len(completed_layers) * 4))
+        update_install_job(job_id, stage="pulling", progress=progress, message=line, log=recent)
+    return_code = process.wait()
+    if return_code:
+        detail = recent[-1] if recent else f"docker pull exited with code {return_code}"
+        raise ValueError(detail)
+
+
+def docker_store_install(payload, job_id=None):
     if not docker_app_store_enabled():
         raise ValueError("Docker app store is disabled")
 
@@ -2874,7 +2911,12 @@ def docker_store_install(payload):
     env_values = [safe_env_assignment(item) for item in payload.get("env", []) if str(item or "").strip()]
     volume_values = [safe_volume_mapping(item) for item in payload.get("volumes", []) if str(item or "").strip()]
 
-    run_docker_command(["pull", image], timeout=600)
+    if job_id:
+        update_install_job(job_id, stage="pulling", progress=10, message=f"Downloading {image}…")
+        docker_pull_with_progress(image, job_id)
+        update_install_job(job_id, stage="creating", progress=85, message="Creating container…")
+    else:
+        run_docker_command(["pull", image], timeout=600)
 
     command = ["run", "-d", "--name", container_name, "--restart", restart_policy]
     if host_port and container_port:
@@ -2886,13 +2928,50 @@ def docker_store_install(payload):
     command.append(image)
 
     container_id = run_docker_command(command, timeout=120).strip()
+    if job_id:
+        update_install_job(job_id, stage="starting", progress=95, message="Container created; checking status…")
+        try:
+            state = run_docker_command(["inspect", "--format", "{{.State.Status}}", container_name], timeout=15).strip()
+        except ValueError:
+            state = "created"
     return {
         "ok": True,
         "container": container_name,
         "container_id": container_id[:12],
         "image": image,
         "message": f"Installed {container_name} from {image}",
+        "state": state if job_id else "running",
     }
+
+
+def run_store_install_job(job_id, payload):
+    try:
+        result = docker_store_install(payload, job_id)
+        update_install_job(job_id, status="completed", stage="completed", progress=100,
+                           message=f"{result['container']} is {result.get('state', 'running')}", result=result)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        update_install_job(job_id, status="failed", stage="failed", message=str(error), error=str(error))
+
+
+def start_store_install(payload):
+    job_id = uuid.uuid4().hex
+    now = int(time.time())
+    with INSTALL_JOBS_LOCK:
+        INSTALL_JOBS[job_id] = {"id": job_id, "status": "running", "stage": "validating", "progress": 3,
+                                "message": "Validating installation…", "log": [], "created_at": now, "updated_at": now}
+        expired = [key for key, job in INSTALL_JOBS.items() if now - job.get("updated_at", now) > 86400]
+        for key in expired:
+            INSTALL_JOBS.pop(key, None)
+    threading.Thread(target=run_store_install_job, args=(job_id, payload), name=f"install-{job_id[:8]}", daemon=True).start()
+    return {"ok": True, "job_id": job_id}
+
+
+def store_install_status(job_id):
+    with INSTALL_JOBS_LOCK:
+        job = INSTALL_JOBS.get(str(job_id or ""))
+        if not job:
+            raise ValueError("Installation job not found")
+        return {"ok": True, **job}
 
 
 def configured_app(name):
@@ -3590,6 +3669,14 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "templates": CURATED_APPS})
             return
 
+        if route == "/api/store/install/status":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(store_install_status(query.get("job_id", [""])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.NOT_FOUND)
+            return
+
         if route == "/api/docker/logs":
             query = parse_qs(parsed.query)
             try:
@@ -3786,7 +3873,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                self.send_json(docker_store_install(payload))
+                self.send_json(start_store_install(payload), HTTPStatus.ACCEPTED)
             except (json.JSONDecodeError, ValueError, subprocess.SubprocessError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
