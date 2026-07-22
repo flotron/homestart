@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1230
+
+- Prioritized Docker Official Images, Verified Publishers, and sponsored open
+  source results ahead of unverified community images in App Store searches.
+- Added a Twitter-style blue check beside trusted image names, with a tooltip
+  that distinguishes Official, Verified Publisher, and sponsored OSS status.
+- Cached concurrent verification checks for six hours to keep later searches
+  fast without relying on unverified namespace guesses.
+
 ## 20260723-1130
 
 - Added the current top downloading and uploading Docker container beside the
