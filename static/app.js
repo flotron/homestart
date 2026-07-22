@@ -53,6 +53,12 @@ const storeInstallVolumes = document.querySelector("#store-install-volumes");
 const storeInstallRestart = document.querySelector("#store-install-restart");
 const storeInstallCancel = document.querySelector("#store-install-cancel");
 const storeInstallSubmit = document.querySelector("#store-install-submit");
+const storeInstallProgress = document.querySelector("#store-install-progress");
+const storeInstallStage = document.querySelector("#store-install-stage");
+const storeInstallPercent = document.querySelector("#store-install-percent");
+const storeInstallBar = document.querySelector("#store-install-bar");
+const storeInstallMessage = document.querySelector("#store-install-message");
+const storeInstallLog = document.querySelector("#store-install-log");
 const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
 const cpuBar = document.querySelector("#cpu-bar");
@@ -647,7 +653,37 @@ function openStoreInstall(item) {
   storeInstallEnv.value = "";
   storeInstallVolumes.value = item.volume || "";
   storeInstallRestart.value = "unless-stopped";
+  storeInstallProgress.hidden = true;
+  storeInstallLog.textContent = "";
   storeInstallDialog.showModal();
+}
+
+function renderInstallProgress(job) {
+  const labels = { validating: "Validating", pulling: "Downloading image", creating: "Creating container", starting: "Starting container", completed: "Installed", failed: "Installation failed" };
+  const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+  storeInstallProgress.hidden = false;
+  storeInstallStage.textContent = labels[job.stage] || "Installing";
+  storeInstallPercent.textContent = `${Math.round(progress)}%`;
+  storeInstallBar.style.width = `${progress}%`;
+  storeInstallMessage.textContent = job.message || "Working…";
+  storeInstallLog.textContent = (job.log || []).join("\n");
+}
+
+async function watchStoreInstall(jobId, payload) {
+  while (true) {
+    const response = await fetch(`/api/store/install/status?job_id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const job = await response.json();
+    if (!response.ok || !job.ok) throw new Error(job.error || "Could not read installation status");
+    renderInstallProgress(job);
+    if (job.status === "failed") throw new Error(job.error || "Installation failed");
+    if (job.status === "completed") {
+      storeInstallSubmit.textContent = "Installed";
+      toast(job.message || `${payload.name} installed`, "success");
+      await Promise.all([load(), loadStatus()]);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
 }
 
 async function loadStoreTemplates() {
@@ -687,10 +723,7 @@ async function installStoreApp(event) {
       window.alert(result.error || "Could not install Docker app.");
       return;
     }
-    storeInstallDialog.close();
-    window.alert(result.message || `${payload.name} installed.`);
-    await load();
-    await loadStatus();
+    await watchStoreInstall(result.job_id, payload);
   } finally {
     storeInstallSubmit.disabled = false;
     storeInstallSubmit.textContent = "Install";
