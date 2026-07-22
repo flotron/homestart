@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1700
+
+- Added an `Available data` history range that expands the samples to a readable
+  timeline while keeping explicit 1h, 6h, 24h, and 7-day ranges available.
+- Moved current/average/maximum summaries above the charts and added five real
+  time-axis labels for easier interpretation.
+- Added a Network bandwidth history chart with download/upload current,
+  average, maximum, adaptive units, and automatic scale.
+- Network collection now follows only the default-route interface instead of
+  summing Docker bridges and virtual adapters, preventing duplicated traffic.
+
 ## 20260722-1530
 
 - Fixed performance history depending on an open browser: HomeStart now samples

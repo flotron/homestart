@@ -95,6 +95,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0]["cpu"], 7.5)
         self.assertEqual(points[0]["temperature"], 48.0)
+        self.assertEqual(self.app.metrics_history("auto")["hours"], "auto")
 
 
 if __name__ == "__main__":
