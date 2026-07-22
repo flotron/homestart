@@ -117,6 +117,16 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.app.network_payload("history")
         self.assertIsNotNone(self.app.NETWORK_HISTORY_PREV)
 
+    def test_network_history_is_stored_separately_at_fine_resolution(self):
+        self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
+        now = int(__import__("time").time())
+        self.app.record_network_metric({"timestamp": now, "rx_bps": 7000, "tx_bps": 900})
+        history = self.app.metrics_history(1)
+        self.assertEqual(history["network_sample_seconds"], 2)
+        self.assertEqual(history["retention_days"], 7)
+        self.assertEqual(len(history["network_points"]), 1)
+        self.assertEqual(history["network_points"][0]["rx_bps"], 7000)
+
 
 if __name__ == "__main__":
     unittest.main()
