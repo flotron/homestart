@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260722-1400
+
+- Fixed online updates sometimes showing `Failed to fetch` when systemd
+  restarted HomeStart before the browser received the success response.
+- The server now flushes update responses and waits three seconds before
+  restarting.
+- The browser now treats a temporary disconnect as an expected restart,
+  monitors `/health`, and reloads automatically when HomeStart returns.
+
 ## 20260722-1320
 
 - Fixed File Browser paste becoming unreliable after navigating to a destination
