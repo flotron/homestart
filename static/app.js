@@ -256,8 +256,11 @@ function formatRate(bytesPerSecond) {
 }
 
 function bandwidthScale(maximum) {
-  const steps = [1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000, 500_000_000, 1_000_000_000, 5_000_000_000];
-  return steps.find((step) => step >= maximum * 1.15) || Math.ceil(maximum / 1_000_000_000) * 1_000_000_000;
+  const targetBits = Math.max(1, Number(maximum) || 0) * 8 * 1.1;
+  const magnitude = 10 ** Math.floor(Math.log10(targetBits));
+  const fraction = targetBits / magnitude;
+  const niceFraction = [1, 2, 2.5, 5, 10].find((value) => value >= fraction) || 10;
+  return niceFraction * magnitude / 8;
 }
 
 function renderBandwidthHistory(points, hours, interfaceName) {
