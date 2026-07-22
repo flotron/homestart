@@ -262,6 +262,12 @@
                 </select>
               </label>
               <p class="form-note">Only install images you trust. HomeStart will pull the image and run it as a Docker container.</p>
+              <div id="store-install-progress" class="install-progress" hidden>
+                <div class="install-progress-head"><strong id="store-install-stage">Preparing…</strong><span id="store-install-percent">0%</span></div>
+                <div class="install-progress-track"><span id="store-install-bar"></span></div>
+                <p id="store-install-message" class="form-note">Waiting to start…</p>
+                <details><summary>Docker details</summary><pre id="store-install-log"></pre></details>
+              </div>
               <div class="dialog-actions">
                 <button id="store-install-cancel" type="button">Cancel</button>
                 <button id="store-install-submit" type="submit">Install</button>
