@@ -3616,6 +3616,12 @@ def is_physical_network_interface(item):
         return False
     if "master" in item:
         return False
+    link_kind = (item.get("linkinfo") or {}).get("info_kind")
+    if link_kind:
+        return False
+    sysfs = Path("/sys/class/net") / name
+    if not ((sysfs / "device").exists() or (sysfs / "wireless").exists()):
+        return False
     return True
 
 
@@ -3626,12 +3632,15 @@ def network_interfaces_payload():
         addresses = []
 
     routes = default_routes()
+    monitor_items = monitorable_network_interfaces(refresh=True)
+    hardware_by_name = {item["name"]: item for item in monitor_items}
     interfaces = []
     for item in addresses:
         if not is_physical_network_interface(item):
             continue
 
         name = item.get("ifname", "")
+        hardware = hardware_by_name.get(name, {})
         netplan_path, netplan_config = netplan_interface_config(name)
         ipv4 = [
             {
@@ -3648,6 +3657,14 @@ def network_interfaces_payload():
         interfaces.append(
             {
                 "name": name,
+                "label": hardware.get("label", ""),
+                "vendor": hardware.get("vendor", ""),
+                "model": hardware.get("model", ""),
+                "driver": hardware.get("driver", ""),
+                "kind": hardware.get("kind", ""),
+                "carrier": hardware.get("carrier", False),
+                "speed_mbps": hardware.get("speed_mbps"),
+                "duplex": hardware.get("duplex", ""),
                 "mac": item.get("address", ""),
                 "state": item.get("operstate", "UNKNOWN"),
                 "mtu": item.get("mtu"),
@@ -3660,7 +3677,6 @@ def network_interfaces_payload():
             }
         )
 
-    monitor_items = monitorable_network_interfaces(refresh=True)
     selected = load_config_file().get("network", {}).get("monitor_interface", "auto")
     active = choose_monitor_interface(monitor_items, selected, default_route_interfaces())
     return {
