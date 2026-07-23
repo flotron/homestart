@@ -12,6 +12,7 @@ const state = {
     catch { return null; }
   })(),
   selectedFile: null,
+  editingSambaShare: null,
   features: { file_operations: true },
   view: "status",
   networkInterfaces: [],
@@ -111,6 +112,9 @@ const sambaShareGuest = document.querySelector("#samba-share-guest");
 const sambaShareBrowseable = document.querySelector("#samba-share-browseable");
 const sambaUseCurrent = document.querySelector("#samba-use-current");
 const sambaShareSubmit = document.querySelector("#samba-share-submit");
+const sambaShareCancel = document.querySelector("#samba-share-cancel");
+const sambaForceUserField = document.querySelector("#samba-force-user-field");
+const sambaForceUser = document.querySelector("#samba-force-user");
 const sambaCredentialUser = document.querySelector("#samba-credential-user");
 const sambaCredentialPassword = document.querySelector("#samba-credential-password");
 const sambaCredentialSave = document.querySelector("#samba-credential-save");
@@ -1851,6 +1855,13 @@ function renderSambaShare(share) {
 
   const actions = document.createElement("div");
   actions.className = "samba-share-actions";
+  if (share.managed) {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit share";
+    edit.addEventListener("click", () => editSambaShare(share));
+    actions.appendChild(edit);
+  }
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.textContent = share.enabled ? "Stop sharing" : "Share again";
@@ -1924,22 +1935,52 @@ async function createSambaShare(event) {
   sambaShareSubmit.disabled = true;
   try {
     await postSambaAction({
-      action: "create",
+      action: state.editingSambaShare ? "update" : "create",
       name: sambaShareName.value.trim(),
       path: sambaSharePath.value.trim(),
       valid_users: sambaShareUsers.value,
       read_only: !sambaShareWritable.checked,
       guest_ok: sambaShareGuest.checked,
       browseable: sambaShareBrowseable.checked,
+      force_user: sambaForceUser.value.trim(),
     });
-    sambaShareForm.reset();
-    sambaShareBrowseable.checked = true;
-    sambaSharePath.value = state.filePath || "";
+    resetSambaShareForm();
   } catch (error) {
     window.alert(error.message);
   } finally {
     sambaShareSubmit.disabled = false;
   }
+}
+
+function updateSambaForceUserVisibility() {
+  sambaForceUserField.hidden = !(sambaShareGuest.checked && sambaShareWritable.checked);
+}
+
+function resetSambaShareForm() {
+  state.editingSambaShare = null;
+  sambaShareForm.reset();
+  sambaShareName.readOnly = false;
+  sambaShareBrowseable.checked = true;
+  sambaSharePath.value = state.filePath || "";
+  sambaShareSubmit.textContent = "Create share";
+  sambaShareCancel.hidden = true;
+  updateSambaForceUserVisibility();
+}
+
+function editSambaShare(share) {
+  state.editingSambaShare = share.name;
+  sambaShareName.value = share.name;
+  sambaShareName.readOnly = true;
+  sambaSharePath.value = share.path || "";
+  sambaShareUsers.value = (share.valid_users || []).join(", ");
+  sambaShareWritable.checked = !share.read_only;
+  sambaShareGuest.checked = Boolean(share.guest_ok);
+  sambaShareBrowseable.checked = Boolean(share.browseable);
+  sambaForceUser.value = share.force_user || "";
+  sambaShareSubmit.textContent = "Save changes";
+  sambaShareCancel.hidden = false;
+  updateSambaForceUserVisibility();
+  sambaShareForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function saveSambaCredential() {
@@ -2144,6 +2185,9 @@ setInterval(() => loadHistory().catch(console.error), 2000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
 if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));
 if (sambaShareForm) sambaShareForm.addEventListener("submit", createSambaShare);
+if (sambaShareCancel) sambaShareCancel.addEventListener("click", resetSambaShareForm);
+if (sambaShareGuest) sambaShareGuest.addEventListener("change", updateSambaForceUserVisibility);
+if (sambaShareWritable) sambaShareWritable.addEventListener("change", updateSambaForceUserVisibility);
 if (sambaCredentialSave) sambaCredentialSave.addEventListener("click", saveSambaCredential);
 if (sambaUseCurrent) sambaUseCurrent.addEventListener("click", () => {
   sambaSharePath.value = state.filePath || "";
