@@ -252,6 +252,20 @@ def set_system_timezone(timezone_name):
     return timezone_name
 
 
+def timezone_regions():
+    regions = set(available_timezones())
+    try:
+        output = subprocess.check_output(
+            ["timedatectl", "list-timezones"],
+            text=True, timeout=10, stderr=subprocess.DEVNULL,
+        )
+        regions.update(item.strip() for item in output.splitlines() if item.strip())
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    regions.discard("localtime")
+    return sorted(regions)
+
+
 def settings_payload():
     config = load_config_file()
     return {
@@ -262,7 +276,7 @@ def settings_payload():
         "network": config["network"],
         "time": {"timezone": system_timezone(), "server_timestamp": int(time.time())},
         "trash": config["trash"],
-        "timezones": sorted(available_timezones()),
+        "timezones": timezone_regions(),
     }
 
 
