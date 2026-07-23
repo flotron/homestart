@@ -155,6 +155,9 @@ body {
 .live-bandwidth-status { display:grid; grid-template-columns:auto 1fr; align-content:center; gap:4px 8px; padding:12px; border:1px solid var(--glass-line); border-radius:12px; background:var(--glass); }
 .live-bandwidth-status small { grid-column:2; color:var(--muted); }.live-dot { width:8px; height:8px; margin-top:5px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); }
 .sampling-note { margin:0 0 12px; color:var(--muted); font-size:12px; }
+.monitor-interface-control { display:grid; min-width:min(100%,360px); gap:5px; color:var(--muted); font-size:12px; }
+.monitor-interface-control select { max-width:420px; }
+.monitor-interface-control small { max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .history-meta { margin:0 0 10px; color:var(--muted); font-size:12px; }
 .alert-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; gap:10px; padding:11px; border:1px solid var(--glass-line); border-radius:10px; background:rgb(255 255 255 / .025); }
 .alert-item > span { width:8px; height:8px; margin-top:5px; flex:none; border-radius:50%; background:#38bdf8; }
@@ -2079,6 +2082,8 @@ button:disabled {
   .history-stats { grid-template-columns:1fr; }
   .bandwidth-stats { grid-template-columns:1fr; }
   .live-bandwidth { grid-template-columns:1fr; }
+  .bandwidth-head { align-items:stretch; flex-direction:column; }
+  .monitor-interface-control, .monitor-interface-control select, .monitor-interface-control small { width:100%; max-width:none; }
 
   .resource-summary {
     grid-template-columns: 1fr;

@@ -139,6 +139,21 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.app.network_payload("history")
         self.assertIsNotNone(self.app.NETWORK_HISTORY_PREV)
 
+    def test_monitor_selection_falls_back_when_saved_interface_disappears(self):
+        items = [
+            {"name": "enp2s0", "carrier": False, "state": "down"},
+            {"name": "enp69s0f0", "carrier": True, "state": "up"},
+        ]
+        selected = self.app.choose_monitor_interface(items, "removed0", ["enp69s0f0"])
+        self.assertEqual(selected, "enp69s0f0")
+
+    def test_udev_properties_support_human_hardware_names(self):
+        properties = self.app.parse_udev_properties(
+            "ID_VENDOR_FROM_DATABASE=Example Networks\nID_MODEL_FROM_DATABASE=Fast Ethernet Adapter\n"
+        )
+        self.assertEqual(properties["ID_VENDOR_FROM_DATABASE"], "Example Networks")
+        self.assertEqual(properties["ID_MODEL_FROM_DATABASE"], "Fast Ethernet Adapter")
+
     def test_network_device_totals_exclude_loopback(self):
         content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
         self.assertEqual(self.app.network_device_totals(content), (3000, 900))

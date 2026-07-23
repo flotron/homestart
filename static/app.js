@@ -107,6 +107,8 @@ const networkAddress = document.querySelector("#network-address");
 const networkGateway = document.querySelector("#network-gateway");
 const networkDns = document.querySelector("#network-dns");
 const networkManagedBy = document.querySelector("#network-managed-by");
+const monitorInterface = document.querySelector("#monitor-interface");
+const monitorInterfaceDetail = document.querySelector("#monitor-interface-detail");
 const updateForm = document.querySelector("#update-form");
 const updateFile = document.querySelector("#update-file");
 const updateStatus = document.querySelector("#update-status");
@@ -1539,6 +1541,7 @@ async function loadNetworkSettings() {
   const response = await fetch("/api/settings/network", { cache: "no-store" });
   const data = await response.json();
   state.networkInterfaces = data.interfaces || [];
+  renderMonitorInterfaces(data.monitor || {});
 
   if (!state.selectedNetwork && state.networkInterfaces.length) {
     selectNetworkInterface(state.networkInterfaces.find((item) => item.gateway) || state.networkInterfaces[0]);
@@ -1546,6 +1549,57 @@ async function loadNetworkSettings() {
     const updated = state.networkInterfaces.find((item) => item.name === state.selectedNetwork?.name);
     if (updated) selectNetworkInterface(updated);
     else renderNetworkInterfaces();
+  }
+}
+
+function interfaceSpeedLabel(item) {
+  if (!item.speed_mbps) return "";
+  return item.speed_mbps >= 1000 ? `${item.speed_mbps / 1000} Gbps` : `${item.speed_mbps} Mbps`;
+}
+
+function renderMonitorInterfaces(monitor) {
+  if (!monitorInterface) return;
+  const items = monitor.interfaces || [];
+  const automatic = document.createElement("option");
+  automatic.value = "auto";
+  automatic.textContent = `Automatic${monitor.active ? ` · ${monitor.active}` : ""}`;
+  const options = items.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    const connection = item.carrier || String(item.state).toLowerCase() === "up" ? "connected" : "disconnected";
+    option.textContent = [item.label, item.name, interfaceSpeedLabel(item), connection].filter(Boolean).join(" · ");
+    return option;
+  });
+  monitorInterface.replaceChildren(automatic, ...options);
+  monitorInterface.value = monitor.selection_missing ? "auto" : (monitor.selected || "auto");
+  const active = items.find((item) => item.name === monitor.active);
+  if (monitor.selection_missing) {
+    monitorInterfaceDetail.textContent = `The saved interface is no longer present. Using ${monitor.active || "automatic detection"}.`;
+  } else if (active) {
+    const address = active.ipv4?.[0] ? ` · ${active.ipv4[0]}` : "";
+    monitorInterfaceDetail.textContent = `${active.label} · ${active.name}${address}`;
+  } else {
+    monitorInterfaceDetail.textContent = "No physical network interface detected.";
+  }
+}
+
+async function changeMonitorInterface() {
+  monitorInterface.disabled = true;
+  try {
+    const response = await fetch("/api/network/monitor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interface: monitorInterface.value }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "Could not change monitored interface");
+    await loadNetworkSettings();
+    await loadLiveNetwork();
+    await loadHistory();
+  } catch (error) {
+    monitorInterfaceDetail.textContent = error.message;
+  } finally {
+    monitorInterface.disabled = false;
   }
 }
 
@@ -1898,6 +1952,7 @@ loadStatus().catch(console.error);
 loadOverview().catch(console.error);
 loadHistory().catch(console.error);
 loadLiveNetwork().catch(console.error);
+loadNetworkSettings().catch(console.error);
 loadGeneralSettings().catch(console.error);
 loadTrash().catch(console.error);
 loadFiles().catch(console.error);
@@ -1908,6 +1963,7 @@ setInterval(() => loadResources().catch(console.error), 2500);
 setInterval(() => loadLiveNetwork().catch(console.error), 2000);
 setInterval(() => loadHistory().catch(console.error), 2000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
+monitorInterface?.addEventListener("change", () => changeMonitorInterface().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
 backupCreate?.addEventListener("click", createBackupFromUi);
