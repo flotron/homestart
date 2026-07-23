@@ -4,6 +4,18 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-2000
+
+- Moved Trash from Settings into File Browser and added original path, item
+  type, recursive size, deletion time and total disk usage.
+- Added permanent deletion, empty-all and configurable automatic retention:
+  never, 7, 30 or 90 days. Existing installations default to never.
+- Added a permanent date and clock that follows the Linux server time zone.
+- Settings can now change the server's real IANA time-zone region through
+  `timedatectl`.
+- Added hover and touch tooltips to system and network history charts with the
+  exact server-local timestamp and all values at the nearest sample.
+
 ## 20260723-1900
 
 - Fixed writable guest-share setup when a folder was created by the root-run
