@@ -1451,6 +1451,36 @@ button:disabled {
   background: rgb(27 32 40 / 0.68);
 }
 
+.samba-panel { margin-top:14px; padding:18px; border:1px solid var(--glass-line); border-radius:14px; background:var(--panel); }
+.samba-panel .section-head p { margin:4px 0 0; color:var(--muted); }
+.samba-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr); gap:14px; margin-top:14px; }
+.samba-share-list { display:grid; gap:9px; }
+.samba-share-card { display:grid; gap:12px; padding:14px; border:1px solid var(--glass-line); border-radius:12px; background:rgb(255 255 255 / .025); }
+.samba-share-card.disabled { opacity:.7; }
+.samba-share-heading { display:flex; justify-content:space-between; gap:12px; min-width:0; }
+.samba-share-heading div { min-width:0; }
+.samba-share-heading strong { display:block; font-size:16px; }
+.samba-share-heading p { margin:4px 0 0; overflow:hidden; color:var(--muted); text-overflow:ellipsis; white-space:nowrap; }
+.samba-share-details { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.samba-share-details span { min-width:0; padding:8px; border-radius:8px; background:rgb(255 255 255 / .025); }
+.samba-share-details small,.samba-share-details b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.samba-share-details small { color:var(--muted); }
+.samba-share-details b { margin-top:3px; font-size:12px; }
+.samba-share-actions { display:flex; justify-content:flex-end; gap:8px; }
+.samba-share-actions button { padding:7px 10px; }
+.samba-share-form { display:grid; align-content:start; gap:11px; padding:14px; border:1px solid var(--glass-line); border-radius:12px; background:rgb(255 255 255 / .025); }
+.samba-share-form h3 { margin:0; }
+.samba-share-form > label { display:grid; gap:6px; color:var(--muted); }
+.samba-path-field { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; }
+.samba-options { display:grid; gap:7px; }
+.samba-options label { display:flex; align-items:center; gap:8px; color:var(--muted); }
+.samba-options input { width:auto; }
+.samba-credentials { padding-top:10px; border-top:1px solid var(--line); }
+.samba-credentials summary { cursor:pointer; color:var(--text); font-weight:800; }
+.samba-credentials[open] { display:grid; gap:10px; }
+.samba-credentials[open] summary { margin-bottom:2px; }
+.samba-credentials label { display:grid; gap:6px; color:var(--muted); }
+
 .file-main-header {
   position: sticky;
   top: 0;
@@ -2165,6 +2195,13 @@ button:disabled {
     flex-direction: column;
     padding: 14px;
   }
+
+  .samba-panel { padding:14px; }
+  .samba-layout { grid-template-columns:1fr; }
+  .samba-share-details { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .samba-share-actions { display:grid; grid-template-columns:1fr; }
+  .samba-share-actions button { width:100%; }
+  .samba-path-field { grid-template-columns:1fr; }
 
   .file-toolbar {
     width: 100%;
