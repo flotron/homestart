@@ -406,3 +406,15 @@ packaging, security, and migration notes.
 
 
 
+## 20260723-1700
+
+- Network monitoring now follows the connected physical interface behind the
+  active default route and recovers automatically when a NIC is replaced.
+- Added an Automatic/manual monitoring selector to the bandwidth panel.
+- Network choices show runtime hardware information reported by Linux,
+  including vendor/model when available, driver fallback, link state, speed,
+  interface name, and local address.
+- Switching interfaces resets byte counters so unrelated NIC totals cannot
+  create false traffic spikes.
+- Hardware details remain local runtime data and are never embedded in release
+  files or saved as machine-specific defaults.
