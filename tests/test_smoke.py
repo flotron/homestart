@@ -48,6 +48,14 @@ class HomeStartSmokeTests(unittest.TestCase):
             text=True, timeout=15, stderr=self.app.subprocess.STDOUT,
         )
 
+    def test_timezone_regions_include_server_reported_zones(self):
+        with mock.patch.object(self.app, "available_timezones", return_value={"UTC"}), \
+                mock.patch.object(self.app.subprocess, "check_output", return_value="America/Argentina/Cordoba\nEurope/Madrid\n"):
+            regions = self.app.timezone_regions()
+        self.assertIn("America/Argentina/Cordoba", regions)
+        self.assertIn("Europe/Madrid", regions)
+        self.assertIn("UTC", regions)
+
     def test_trash_retention_accepts_supported_periods(self):
         result = self.app.update_settings({"trash": {"retention_days": 30}})
         self.assertEqual(result["trash"]["retention_days"], 30)
