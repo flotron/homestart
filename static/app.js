@@ -20,6 +20,7 @@ const state = {
   githubUpdate: null,
   resourceProcesses: [],
   processSort: { key: "cpu_percent", direction: "desc" },
+  serverTimezone: "UTC",
   storeResults: [],
   selectedStoreApp: null,
   favorites: new Set(JSON.parse(localStorage.getItem("homestart-favorites") || "[]")),
@@ -172,6 +173,12 @@ const toastRegion = document.querySelector("#toast-region");
 const generalSettingsForm = document.querySelector("#general-settings-form");
 const backupCreate = document.querySelector("#backup-create");
 const trashList = document.querySelector("#trash-list");
+const trashSummary = document.querySelector("#trash-summary");
+const trashRetention = document.querySelector("#trash-retention");
+const trashEmpty = document.querySelector("#trash-empty");
+const permanentClock = document.querySelector("#permanent-clock");
+const permanentDate = document.querySelector("#permanent-date");
+const permanentTimezone = document.querySelector("#permanent-timezone");
 
 function toast(message, kind = "info") {
   const node = document.createElement("div");
@@ -199,6 +206,75 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
   })[character]);
+}
+
+function zonedFormatter(options) {
+  try {
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: state.serverTimezone });
+  } catch {
+    return new Intl.DateTimeFormat(undefined, options);
+  }
+}
+
+function formatServerTimestamp(timestamp, includeSeconds = false) {
+  return zonedFormatter({
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+    ...(includeSeconds ? { second: "2-digit" } : {}),
+  }).format(new Date(Number(timestamp) * 1000));
+}
+
+function updatePermanentClock() {
+  const now = new Date();
+  permanentClock.textContent = zonedFormatter({
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(now);
+  permanentDate.textContent = zonedFormatter({
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  }).format(now);
+  permanentTimezone.textContent = state.serverTimezone;
+}
+
+function attachChartTooltip(node, points, startTime, endTime, kind) {
+  if (!node || !points.length) return;
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.hidden = true;
+  node.appendChild(tooltip);
+  const show = (event) => {
+    const bounds = node.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / Math.max(1, bounds.width)));
+    const targetTime = startTime + ratio * (endTime - startTime);
+    const point = points.reduce((best, item) =>
+      Math.abs(Number(item.captured_at) - targetTime) < Math.abs(Number(best.captured_at) - targetTime) ? item : best
+    );
+    const rows = kind === "network"
+      ? [["Download", formatRate(point.rx_bps)], ["Upload", formatRate(point.tx_bps)]]
+      : [["CPU", point.cpu == null ? "--" : `${Number(point.cpu).toFixed(1)}%`],
+         ["Memory", point.memory == null ? "--" : `${Number(point.memory).toFixed(1)}%`],
+         ["GPU", point.gpu == null ? "--" : `${Number(point.gpu).toFixed(1)}%`]];
+    tooltip.replaceChildren();
+    const timeNode = document.createElement("strong");
+    timeNode.textContent = formatServerTimestamp(point.captured_at, true);
+    tooltip.appendChild(timeNode);
+    rows.forEach(([label, value]) => {
+      const row = document.createElement("span");
+      const labelNode = document.createElement("small");
+      labelNode.textContent = label;
+      const valueNode = document.createElement("b");
+      valueNode.textContent = value;
+      row.append(labelNode, valueNode);
+      tooltip.appendChild(row);
+    });
+    tooltip.hidden = false;
+    const left = Math.max(8, Math.min(bounds.width - tooltip.offsetWidth - 8, event.clientX - bounds.left + 12));
+    const top = Math.max(8, Math.min(bounds.height - tooltip.offsetHeight - 8, event.clientY - bounds.top - tooltip.offsetHeight - 8));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  node.addEventListener("pointermove", show);
+  node.addEventListener("pointerdown", show);
+  node.addEventListener("pointerleave", () => { tooltip.hidden = true; });
 }
 
 function chartPath(points, key, width, height, startTime, endTime, verticalMax) {
@@ -242,7 +318,7 @@ function historyWindow(points, hours) {
 }
 
 function renderTimeAxis(node, startTime, endTime) {
-  const formatter = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", ...(endTime - startTime > 86400 ? { day: "2-digit", month: "2-digit" } : {}) });
+  const formatter = zonedFormatter({ hour: "2-digit", minute: "2-digit", ...(endTime - startTime > 86400 ? { day: "2-digit", month: "2-digit" } : {}) });
   node.replaceChildren(...[0, .25, .5, .75, 1].map((position) => {
     const label = document.createElement("span");
     label.textContent = formatter.format(new Date((startTime + (endTime - startTime) * position) * 1000));
@@ -274,6 +350,7 @@ function renderHistory(points, hours) {
     <path class="chart-line memory" d="${chartPath(points, "memory", width, height, startTime, endTime, verticalMax)}" />
     <path class="chart-line gpu" d="${chartPath(points, "gpu", width, height, startTime, endTime, verticalMax)}" />
   </svg>`;
+  attachChartTooltip(historyChart, points, startTime, endTime, "system");
   renderTimeAxis(historyTimeAxis, startTime, endTime);
   const labels = { cpu: "CPU", memory: "Memory", gpu: "GPU" };
   historyStats.replaceChildren(...Object.entries(labels).map(([key, label]) => {
@@ -283,8 +360,8 @@ function renderHistory(points, hours) {
     node.innerHTML = `<span>${label}</span><strong>${stats ? `${stats.current.toFixed(1)}%` : "--"}</strong><small>${stats ? `avg ${stats.average.toFixed(1)}% · max ${stats.maximum.toFixed(1)}%` : "not detected"}</small>`;
     return node;
   }));
-  const first = new Date(points[0].captured_at * 1000).toLocaleString();
-  const last = new Date(points.at(-1).captured_at * 1000).toLocaleString();
+  const first = formatServerTimestamp(points[0].captured_at);
+  const last = formatServerTimestamp(points.at(-1).captured_at);
   const rangeLabel = hours === "auto" ? "showing all available data" : `selected range ${hours}h`;
   historyMeta.textContent = `${points.length} samples · ${first} to ${last} · ${rangeLabel} · scale 0–${verticalMax}%`;
 }
@@ -325,6 +402,7 @@ function renderBandwidthHistory(points, hours, interfaceName) {
     ${chartPoint(points, "rx_bps", width, height, start, end, verticalMax, "download")}
     ${chartPoint(points, "tx_bps", width, height, start, end, verticalMax, "upload")}
   </svg>`;
+  attachChartTooltip(bandwidthChart, points, start, end, "network");
   renderTimeAxis(bandwidthTimeAxis, start, end);
   bandwidthStats.replaceChildren(...[["rx_bps", "Download", "download"], ["tx_bps", "Upload", "upload"]].map(([key, label, className]) => {
     const stats = metricStats(points, key); const node = document.createElement("article");
@@ -1288,6 +1366,13 @@ async function loadGeneralSettings() {
   document.querySelector("#setting-accent").value = data.appearance?.accent || "#38bdf8";
   document.querySelector("#setting-theme").value = data.appearance?.theme || "dark";
   document.querySelector("#setting-density").value = data.appearance?.density || "comfortable";
+  state.serverTimezone = data.time?.timezone || "UTC";
+  document.querySelector("#setting-timezone").value = state.serverTimezone;
+  document.querySelector("#timezone-list").replaceChildren(...(data.timezones || []).map((timezone) => {
+    const option = document.createElement("option");
+    option.value = timezone;
+    return option;
+  }));
   document.querySelector("#setting-cpu-alert").value = data.alerts?.cpu_percent ?? 90;
   document.querySelector("#setting-memory-alert").value = data.alerts?.memory_percent ?? 90;
   document.querySelector("#setting-disk-alert").value = data.alerts?.disk_percent ?? 90;
@@ -1295,6 +1380,7 @@ async function loadGeneralSettings() {
   document.documentElement.style.setProperty("--accent", data.appearance?.accent || "#38bdf8");
   document.documentElement.dataset.theme = data.appearance?.theme || "dark";
   document.body.dataset.density = data.appearance?.density || "comfortable";
+  updatePermanentClock();
 }
 
 async function saveGeneralSettings(event) {
@@ -1303,6 +1389,7 @@ async function saveGeneralSettings(event) {
     dashboard: { title: document.querySelector("#setting-title").value.trim(), subtitle: document.querySelector("#setting-subtitle").value.trim() },
     appearance: { accent: document.querySelector("#setting-accent").value, theme: document.querySelector("#setting-theme").value, density: document.querySelector("#setting-density").value },
     alerts: { cpu_percent: Number(document.querySelector("#setting-cpu-alert").value), memory_percent: Number(document.querySelector("#setting-memory-alert").value), disk_percent: Number(document.querySelector("#setting-disk-alert").value), temperature_c: Number(document.querySelector("#setting-temperature-alert").value) },
+    time: { timezone: document.querySelector("#setting-timezone").value.trim() },
   };
   const response = await fetch("/api/settings/general", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   const data = await response.json();
@@ -1334,19 +1421,95 @@ async function createBackupFromUi() {
 async function loadTrash() {
   const response = await fetch("/api/trash", { cache: "no-store" });
   const data = await response.json();
+  if (!response.ok || !data.ok) {
+    trashSummary.textContent = data.error || "Could not load trash.";
+    return;
+  }
   trashList.replaceChildren();
+  trashRetention.value = String(data.retention_days ?? 0);
+  trashEmpty.disabled = !data.items?.length;
+  trashSummary.textContent = `${data.items?.length || 0} item${data.items?.length === 1 ? "" : "s"} · ${formatFileSize(data.total_size || 0)} used`;
   if (!data.items?.length) { trashList.innerHTML = '<div class="empty-state">Trash is empty.</div>'; return; }
   data.items.forEach((item) => {
-    const row = document.createElement("div"); row.className = "row-card";
-    row.innerHTML = `<div><strong>${escapeHtml(item.name)}</strong><p>${escapeHtml(item.original)} · ${new Date(item.deleted_at * 1000).toLocaleString()}</p></div><button type="button">Restore</button>`;
-    row.querySelector("button").addEventListener("click", async () => {
+    const row = document.createElement("article");
+    row.className = "trash-card";
+    const details = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = item.name;
+    const original = document.createElement("p");
+    original.textContent = item.original;
+    const metadata = document.createElement("small");
+    metadata.textContent = `${item.type === "directory" ? "Folder" : "File"} · ${formatFileSize(item.size)} · deleted ${formatServerTimestamp(item.deleted_at, true)}`;
+    details.append(name, original, metadata);
+    const actions = document.createElement("div");
+    actions.className = "trash-actions";
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", async () => {
       const response = await fetch("/api/trash/restore", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key:item.key}) });
       const result = await response.json();
       if (!response.ok || !result.ok) return toast(result.error || "Restore failed", "error");
       toast(`Restored to ${result.path}`, "success"); await loadTrash();
     });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete permanently";
+    remove.addEventListener("click", async () => {
+      if (!window.confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+      const response = await fetch("/api/trash/delete", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({key:item.key}) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) return toast(result.error || "Permanent deletion failed", "error");
+      toast(`Permanently deleted ${item.name}`, "success");
+      await loadTrash();
+    });
+    actions.append(restore, remove);
+    row.append(details, actions);
     trashList.appendChild(row);
   });
+}
+
+function formatFileSize(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GiB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${value} B`;
+}
+
+async function saveTrashRetention() {
+  trashRetention.disabled = true;
+  try {
+    const response = await fetch("/api/settings/general", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trash: { retention_days: Number(trashRetention.value) } }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "Could not save trash retention");
+    toast(trashRetention.value === "0" ? "Trash will be kept until manually removed" : `Trash older than ${trashRetention.value} days will be deleted automatically`, "success");
+    await loadTrash();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    trashRetention.disabled = false;
+  }
+}
+
+async function emptyTrashFromUi() {
+  if (!window.confirm("Permanently delete every item in Trash? This cannot be undone.")) return;
+  trashEmpty.disabled = true;
+  try {
+    const response = await fetch("/api/trash/empty", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "Could not empty trash");
+    toast(`Trash emptied · ${result.deleted} item${result.deleted === 1 ? "" : "s"} removed`, "success");
+    await loadTrash();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    trashEmpty.disabled = false;
+  }
 }
 
 function renderRoots() {
@@ -2070,6 +2233,7 @@ function setView(view) {
   if (view === "status") loadStatus().catch(console.error);
   if (view === "files") {
     loadFiles(state.filePath).catch(console.error);
+    loadTrash().catch(console.error);
     loadSambaShares().catch(console.error);
   }
   if (view === "settings") loadNetworkSettings().catch(console.error);
@@ -2185,6 +2349,7 @@ setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
 setInterval(() => loadLiveNetwork().catch(console.error), 2000);
 setInterval(() => loadHistory().catch(console.error), 2000);
+setInterval(updatePermanentClock, 1000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
 if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));
 if (sambaShareForm) sambaShareForm.addEventListener("submit", createSambaShare);
@@ -2196,6 +2361,8 @@ if (sambaUseCurrent) sambaUseCurrent.addEventListener("click", () => {
   sambaSharePath.value = state.filePath || "";
   if (!sambaShareName.value && state.filePath) sambaShareName.value = currentFolderName(state.filePath);
 });
+trashRetention?.addEventListener("change", saveTrashRetention);
+trashEmpty?.addEventListener("click", emptyTrashFromUi);
 monitorInterface?.addEventListener("change", () => changeMonitorInterface().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
