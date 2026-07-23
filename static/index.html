@@ -14,10 +14,10 @@
           <strong id="dashboard-title">HomeStart</strong>
         </div>
         <nav class="nav" aria-label="Main navigation">
-          <button class="nav-item active" type="button" data-view="status"><span aria-hidden="true">⌂</span> Overview</button>
-          <button class="nav-item" type="button" data-view="apps">Apps</button>
-          <button class="nav-item" type="button" data-view="files">File Browser</button>
-          <button class="nav-item" type="button" data-view="settings">Settings</button>
+          <button class="nav-item active" type="button" data-view="status"><strong>Overview</strong><small>Health and performance</small></button>
+          <button class="nav-item" type="button" data-view="apps"><strong>Apps</strong><small>Services and containers</small></button>
+          <button class="nav-item" type="button" data-view="files"><strong>File Browser</strong><small>Storage and sharing</small></button>
+          <button class="nav-item" type="button" data-view="settings"><strong>Settings</strong><small>System configuration</small></button>
         </nav>
         <div class="sidebar-clock" aria-live="off">
           <strong id="permanent-clock">--:--:--</strong>
@@ -405,10 +405,17 @@
               <p class="eyebrow">System configuration</p>
               <h1>Settings</h1>
             </div>
-            <button id="refresh-network" type="button">Refresh network</button>
           </header>
 
-          <section class="settings-panel">
+          <div class="settings-workspace">
+            <nav class="settings-section-menu" aria-label="Settings sections">
+              <button class="active" type="button" data-settings-target="settings-general"><strong>General</strong><small>Appearance, alerts and time</small></button>
+              <button type="button" data-settings-target="settings-backups"><strong>Backups</strong><small>Download local data</small></button>
+              <button type="button" data-settings-target="settings-network"><strong>Network</strong><small>Interfaces and IPv4</small></button>
+              <button type="button" data-settings-target="settings-updates"><strong>Updates</strong><small>Online and manual packages</small></button>
+            </nav>
+            <div class="settings-content">
+          <section class="settings-panel" id="settings-general">
             <div class="section-head"><div><h2>Appearance and alerts</h2><p>Customize HomeStart without editing config.json.</p></div></div>
             <form id="general-settings-form" class="settings-grid-form">
               <label>Dashboard title<input id="setting-title" required /></label>
@@ -425,17 +432,18 @@
             </form>
           </section>
 
-          <section class="settings-panel">
+          <section class="settings-panel" id="settings-backups">
             <div class="section-head"><div><h2>Backups</h2><p>Download HomeStart configuration, history and custom app icons to this device.</p></div><button id="backup-create" type="button">Download backup</button></div>
             <p class="form-note">Your browser controls the destination. Enable “Ask where to save each file” in its download settings to choose a Windows folder or network drive.</p>
           </section>
 
-          <section class="settings-panel">
+          <section class="settings-panel" id="settings-network">
             <div class="section-head">
               <div>
                 <h2>Network</h2>
                 <p>Detected physical network interfaces. Applying changes can disconnect this host.</p>
               </div>
+              <button id="refresh-network" type="button">Refresh interfaces</button>
             </div>
 
             <div class="network-layout">
@@ -474,7 +482,7 @@
             </div>
           </section>
 
-          <section class="settings-panel">
+          <section class="settings-panel" id="settings-updates">
             <div class="section-head">
               <div>
                 <h2>Updates</h2>
@@ -500,6 +508,8 @@
               <button id="update-apply" type="submit">Apply update</button>
             </form>
           </section>
+            </div>
+          </div>
         </section>
       </main>
     </div>

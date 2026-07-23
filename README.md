@@ -21,6 +21,8 @@ and apply local or GitHub release updates without bundling private runtime data.
   IANA region, editable from Settings.
 - Interactive history charts: hover or touch to inspect the exact server time
   and CPU, memory, GPU, download and upload values for a sample.
+- Network history uses a percentile-based visual scale so isolated multi-gigabit
+  peaks remain inspectable without flattening the latest normal traffic.
 - Docker logs and curated installation templates with suggested ports and volumes.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
 - Manual downloadable backups for configuration, history, and custom icons.

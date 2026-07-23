@@ -1540,7 +1540,7 @@ def metrics_history(hours=24):
                 "SELECT captured_at, rx_bps, tx_bps FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
                 (since,),
             ).fetchall()
-    return {"ok": True, "hours": "auto" if automatic else hours, "network_interface": default_network_interface(),
+    return {"ok": True, "hours": "auto" if automatic else hours, "server_timestamp": int(time.time()), "network_interface": default_network_interface(),
             "points": [dict(row) for row in rows], "network_points": [dict(row) for row in network_rows],
             "network_sample_seconds": 2, "retention_days": 7}
 

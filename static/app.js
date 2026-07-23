@@ -21,6 +21,7 @@ const state = {
   resourceProcesses: [],
   processSort: { key: "cpu_percent", direction: "desc" },
   serverTimezone: "UTC",
+  serverClockOffsetMs: 0,
   storeResults: [],
   selectedStoreApp: null,
   favorites: new Set(JSON.parse(localStorage.getItem("homestart-favorites") || "[]")),
@@ -83,6 +84,7 @@ const resourceContainers = document.querySelector("#resource-containers");
 const resourceProcesses = document.querySelector("#resource-processes");
 const resourceTasks = document.querySelector("#resource-tasks");
 const processSortButtons = [...document.querySelectorAll("[data-process-sort]")];
+const settingsSectionButtons = [...document.querySelectorAll("[data-settings-target]")];
 const filesNode = document.querySelector("#files");
 const filePathNode = document.querySelector("#file-path");
 const filePathForm = document.querySelector("#file-path-form");
@@ -225,7 +227,7 @@ function formatServerTimestamp(timestamp, includeSeconds = false) {
 }
 
 function updatePermanentClock() {
-  const now = new Date();
+  const now = new Date(Date.now() + state.serverClockOffsetMs);
   permanentClock.textContent = zonedFormatter({
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).format(now);
@@ -308,12 +310,12 @@ function metricStats(points, key) {
 }
 
 function historyWindow(points, hours) {
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor((Date.now() + state.serverClockOffsetMs) / 1000);
   if (hours !== "auto") return { start: now - Number(hours || 24) * 3600, end: now };
   const first = Number(points[0]?.captured_at) || now;
   const last = Number(points.at(-1)?.captured_at) || now;
   const span = Math.max(60, last - first);
-  const padding = Math.max(15, span * 0.04);
+  const padding = Math.min(60, Math.max(5, span * 0.005));
   return { start: first - padding, end: last + padding };
 }
 
@@ -382,6 +384,12 @@ function bandwidthScale(maximum) {
   return niceFraction * magnitude / 8;
 }
 
+function percentile(values, fraction) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+}
+
 function renderBandwidthHistory(points, hours, interfaceName) {
   const values = points.flatMap((item) => [item.rx_bps, item.tx_bps]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
   bandwidthSubtitle.textContent = `Traffic through ${interfaceName || "the default network interface"}.`;
@@ -393,7 +401,10 @@ function renderBandwidthHistory(points, hours, interfaceName) {
   }
   const width = 800; const height = 220;
   const { start, end } = historyWindow(points, hours);
-  const verticalMax = bandwidthScale(Math.max(1, ...values));
+  const currentValues = [points.at(-1)?.rx_bps, points.at(-1)?.tx_bps].map(Number).filter(Number.isFinite);
+  const visualMaximum = Math.max(1, percentile(values, .98), ...currentValues);
+  const verticalMax = bandwidthScale(visualMaximum);
+  const clippedPeaks = values.filter((value) => value > verticalMax).length;
   bandwidthChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Network bandwidth history">
     <g class="chart-grid"><path d="M0 0H${width} M0 ${height / 2}H${width} M0 ${height}H${width}" /></g>
     <g class="chart-axis"><text x="4" y="13">${formatRate(verticalMax)}</text><text x="4" y="${height / 2 - 5}">${formatRate(verticalMax / 2)}</text><text x="4" y="${height - 6}">0 bps</text></g>
@@ -410,7 +421,7 @@ function renderBandwidthHistory(points, hours, interfaceName) {
     node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(stats?.average)} · max ${formatRate(stats?.maximum)}</small>`;
     return node;
   }));
-  bandwidthMeta.textContent = `${points.length} displayed points · sampled every 2 seconds · retained for 7 days · adaptive scale up to ${formatRate(verticalMax)}`;
+  bandwidthMeta.textContent = `${points.length} displayed points · sampled every 2 seconds · retained for 7 days · adaptive scale up to ${formatRate(verticalMax)}${clippedPeaks ? ` · ${clippedPeaks} peak${clippedPeaks === 1 ? "" : "s"} above visual scale (available in tooltip)` : ""}`;
 }
 
 async function loadLiveNetwork() {
@@ -438,6 +449,7 @@ async function loadLiveNetwork() {
 async function loadHistory() {
   const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
   const data = await response.json();
+  if (data.server_timestamp) state.serverClockOffsetMs = data.server_timestamp * 1000 - Date.now();
   renderHistory(data.points || [], data.hours || historyRange?.value || 24);
   renderBandwidthHistory(data.network_points || data.points || [], data.hours || historyRange?.value || 24, data.network_interface || "");
 }
@@ -1367,6 +1379,7 @@ async function loadGeneralSettings() {
   document.querySelector("#setting-theme").value = data.appearance?.theme || "dark";
   document.querySelector("#setting-density").value = data.appearance?.density || "comfortable";
   state.serverTimezone = data.time?.timezone || "UTC";
+  if (data.time?.server_timestamp) state.serverClockOffsetMs = data.time.server_timestamp * 1000 - Date.now();
   const timezoneSelect = document.querySelector("#setting-timezone");
   const groupedTimezones = new Map();
   (data.timezones || []).forEach((timezone) => {
@@ -2262,6 +2275,13 @@ function setView(view) {
 
 navItems.forEach((item) => {
   item.addEventListener("click", () => setView(item.dataset.view));
+});
+
+settingsSectionButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    settingsSectionButtons.forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelector(`#${button.dataset.settingsTarget}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 });
 
 search.addEventListener("input", () => {

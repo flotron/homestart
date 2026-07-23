@@ -171,6 +171,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(points[0]["cpu"], 7.5)
         self.assertEqual(points[0]["temperature"], 48.0)
         self.assertEqual(self.app.metrics_history("auto")["hours"], "auto")
+        self.assertIsInstance(self.app.metrics_history("auto")["server_timestamp"], int)
 
     def test_live_and_history_network_counters_are_independent(self):
         self.app.NETWORK_LIVE_PREV = None
