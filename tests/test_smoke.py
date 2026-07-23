@@ -349,6 +349,12 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertLess(peak["rx_avg_bps"], peak["rx_bps"])
         self.assertGreater(peak["sample_count"], 1)
 
+    def test_history_charts_use_their_rendered_panel_width(self):
+        script = (Path(__file__).parents[1] / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("responsiveChartWidth(historyChart)", script)
+        self.assertIn("responsiveChartWidth(bandwidthChart)", script)
+        self.assertNotIn("const width = 800;", script)
+
 
 if __name__ == "__main__":
     unittest.main()
