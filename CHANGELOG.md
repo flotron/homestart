@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1330
+
+- Replaced the CSS-drawn CPU, memory, and GPU illustrations with a consistent
+  professional SVG icon set, using restrained hardware-specific accent colors.
+- Reworked the mobile Apps view with larger app icons and favorite targets,
+  compact cards, scrollable badges, a sticky filter bar, and a touch-friendly
+  three-column action layout.
+- Kept App Store cards and top actions compact on narrow screens.
+
 ## 20260723-1230
 
 - Prioritized Docker Official Images, Verified Publishers, and sponsored open
