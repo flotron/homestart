@@ -11,7 +11,7 @@ const state = {
     try { return JSON.parse(sessionStorage.getItem("homestart-file-clipboard") || "null"); }
     catch { return null; }
   })(),
-  fileView: "grid",
+  selectedFile: null,
   features: { file_operations: true },
   view: "status",
   networkInterfaces: [],
@@ -94,8 +94,10 @@ const fileMain = document.querySelector(".file-main");
 const fileRoots = document.querySelector("#file-roots");
 const fileCount = document.querySelector("#file-count");
 const fileLocationName = document.querySelector("#file-location-name");
-const fileViewGrid = document.querySelector("#file-view-grid");
-const fileViewList = document.querySelector("#file-view-list");
+const fileContextMenu = document.querySelector("#file-context-menu");
+const fileContextName = document.querySelector("#file-context-name");
+const fileContextKind = document.querySelector("#file-context-kind");
+const fileContextActions = [...document.querySelectorAll("[data-file-context-action]")];
 const refreshNetwork = document.querySelector("#refresh-network");
 const networkInterfaces = document.querySelector("#network-interfaces");
 const networkForm = document.querySelector("#network-form");
@@ -122,6 +124,7 @@ const summaryAlerts = document.querySelector("#summary-alerts");
 const summaryNetwork = document.querySelector("#summary-network");
 const summaryTemperature = document.querySelector("#summary-temperature");
 const overviewAlerts = document.querySelector("#overview-alerts");
+const restoreIgnoredAlerts = document.querySelector("#restore-ignored-alerts");
 const historyChart = document.querySelector("#history-chart");
 const historyRange = document.querySelector("#history-range");
 const historyStats = document.querySelector("#history-stats");
@@ -342,16 +345,38 @@ async function loadHistory() {
 async function loadOverview() {
   const response = await fetch("/api/overview", { cache: "no-store" });
   const data = await response.json();
-  healthBanner.dataset.health = data.health || "healthy";
-  healthLabel.textContent = data.health === "healthy" ? "All systems operational" : data.health === "critical" ? "Action required" : "System needs attention";
+  let ignored;
+  try { ignored = new Set(JSON.parse(localStorage.getItem("homestart-ignored-alerts") || "[]")); }
+  catch { ignored = new Set(); }
+  const visibleAlerts = (data.alerts || []).filter((alert) => !ignored.has(alert.id || alert.title));
+  const visibleHealth = visibleAlerts.some((alert) => alert.level === "critical") ? "critical" : visibleAlerts.length ? "warning" : "healthy";
+  healthBanner.dataset.health = visibleHealth;
+  healthLabel.textContent = visibleHealth === "healthy" ? "All systems operational" : visibleHealth === "critical" ? "Action required" : "System needs attention";
   healthHost.textContent = data.hostname || "--";
   healthUptime.textContent = `Uptime ${data.uptime || "--"}`;
   summaryContainers.textContent = `${data.summary.containers_running}/${data.summary.containers_total} running`;
   summaryServices.textContent = `${data.summary.services_ok}/${data.summary.services_total} active`;
-  summaryAlerts.textContent = String(data.alerts.length);
+  summaryAlerts.textContent = String(visibleAlerts.length);
   summaryNetwork.textContent = `↓ ${data.system.network?.rx_label || "--"} · ↑ ${data.system.network?.tx_label || "--"}`;
   summaryTemperature.textContent = data.system.temperature?.available ? `${data.system.temperature.celsius} °C` : "Not detected";
-  overviewAlerts.innerHTML = data.alerts.length ? data.alerts.map((alert) => `<div class="alert-item ${escapeHtml(alert.level)}"><span></span><div><strong>${escapeHtml(alert.title)}</strong><p>${escapeHtml(alert.detail)}</p></div></div>`).join("") : '<div class="empty-state success">No active alerts. Everything looks good.</div>';
+  overviewAlerts.replaceChildren();
+  if (!visibleAlerts.length) overviewAlerts.innerHTML = '<div class="empty-state success">No active alerts. Everything looks good.</div>';
+  visibleAlerts.forEach((alert) => {
+    const node = document.createElement("div");
+    node.className = `alert-item ${alert.level}`;
+    node.innerHTML = `<span></span><div><strong></strong><p></p></div><button type="button">Ignore</button>`;
+    node.querySelector("strong").textContent = alert.title;
+    node.querySelector("p").textContent = alert.detail;
+    node.querySelector("button").addEventListener("click", () => {
+      ignored.add(alert.id || alert.title);
+      localStorage.setItem("homestart-ignored-alerts", JSON.stringify([...ignored]));
+      loadOverview().catch(console.error);
+    });
+    overviewAlerts.appendChild(node);
+  });
+  const ignoredActive = (data.alerts || []).filter((alert) => ignored.has(alert.id || alert.title)).length;
+  restoreIgnoredAlerts.hidden = ignoredActive === 0;
+  restoreIgnoredAlerts.textContent = `Restore ignored (${ignoredActive})`;
 }
 
 function normalize(value) {
@@ -1002,10 +1027,7 @@ function renderFileEntry(entry) {
     <span class="file-modified"></span>
     <span class="file-actions">
       <button class="file-open" type="button"></button>
-      <button class="file-download" type="button">Download</button>
-      <button class="file-copy" type="button">Copy</button>
-      <button class="file-rename" type="button">Rename</button>
-      <button class="file-delete" type="button">Trash</button>
+      <button class="file-more" type="button" aria-label="More actions">•••</button>
     </span>
   `;
   node.querySelector(".file-icon").textContent = fileIcon(entry);
@@ -1030,16 +1052,72 @@ function renderFileEntry(entry) {
   };
   node.querySelector(".file-name").addEventListener("click", openEntry);
   node.querySelector(".file-open").addEventListener("click", openEntry);
-  node.querySelector(".file-download").addEventListener("click", () => { window.location.href = `/api/file/download?path=${encodeURIComponent(entry.path)}`; });
-  node.querySelector(".file-copy").addEventListener("click", () => copyFileEntry(entry));
-  node.querySelector(".file-rename").addEventListener("click", () => renameFileEntry(entry));
-  node.querySelector(".file-delete").addEventListener("click", () => deleteFileEntry(entry));
-  if (!state.features.file_operations) {
-    node.querySelector(".file-copy").disabled = true;
-    node.querySelector(".file-rename").disabled = true;
-    node.querySelector(".file-delete").disabled = true;
-  }
+  node.querySelector(".file-more").addEventListener("click", (event) => openFileContextMenu(entry, node, event.clientX, event.clientY));
+  node.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openFileContextMenu(entry, node, event.clientX, event.clientY);
+  });
+  let holdTimer = null;
+  let held = false;
+  let holdStart = null;
+  node.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse") return;
+    held = false;
+    holdStart = { x: event.clientX, y: event.clientY };
+    holdTimer = window.setTimeout(() => {
+      held = true;
+      openFileContextMenu(entry, node, event.clientX, event.clientY);
+    }, 550);
+  });
+  ["pointerup", "pointercancel"].forEach((name) => node.addEventListener(name, () => window.clearTimeout(holdTimer)));
+  node.addEventListener("pointermove", (event) => {
+    if (holdStart && Math.hypot(event.clientX - holdStart.x, event.clientY - holdStart.y) > 10) window.clearTimeout(holdTimer);
+  });
+  node.querySelector(".file-name").addEventListener("click", (event) => {
+    if (held) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      held = false;
+    }
+  }, true);
   return node;
+}
+
+function closeFileContextMenu() {
+  fileContextMenu.hidden = true;
+  document.querySelectorAll(".file-entry.selected").forEach((node) => node.classList.remove("selected"));
+  state.selectedFile = null;
+}
+
+function openFileContextMenu(entry, node, x = 0, y = 0) {
+  closeFileContextMenu();
+  state.selectedFile = entry;
+  node.classList.add("selected");
+  fileContextName.textContent = entry.name;
+  fileContextKind.textContent = entry.type === "directory" ? "Folder" : [fileTypeLabel(entry), entry.size].filter(Boolean).join(" · ");
+  fileContextActions.forEach((button) => {
+    const action = button.dataset.fileContextAction;
+    button.disabled = !state.features.file_operations && ["copy", "rename", "delete"].includes(action);
+  });
+  fileContextMenu.hidden = false;
+  const width = 230;
+  const bounds = node.getBoundingClientRect();
+  fileContextMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, x || bounds.right - width))}px`;
+  fileContextMenu.style.top = `${Math.max(8, Math.min(window.innerHeight - 310, y || bounds.bottom))}px`;
+}
+
+async function runFileContextAction(action) {
+  const entry = state.selectedFile;
+  if (!entry) return;
+  closeFileContextMenu();
+  if (action === "open") {
+    if (entry.type === "directory") loadFiles(entry.path);
+    else window.open(`/api/file/open?path=${encodeURIComponent(entry.path)}`, "_blank", "noreferrer");
+  } else if (action === "download") {
+    window.location.href = `/api/file/download?path=${encodeURIComponent(entry.path)}`;
+  } else if (action === "copy") await copyFileEntry(entry);
+  else if (action === "rename") await renameFileEntry(entry);
+  else if (action === "delete") await deleteFileEntry(entry);
 }
 
 function updateFileControls() {
@@ -1680,16 +1758,6 @@ async function uploadDroppedFiles(files) {
   }
 }
 
-function setFileView(view) {
-  state.fileView = view;
-  filesNode.classList.toggle("grid-view", view === "grid");
-  filesNode.classList.toggle("list-view", view === "list");
-  fileViewGrid.classList.toggle("active", view === "grid");
-  fileViewList.classList.toggle("active", view === "list");
-  fileViewGrid.setAttribute("aria-pressed", String(view === "grid"));
-  fileViewList.setAttribute("aria-pressed", String(view === "list"));
-}
-
 function setFileDropActive(active) {
   fileDropStatus.classList.toggle("active", active);
 }
@@ -1792,8 +1860,19 @@ fileUpload.addEventListener("change", () => {
   fileUpload.value = "";
   uploadDroppedFiles(selected).catch(console.error);
 });
-fileViewGrid.addEventListener("click", () => setFileView("grid"));
-fileViewList.addEventListener("click", () => setFileView("list"));
+fileContextActions.forEach((button) => button.addEventListener("click", () => {
+  runFileContextAction(button.dataset.fileContextAction).catch((error) => toast(error.message, "error"));
+}));
+document.addEventListener("pointerdown", (event) => {
+  if (!fileContextMenu.hidden && !fileContextMenu.contains(event.target) && !event.target.closest(".file-more")) closeFileContextMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeFileContextMenu();
+});
+restoreIgnoredAlerts.addEventListener("click", () => {
+  localStorage.removeItem("homestart-ignored-alerts");
+  loadOverview().catch(console.error);
+});
 filePathForm.addEventListener("submit", openTypedFilePath);
 filePathNode.addEventListener("keydown", handleFilePathKeydown);
 fileMain.addEventListener("dragover", (event) => {
