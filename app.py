@@ -47,6 +47,7 @@ NETWORK_LIVE_PREV = None
 INSTALL_JOBS = {}
 INSTALL_JOBS_LOCK = threading.Lock()
 NETWORK_HISTORY_PREV = None
+NETWORK_INTERFACE_CACHE = {"at": 0, "items": []}
 CONTAINER_NETWORK_PREV = {}
 CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
 CONTAINER_NETWORK_TARGETS = []
@@ -97,6 +98,7 @@ DEFAULT_CONFIG = {
     },
     "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
     "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
+    "network": {"monitor_interface": "auto"},
 }
 
 CURATED_APPS = [
@@ -199,12 +201,18 @@ def save_config_file(config):
 
 def settings_payload():
     config = load_config_file()
-    return {"ok": True, "dashboard": config["dashboard"], "appearance": config["appearance"], "alerts": config["alerts"]}
+    return {
+        "ok": True,
+        "dashboard": config["dashboard"],
+        "appearance": config["appearance"],
+        "alerts": config["alerts"],
+        "network": config["network"],
+    }
 
 
 def update_settings(payload):
     config = load_config_file()
-    for section in ("dashboard", "appearance", "alerts"):
+    for section in ("dashboard", "appearance", "alerts", "network"):
         values = payload.get(section)
         if isinstance(values, dict):
             config[section] = deep_merge(config.get(section, {}), values)
@@ -1617,14 +1625,14 @@ def network_payload(channel="live"):
     now = time.monotonic()
     rx_bps = tx_bps = 0
     previous = NETWORK_HISTORY_PREV if channel == "history" else NETWORK_LIVE_PREV
-    if previous:
+    if previous and len(previous) >= 4 and previous[3] == selected_interface:
         elapsed = max(.001, now - previous[0])
         rx_bps = max(0, (received - previous[1]) / elapsed)
         tx_bps = max(0, (transmitted - previous[2]) / elapsed)
     if channel == "history":
-        NETWORK_HISTORY_PREV = (now, received, transmitted)
+        NETWORK_HISTORY_PREV = (now, received, transmitted, selected_interface)
     else:
-        NETWORK_LIVE_PREV = (now, received, transmitted)
+        NETWORK_LIVE_PREV = (now, received, transmitted, selected_interface)
     result = {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
     if channel == "live":
         with CONTAINER_NETWORK_LOCK:
@@ -1632,24 +1640,131 @@ def network_payload(channel="live"):
     return result
 
 
-def default_network_interface():
+def read_sysfs_value(path, fallback=""):
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return fallback
+
+
+def parse_udev_properties(content):
+    properties = {}
+    for line in str(content or "").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            properties[key] = value
+    return properties
+
+
+def udev_network_properties(interface):
+    try:
+        result = subprocess.run(
+            ["udevadm", "info", "--query=property", f"--path=/sys/class/net/{interface}"],
+            capture_output=True, text=True, check=True, timeout=2,
+        )
+        return parse_udev_properties(result.stdout)
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return {}
+
+
+def network_interface_metadata(name, ip_item=None):
+    root = Path("/sys/class/net") / name
+    properties = udev_network_properties(name)
+    vendor = properties.get("ID_VENDOR_FROM_DATABASE") or properties.get("ID_VENDOR", "").replace("_", " ")
+    model = properties.get("ID_MODEL_FROM_DATABASE") or properties.get("ID_MODEL", "").replace("_", " ")
+    try:
+        driver = (root / "device" / "driver").resolve().name
+    except OSError:
+        driver = ""
+    kind = "Wi-Fi" if (root / "wireless").exists() else "Ethernet"
+    hardware = " ".join(part for part in (vendor, model) if part).strip()
+    label = hardware or (f"{kind} · {driver}" if driver else f"{kind} interface")
+    speed = read_sysfs_value(root / "speed")
+    if not speed.isdigit() or int(speed) <= 0:
+        speed = ""
+    ipv4 = [
+        address.get("local", "") for address in (ip_item or {}).get("addr_info", [])
+        if address.get("family") == "inet" and address.get("local")
+    ]
+    return {
+        "name": name,
+        "label": label,
+        "vendor": vendor,
+        "model": model,
+        "driver": driver,
+        "kind": kind.lower(),
+        "mac": (ip_item or {}).get("address") or read_sysfs_value(root / "address"),
+        "state": (ip_item or {}).get("operstate") or read_sysfs_value(root / "operstate", "unknown"),
+        "carrier": read_sysfs_value(root / "carrier") == "1",
+        "speed_mbps": int(speed) if speed else None,
+        "duplex": read_sysfs_value(root / "duplex"),
+        "ipv4": ipv4,
+    }
+
+
+def monitorable_network_interfaces(refresh=False):
+    global NETWORK_INTERFACE_CACHE
+    now = time.monotonic()
+    if not refresh and now - NETWORK_INTERFACE_CACHE["at"] < 15:
+        return NETWORK_INTERFACE_CACHE["items"]
+    try:
+        addresses = run_json(["ip", "-j", "addr", "show"])
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        addresses = []
+    address_map = {item.get("ifname"): item for item in addresses}
+    try:
+        paths = list(Path("/sys/class/net").iterdir())
+    except OSError:
+        paths = []
+    items = []
+    for path in paths:
+        name = path.name
+        if name == "lo" or name.startswith(VIRTUAL_INTERFACE_PREFIXES):
+            continue
+        if not ((path / "device").exists() or (path / "wireless").exists()):
+            continue
+        items.append(network_interface_metadata(name, address_map.get(name)))
+    NETWORK_INTERFACE_CACHE = {"at": now, "items": sorted(items, key=lambda item: item["name"])}
+    return NETWORK_INTERFACE_CACHE["items"]
+
+
+def choose_monitor_interface(items, configured="auto", route_names=None):
+    by_name = {item["name"]: item for item in items}
+    if configured and configured != "auto" and configured in by_name:
+        return configured
+    route_names = route_names or []
+    for require_connected in (True, False):
+        for name in route_names:
+            item = by_name.get(name)
+            if item and (not require_connected or item.get("carrier") or str(item.get("state", "")).lower() == "up"):
+                return name
+    for key in ("carrier", "state"):
+        for item in items:
+            active = item.get(key) if key == "carrier" else str(item.get(key, "")).lower() == "up"
+            if active:
+                return item["name"]
+    return items[0]["name"] if items else ""
+
+
+def default_route_interfaces():
+    names = []
     try:
         for line in Path("/proc/net/route").read_text(encoding="utf-8").splitlines()[1:]:
             fields = line.split()
             if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
-                return fields[0]
+                names.append(fields[0])
     except (OSError, ValueError, IndexError):
         pass
-    try:
-        interfaces = []
-        for path in Path("/sys/class/net").iterdir():
-            if path.name == "lo" or path.name.startswith(VIRTUAL_INTERFACE_PREFIXES):
-                continue
-            if (path / "device").exists() or (path / "wireless").exists():
-                interfaces.append(path.name)
-        return sorted(interfaces)[0] if interfaces else ""
-    except OSError:
-        return ""
+    return names
+
+
+def default_network_interface():
+    config = load_config_file().get("network", {})
+    return choose_monitor_interface(
+        monitorable_network_interfaces(),
+        config.get("monitor_interface", "auto"),
+        default_route_interfaces(),
+    )
 
 
 def temperature_payload():
@@ -3545,9 +3660,18 @@ def network_interfaces_payload():
             }
         )
 
+    monitor_items = monitorable_network_interfaces(refresh=True)
+    selected = load_config_file().get("network", {}).get("monitor_interface", "auto")
+    active = choose_monitor_interface(monitor_items, selected, default_route_interfaces())
     return {
         "renderer": "netplan",
         "interfaces": interfaces,
+        "monitor": {
+            "selected": selected,
+            "active": active,
+            "selection_missing": selected not in {"", "auto"} and selected not in {item["name"] for item in monitor_items},
+            "interfaces": monitor_items,
+        },
     }
 
 
@@ -4109,6 +4233,19 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 )
                 self.send_json(result)
             except (json.JSONDecodeError, ValueError, subprocess.SubprocessError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/network/monitor":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                requested = str(payload.get("interface") or "auto")
+                available = {item["name"] for item in monitorable_network_interfaces(refresh=True)}
+                if requested != "auto" and requested not in available:
+                    raise ValueError("Unknown or unavailable network interface")
+                self.send_json(update_settings({"network": {"monitor_interface": requested}}))
+            except (json.JSONDecodeError, ValueError, OSError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
