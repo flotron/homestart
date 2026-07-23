@@ -95,7 +95,7 @@
               <div class="chart-legend"><span class="cpu">CPU</span><span class="memory">Memory</span><span class="gpu">GPU</span></div>
             </article>
             <article class="status-panel alerts-panel">
-              <div class="section-head"><div><h2>Attention</h2><p>Current local alerts and noteworthy conditions.</p></div></div>
+              <div class="section-head"><div><h2>Attention</h2><p>Current local alerts and noteworthy conditions.</p></div><button id="restore-ignored-alerts" class="subtle-action" type="button" hidden></button></div>
               <div id="overview-alerts" class="stack"></div>
             </article>
           </section>
@@ -302,10 +302,6 @@
                     <button id="file-paste" type="button" disabled>Paste</button>
                     <button id="file-up" type="button">Up</button>
                     <button id="file-home" type="button">Roots</button>
-                    <div class="file-view-toggle" aria-label="File view mode">
-                      <button id="file-view-grid" class="active" type="button" aria-pressed="true">Grid</button>
-                      <button id="file-view-list" type="button" aria-pressed="false">List</button>
-                    </div>
                   </div>
                 </header>
                 <form id="file-path-form" class="file-path-form">
@@ -320,7 +316,7 @@
                   <span>Modified</span>
                   <span>Actions</span>
                 </div>
-                <div id="files" class="file-list grid-view"></div>
+                <div id="files" class="file-list list-view"></div>
               </div>
             </div>
           </section>
@@ -463,6 +459,15 @@
         </div>
       </article>
     </template>
+
+    <div id="file-context-menu" class="file-context-menu" role="menu" hidden>
+      <div class="file-context-title"><strong id="file-context-name">File</strong><small id="file-context-kind"></small></div>
+      <button type="button" data-file-context-action="open">Open</button>
+      <button type="button" data-file-context-action="download">Download</button>
+      <button type="button" data-file-context-action="copy">Copy</button>
+      <button type="button" data-file-context-action="rename">Rename</button>
+      <button class="danger" type="button" data-file-context-action="delete">Move to trash</button>
+    </div>
 
     <dialog id="logs-dialog" class="store-dialog logs-dialog">
       <div class="section-head"><div><p class="eyebrow">Docker logs</p><h2 id="logs-title">Container logs</h2></div><button id="logs-close" type="button">Close</button></div>

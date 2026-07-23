@@ -143,6 +143,22 @@ class HomeStartSmokeTests(unittest.TestCase):
         content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
         self.assertEqual(self.app.network_device_totals(content), (3000, 900))
 
+    def test_stopped_container_alert_lists_names(self):
+        system = {
+            "cpu": {"percent": 1}, "memory": {"percent": 2},
+            "temperature": {"celsius": 40}, "network": {},
+        }
+        status = {
+            "containers": [
+                {"docker_name": "running-app", "docker_running": True},
+                {"docker_name": "stopped-app", "docker_running": False},
+            ],
+            "services": [], "disks": [],
+        }
+        with mock.patch.object(self.app, "system_payload", return_value=system), mock.patch.object(self.app, "status_payload", return_value=status):
+            alert = next(item for item in self.app.overview_payload()["alerts"] if item["id"] == "stopped-containers")
+        self.assertIn("stopped-app", alert["detail"])
+
     def test_network_history_is_stored_separately_at_fine_resolution(self):
         self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
         now = int(__import__("time").time())
