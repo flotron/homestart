@@ -98,6 +98,22 @@ const fileContextMenu = document.querySelector("#file-context-menu");
 const fileContextName = document.querySelector("#file-context-name");
 const fileContextKind = document.querySelector("#file-context-kind");
 const fileContextActions = [...document.querySelectorAll("[data-file-context-action]")];
+const sambaRefresh = document.querySelector("#samba-refresh");
+const sambaStatus = document.querySelector("#samba-status");
+const sambaShares = document.querySelector("#samba-shares");
+const sambaShareForm = document.querySelector("#samba-share-form");
+const sambaShareName = document.querySelector("#samba-share-name");
+const sambaSharePath = document.querySelector("#samba-share-path");
+const sambaShareUsers = document.querySelector("#samba-share-users");
+const sambaUserList = document.querySelector("#samba-user-list");
+const sambaShareWritable = document.querySelector("#samba-share-writable");
+const sambaShareGuest = document.querySelector("#samba-share-guest");
+const sambaShareBrowseable = document.querySelector("#samba-share-browseable");
+const sambaUseCurrent = document.querySelector("#samba-use-current");
+const sambaShareSubmit = document.querySelector("#samba-share-submit");
+const sambaCredentialUser = document.querySelector("#samba-credential-user");
+const sambaCredentialPassword = document.querySelector("#samba-credential-password");
+const sambaCredentialSave = document.querySelector("#samba-credential-save");
 const refreshNetwork = document.querySelector("#refresh-network");
 const networkInterfaces = document.querySelector("#network-interfaces");
 const networkForm = document.querySelector("#network-form");
@@ -1791,6 +1807,158 @@ async function loadFiles(path = "") {
   updateFileControls();
   renderRoots();
   filesNode.replaceChildren(...entries.map(renderFileEntry));
+  if (sambaUseCurrent) sambaUseCurrent.disabled = !state.filePath;
+}
+
+function sambaAccessLabel(share) {
+  if (share.guest_ok) return "Guest access";
+  if (share.valid_users?.length) return share.valid_users.join(", ");
+  return "No explicit users";
+}
+
+function renderSambaShare(share) {
+  const node = document.createElement("article");
+  node.className = `samba-share-card${share.enabled ? "" : " disabled"}`;
+  const heading = document.createElement("div");
+  heading.className = "samba-share-heading";
+  const text = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = share.name;
+  const path = document.createElement("p");
+  path.textContent = share.path;
+  text.append(title, path);
+  const pill = document.createElement("span");
+  pill.className = `pill ${share.enabled ? "good" : "warn"}`;
+  pill.textContent = share.enabled ? "Shared" : "Disabled";
+  heading.append(text, pill);
+
+  const details = document.createElement("div");
+  details.className = "samba-share-details";
+  [
+    ["Access", sambaAccessLabel(share)],
+    ["Permissions", share.read_only ? "Read only" : "Read and write"],
+    ["Discovery", share.browseable ? "Visible" : "Hidden"],
+    ["Managed by", share.managed ? "HomeStart" : "Existing Samba config"],
+  ].forEach(([label, value]) => {
+    const item = document.createElement("span");
+    const labelNode = document.createElement("small");
+    labelNode.textContent = label;
+    const valueNode = document.createElement("b");
+    valueNode.textContent = value;
+    item.append(labelNode, valueNode);
+    details.appendChild(item);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "samba-share-actions";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.textContent = share.enabled ? "Stop sharing" : "Share again";
+  toggle.addEventListener("click", () => changeSambaShare(share.enabled ? "disable" : "enable", share));
+  actions.appendChild(toggle);
+  if (share.managed) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete share";
+    remove.addEventListener("click", () => changeSambaShare("delete", share));
+    actions.appendChild(remove);
+  }
+  node.append(heading, details, actions);
+  return node;
+}
+
+async function loadSambaShares() {
+  if (!sambaShares) return;
+  sambaStatus.textContent = "Checking Samba…";
+  try {
+    const response = await fetch("/api/samba/shares", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Could not read Samba shares");
+    if (!data.available) {
+      sambaStatus.textContent = data.message || "Samba is not available.";
+      sambaShares.innerHTML = '<div class="empty-state">Install and configure Samba to manage network shares here.</div>';
+      sambaShareForm.hidden = true;
+      return;
+    }
+    sambaShareForm.hidden = false;
+    sambaStatus.textContent = `${data.shares.length} shared folder${data.shares.length === 1 ? "" : "s"} detected · ${data.users.length} Samba user${data.users.length === 1 ? "" : "s"}. Passwords are never exposed.`;
+    sambaShares.replaceChildren(...(data.shares.length
+      ? data.shares.map(renderSambaShare)
+      : [Object.assign(document.createElement("div"), { className: "empty-state", textContent: "No Samba shares detected." })]));
+    sambaUserList.replaceChildren(...data.users.map((user) => {
+      const option = document.createElement("option");
+      option.value = user.name;
+      option.label = user.description || user.name;
+      return option;
+    }));
+  } catch (error) {
+    sambaStatus.textContent = error.message;
+    sambaShares.replaceChildren();
+  }
+}
+
+async function postSambaAction(payload) {
+  const response = await fetch("/api/samba/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.ok) throw new Error(result.error || "Samba operation failed");
+  await loadSambaShares();
+}
+
+async function changeSambaShare(action, share) {
+  const wording = action === "delete" ? "delete this HomeStart share" : action === "disable" ? "stop sharing this folder" : "share this folder again";
+  if (!window.confirm(`${wording}: ${share.name}? The files themselves will not be deleted.`)) return;
+  try {
+    await postSambaAction({ action, name: share.name });
+  } catch (error) {
+    window.alert(error.message);
+  }
+}
+
+async function createSambaShare(event) {
+  event.preventDefault();
+  sambaShareSubmit.disabled = true;
+  try {
+    await postSambaAction({
+      action: "create",
+      name: sambaShareName.value.trim(),
+      path: sambaSharePath.value.trim(),
+      valid_users: sambaShareUsers.value,
+      read_only: !sambaShareWritable.checked,
+      guest_ok: sambaShareGuest.checked,
+      browseable: sambaShareBrowseable.checked,
+    });
+    sambaShareForm.reset();
+    sambaShareBrowseable.checked = true;
+    sambaSharePath.value = state.filePath || "";
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    sambaShareSubmit.disabled = false;
+  }
+}
+
+async function saveSambaCredential() {
+  const username = sambaCredentialUser.value.trim();
+  const password = sambaCredentialPassword.value;
+  if (!username || !password) {
+    window.alert("Enter an existing Linux user and a new Samba password.");
+    return;
+  }
+  sambaCredentialSave.disabled = true;
+  try {
+    await postSambaAction({ action: "set_password", username, password });
+    sambaCredentialPassword.value = "";
+    window.alert(`Samba credentials updated for ${username}.`);
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    sambaCredentialSave.disabled = false;
+  }
 }
 
 function openTypedFilePath(event) {
@@ -1856,7 +2024,10 @@ function setView(view) {
 
   if (view === "apps") load().catch(console.error);
   if (view === "status") loadStatus().catch(console.error);
-  if (view === "files") loadFiles(state.filePath).catch(console.error);
+  if (view === "files") {
+    loadFiles(state.filePath).catch(console.error);
+    loadSambaShares().catch(console.error);
+  }
   if (view === "settings") loadNetworkSettings().catch(console.error);
 }
 
@@ -1971,6 +2142,13 @@ setInterval(() => loadResources().catch(console.error), 2500);
 setInterval(() => loadLiveNetwork().catch(console.error), 2000);
 setInterval(() => loadHistory().catch(console.error), 2000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
+if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));
+if (sambaShareForm) sambaShareForm.addEventListener("submit", createSambaShare);
+if (sambaCredentialSave) sambaCredentialSave.addEventListener("click", saveSambaCredential);
+if (sambaUseCurrent) sambaUseCurrent.addEventListener("click", () => {
+  sambaSharePath.value = state.filePath || "";
+  if (!sambaShareName.value && state.filePath) sambaShareName.value = currentFolderName(state.filePath);
+});
 monitorInterface?.addEventListener("change", () => changeMonitorInterface().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
