@@ -9,6 +9,9 @@
     "accent": "#38bdf8",
     "density": "comfortable"
   },
+  "network": {
+    "monitor_interface": "auto"
+  },
   "alerts": {
     "cpu_percent": 90,
     "memory_percent": 90,
