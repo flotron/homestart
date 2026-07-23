@@ -348,6 +348,7 @@
                   </div>
                 </label>
                 <label>Allowed Samba users<input id="samba-share-users" list="samba-user-list" placeholder="user1, user2 or @group" /></label>
+                <label id="samba-force-user-field" hidden>Write guest files as Linux user<input id="samba-force-user" placeholder="Automatic: folder owner" /></label>
                 <datalist id="samba-user-list"></datalist>
                 <div class="samba-options">
                   <label><input id="samba-share-writable" type="checkbox" /> Allow writing</label>
@@ -355,7 +356,10 @@
                   <label><input id="samba-share-browseable" type="checkbox" checked /> Visible on network</label>
                 </div>
                 <p class="form-note">Passwords cannot be displayed because Samba stores non-reversible hashes. This list shows which accounts are authorized.</p>
-                <button id="samba-share-submit" type="submit">Create share</button>
+                <div class="samba-form-actions">
+                  <button id="samba-share-cancel" type="button" hidden>Cancel edit</button>
+                  <button id="samba-share-submit" type="submit">Create share</button>
+                </div>
                 <details class="samba-credentials">
                   <summary>Manage Samba credentials</summary>
                   <label>Existing Linux user<input id="samba-credential-user" list="samba-user-list" autocomplete="username" placeholder="username" /></label>
