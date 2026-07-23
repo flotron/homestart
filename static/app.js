@@ -322,6 +322,10 @@ function historyWindow(points, hours) {
   return { start: first - padding, end: last + padding };
 }
 
+function responsiveChartWidth(node) {
+  return Math.max(320, Math.round(node?.clientWidth || 800));
+}
+
 function renderTimeAxis(node, startTime, endTime) {
   const formatter = zonedFormatter({ hour: "2-digit", minute: "2-digit", ...(endTime - startTime > 86400 ? { day: "2-digit", month: "2-digit" } : {}) });
   node.replaceChildren(...[0, .25, .5, .75, 1].map((position) => {
@@ -340,7 +344,7 @@ function renderHistory(points, hours) {
     historyMeta.textContent = "No samples in this period yet. HomeStart now collects one every 30 seconds in the background.";
     return;
   }
-  const width = 800;
+  const width = responsiveChartWidth(historyChart);
   const height = 220;
   const window = historyWindow(points, hours);
   const { start: startTime, end: endTime } = window;
@@ -402,7 +406,7 @@ function renderBandwidthHistory(points, hours, interfaceName, status = {}, bucke
     bandwidthMeta.textContent = "No bandwidth samples in this period yet.";
     return;
   }
-  const width = 800; const height = 220;
+  const width = responsiveChartWidth(bandwidthChart); const height = 220;
   const { start, end } = historyWindow(points, hours);
   const currentValues = [points.at(-1)?.rx_bps, points.at(-1)?.tx_bps].map(Number).filter(Number.isFinite);
   const visualMaximum = Math.max(1, ...values, ...currentValues);
