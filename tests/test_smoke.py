@@ -154,6 +154,35 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(properties["ID_VENDOR_FROM_DATABASE"], "Example Networks")
         self.assertEqual(properties["ID_MODEL_FROM_DATABASE"], "Fast Ethernet Adapter")
 
+    def test_network_settings_include_runtime_hardware_metadata(self):
+        address = {
+            "ifname": "enp69s0f0",
+            "link_type": "ether",
+            "operstate": "UP",
+            "address": "00:11:22:33:44:55",
+            "addr_info": [{"family": "inet", "local": "192.168.0.32", "prefixlen": 24}],
+        }
+        hardware = {
+            "name": "enp69s0f0",
+            "label": "Example Networks Fast Adapter",
+            "vendor": "Example Networks",
+            "model": "Fast Adapter",
+            "driver": "example",
+            "kind": "ethernet",
+            "carrier": True,
+            "speed_mbps": 10000,
+            "duplex": "full",
+        }
+        with mock.patch.object(self.app, "run_json", return_value=[address]), \
+                mock.patch.object(self.app, "is_physical_network_interface", return_value=True), \
+                mock.patch.object(self.app, "monitorable_network_interfaces", return_value=[hardware]), \
+                mock.patch.object(self.app, "default_routes", return_value={}), \
+                mock.patch.object(self.app, "netplan_interface_config", return_value=(None, {})), \
+                mock.patch.object(self.app, "default_route_interfaces", return_value=["enp69s0f0"]):
+            interface = self.app.network_interfaces_payload()["interfaces"][0]
+        self.assertEqual(interface["label"], "Example Networks Fast Adapter")
+        self.assertEqual(interface["speed_mbps"], 10000)
+
     def test_network_device_totals_exclude_loopback(self):
         content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
         self.assertEqual(self.app.network_device_totals(content), (3000, 900))
