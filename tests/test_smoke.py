@@ -183,6 +183,47 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(interface["label"], "Example Networks Fast Adapter")
         self.assertEqual(interface["speed_mbps"], 10000)
 
+    def test_samba_config_parser_and_share_payload(self):
+        parsed = self.app.parse_samba_config(
+            "[global]\n workgroup = WORKGROUP\n[Documents]\n"
+            " path = /srv/documents\n read only = no\n valid users = mariano, @office\n"
+        )
+        share = self.app.samba_share_payload("Documents", parsed["Documents"], {"shares": {}, "disabled": []})
+        self.assertEqual(share["path"], "/srv/documents")
+        self.assertFalse(share["read_only"])
+        self.assertEqual(share["valid_users"], ["mariano", "@office"])
+
+    def test_managed_samba_config_can_disable_share_reversibly(self):
+        state = {
+            "shares": {
+                "Media": {
+                    "path": "/srv/media", "browseable": True, "read_only": False,
+                    "guest_ok": False, "valid_users": ["mediauser"],
+                }
+            },
+            "disabled": ["Media", "Legacy"],
+        }
+        rendered = self.app.render_homestart_samba_config(state)
+        self.assertIn("[Media]\n    path = /srv/media\n    available = no", rendered)
+        self.assertIn("[Legacy]\n    available = no", rendered)
+
+    def test_samba_include_is_added_inside_global_section(self):
+        with mock.patch.object(self.app, "SAMBA_MANAGED_PATH", Path("/etc/samba/homestart-shares.conf")):
+            rendered = self.app.samba_config_with_include("[global]\nworkgroup = WORKGROUP\n[Data]\npath = /srv/data\n")
+        self.assertIn("[global]\n    include = /etc/samba/homestart-shares.conf", rendered)
+
+    def test_samba_password_is_passed_only_to_smbpasswd_stdin(self):
+        with mock.patch.object(self.app, "samba_manager_enabled", return_value=True), \
+                mock.patch.object(self.app.subprocess, "check_output", return_value="1000\n"), \
+                mock.patch.object(self.app.subprocess, "run") as run, \
+                mock.patch.object(self.app, "samba_shares_payload", return_value={"ok": True}):
+            result = self.app.samba_share_action({
+                "action": "set_password", "username": "operator", "password": "secret-password",
+            })
+        self.assertTrue(result["ok"])
+        self.assertEqual(run.call_args.args[0], ["smbpasswd", "-s", "-a", "operator"])
+        self.assertEqual(run.call_args.kwargs["input"], "secret-password\nsecret-password\n")
+
     def test_network_device_totals_exclude_loopback(self):
         content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
         self.assertEqual(self.app.network_device_totals(content), (3000, 900))

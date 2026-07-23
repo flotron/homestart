@@ -16,7 +16,7 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
-- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste, rename, recoverable trash, downloads, folder ZIPs, and new folders.
+- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
 - Docker logs and curated installation templates with suggested ports and volumes.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
 - Manual downloadable backups for configuration, history, and custom icons.
@@ -217,6 +217,7 @@ Important options:
 - `dashboard.host`: host used for generated app links. Leave empty to auto-detect.
 - `features.docker_actions`: enable Docker stop/restart actions.
 - `features.file_browser`: enable File Browser.
+- `features.samba_manager`: enable Samba share inspection and management.
 - `features.file_operations`: enable create/copy/delete/upload operations.
 - `features.file_mounts`: enable read-only mounting of unmounted partitions.
 - `features.app_uninstall`: enable uninstall actions.
@@ -262,3 +263,11 @@ Automated checks and tagged release packaging are defined under
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more detail.
 
 
+- The Samba Share Manager below the explorer detects effective shares through
+  `testparm`, lists their paths and authorized users, and can safely disable or
+  re-enable existing shares.
+- New shares are stored in `/etc/samba/homestart-shares.conf` and referenced
+  from `smb.conf`; configuration is validated before Samba is reloaded.
+- Samba passwords cannot be displayed because Samba stores non-reversible
+  password hashes. HomeStart reports account names and access rules, and can
+  set or reset a Samba password for an existing Linux account via `smbpasswd`.

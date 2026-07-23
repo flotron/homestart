@@ -4,6 +4,22 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1800
+
+- Added a responsive Samba Share Manager below File Browser.
+- Existing effective shares show their folder, availability, discovery,
+  read/write mode and authorized Samba users.
+- Existing shares can be disabled and restored without deleting their files or
+  rewriting their original share blocks.
+- New shares can use the currently open File Browser folder and are kept in a
+  separate HomeStart-managed Samba include file.
+- Every change is checked with `testparm` before Samba reloads; failed changes
+  roll back automatically.
+- Samba password hashes are never exposed to the browser or stored in
+  HomeStart release files.
+- Samba passwords can be set or reset for an existing Linux account without
+  exposing the value to HomeStart history or configuration.
+
 ## 20260723-1730
 
 - Network Settings now shows the same runtime manufacturer/model information

@@ -34,6 +34,9 @@ DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
 TRASH_DIR = DATA_DIR / "trash"
 TRASH_INDEX = DATA_DIR / "trash.json"
+SAMBA_STATE_PATH = DATA_DIR / "samba-shares.json"
+SAMBA_CONFIG_PATH = Path(os.environ.get("HOMESTART_SAMBA_CONFIG", "/etc/samba/smb.conf"))
+SAMBA_MANAGED_PATH = Path(os.environ.get("HOMESTART_SAMBA_MANAGED_CONFIG", "/etc/samba/homestart-shares.conf"))
 APP_ICON_DIR = DATA_DIR / "app-icons"
 APP_ICON_INDEX = DATA_DIR / "app-icons.json"
 PACKAGE_PATH = BASE_DIR / "package.json"
@@ -90,6 +93,7 @@ DEFAULT_CONFIG = {
         "file_browser": True,
         "file_operations": True,
         "file_mounts": True,
+        "samba_manager": True,
         "app_uninstall": True,
         "docker_app_store": True,
     },
@@ -2500,6 +2504,279 @@ def file_action(payload):
     raise ValueError("Invalid file action")
 
 
+def samba_manager_enabled():
+    return load_config_file().get("features", {}).get("samba_manager", True)
+
+
+def ensure_samba_manager_enabled():
+    if not samba_manager_enabled():
+        raise PermissionError("Samba Share Manager is disabled")
+
+
+def parse_samba_config(content):
+    sections = {}
+    current = None
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        match = re.fullmatch(r"\[([^\]]+)\]", line)
+        if match:
+            current = match.group(1).strip()
+            sections[current] = {}
+            continue
+        if current and "=" in line:
+            key, value = line.split("=", 1)
+            sections[current][key.strip().lower()] = value.strip()
+    return sections
+
+
+def samba_user_tokens(value):
+    return [item for item in re.split(r"[\s,]+", str(value or "").strip()) if item]
+
+
+def samba_users():
+    try:
+        output = subprocess.check_output(
+            ["pdbedit", "-L"], text=True, timeout=8, stderr=subprocess.DEVNULL
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    users = []
+    for line in output.splitlines():
+        name, separator, description = line.partition(":")
+        if separator and name.strip():
+            users.append({"name": name.strip(), "description": description.rsplit(":", 1)[-1].strip()})
+    return sorted(users, key=lambda item: item["name"].lower())
+
+
+def samba_testparm(config_path=SAMBA_CONFIG_PATH):
+    try:
+        return subprocess.check_output(
+            ["testparm", "-s", str(config_path)],
+            text=True, timeout=10, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as error:
+        raise FileNotFoundError("Samba testparm is not installed") from error
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Samba configuration validation failed") from error
+
+
+def samba_state():
+    state = load_json_file(SAMBA_STATE_PATH, {"shares": {}, "disabled": []})
+    state.setdefault("shares", {})
+    state.setdefault("disabled", [])
+    return state
+
+
+def samba_share_payload(name, values, state):
+    path = values.get("path", "")
+    valid_users = samba_user_tokens(values.get("valid users", ""))
+    write_users = samba_user_tokens(values.get("write list", ""))
+    read_users = samba_user_tokens(values.get("read list", ""))
+    return {
+        "name": name,
+        "path": path,
+        "enabled": str(values.get("available", "yes")).lower() not in {"no", "false", "0"},
+        "browseable": str(values.get("browseable", values.get("browsable", "yes"))).lower() not in {"no", "false", "0"},
+        "read_only": str(values.get("read only", "yes")).lower() not in {"no", "false", "0"},
+        "guest_ok": str(values.get("guest ok", "no")).lower() in {"yes", "true", "1"},
+        "valid_users": valid_users,
+        "write_users": write_users,
+        "read_users": read_users,
+        "managed": name in state["shares"],
+        "disabled_by_homestart": name in state["disabled"],
+    }
+
+
+def samba_shares_payload():
+    ensure_samba_manager_enabled()
+    if not SAMBA_CONFIG_PATH.exists():
+        return {
+            "ok": True, "available": False, "shares": [], "users": [],
+            "message": f"Samba configuration was not found at {SAMBA_CONFIG_PATH}",
+        }
+    try:
+        effective = parse_samba_config(samba_testparm())
+    except FileNotFoundError as error:
+        return {"ok": True, "available": False, "shares": [], "users": [], "message": str(error)}
+    state = samba_state()
+    ignored = {"global", "homes", "printers", "print$"}
+    shares = [
+        samba_share_payload(name, values, state)
+        for name, values in effective.items()
+        if name.lower() not in ignored and values.get("path")
+    ]
+    shares.sort(key=lambda item: item["name"].lower())
+    return {
+        "ok": True,
+        "available": True,
+        "shares": shares,
+        "users": samba_users(),
+        "passwords_readable": False,
+        "message": "Samba passwords are stored as non-reversible hashes and cannot be displayed.",
+    }
+
+
+def validate_samba_share_name(name):
+    clean = str(name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}", clean):
+        raise ValueError("Share name contains unsupported characters")
+    if clean.lower() in {"global", "homes", "printers", "print$"}:
+        raise ValueError("This Samba share name is reserved")
+    return clean
+
+
+def render_homestart_samba_config(state):
+    lines = [
+        "# Managed by HomeStart. Runtime server data is not included in HomeStart releases.",
+        "",
+    ]
+    for name, share in sorted(state["shares"].items(), key=lambda item: item[0].lower()):
+        lines.extend([
+            f"[{name}]",
+            f"    path = {share['path']}",
+            f"    available = {'no' if name in state['disabled'] else 'yes'}",
+            f"    browseable = {'yes' if share.get('browseable', True) else 'no'}",
+            f"    read only = {'yes' if share.get('read_only', True) else 'no'}",
+            f"    guest ok = {'yes' if share.get('guest_ok', False) else 'no'}",
+        ])
+        users = share.get("valid_users") or []
+        if users:
+            lines.append(f"    valid users = {' '.join(users)}")
+        lines.extend(["", ""])
+    for name in sorted(set(state["disabled"]), key=str.lower):
+        if name not in state["shares"]:
+            lines.extend([f"[{name}]", "    available = no", "", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def samba_config_with_include(content):
+    include_line = f"    include = {SAMBA_MANAGED_PATH}"
+    if re.search(rf"(?im)^\s*include\s*=\s*{re.escape(str(SAMBA_MANAGED_PATH))}\s*$", content):
+        return content
+    match = re.search(r"(?im)^\s*\[global\]\s*$", content)
+    if not match:
+        raise ValueError("Samba configuration does not contain a [global] section")
+    position = match.end()
+    return content[:position] + "\n" + include_line + content[position:]
+
+
+def reload_samba():
+    commands = [
+        ["smbcontrol", "all", "reload-config"],
+        ["systemctl", "reload", "smbd"],
+        ["systemctl", "reload", "smb"],
+    ]
+    for command in commands:
+        try:
+            subprocess.check_output(command, text=True, timeout=15, stderr=subprocess.STDOUT)
+            return
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+    raise ValueError("The Samba configuration is valid, but Samba could not be reloaded")
+
+
+def save_samba_state(new_state):
+    ensure_samba_manager_enabled()
+    original_main = SAMBA_CONFIG_PATH.read_text(encoding="utf-8")
+    original_managed = SAMBA_MANAGED_PATH.read_text(encoding="utf-8") if SAMBA_MANAGED_PATH.exists() else None
+    new_main = samba_config_with_include(original_main)
+    SAMBA_MANAGED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        SAMBA_CONFIG_PATH.write_text(new_main, encoding="utf-8")
+        SAMBA_MANAGED_PATH.write_text(render_homestart_samba_config(new_state), encoding="utf-8")
+        samba_testparm()
+        reload_samba()
+        SAMBA_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SAMBA_STATE_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(new_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(SAMBA_STATE_PATH)
+    except Exception:
+        SAMBA_CONFIG_PATH.write_text(original_main, encoding="utf-8")
+        if original_managed is None:
+            try:
+                SAMBA_MANAGED_PATH.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            SAMBA_MANAGED_PATH.write_text(original_managed, encoding="utf-8")
+        try:
+            reload_samba()
+        except (ValueError, OSError):
+            pass
+        raise
+    return samba_shares_payload()
+
+
+def samba_share_action(payload):
+    ensure_samba_manager_enabled()
+    action = str(payload.get("action") or "")
+    if action == "set_password":
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", username):
+            raise ValueError("Invalid Linux username")
+        if not 4 <= len(password) <= 128:
+            raise ValueError("Samba password must contain between 4 and 128 characters")
+        try:
+            subprocess.check_output(["id", "-u", username], text=True, timeout=5, stderr=subprocess.DEVNULL)
+        except (FileNotFoundError, subprocess.SubprocessError) as error:
+            raise ValueError("The user must already exist as a Linux account") from error
+        try:
+            subprocess.run(
+                ["smbpasswd", "-s", "-a", username],
+                input=f"{password}\n{password}\n",
+                text=True, capture_output=True, check=True, timeout=12,
+            )
+        except FileNotFoundError as error:
+            raise FileNotFoundError("smbpasswd is not installed") from error
+        except subprocess.CalledProcessError as error:
+            raise ValueError((error.stderr or "").strip() or "Could not update the Samba password") from error
+        return samba_shares_payload()
+    state = samba_state()
+    if action == "create":
+        name = validate_samba_share_name(payload.get("name"))
+        target = resolve_file_path(payload.get("path", ""))
+        if target is None or not target.exists() or not target.is_dir():
+            raise NotADirectoryError("Select an existing folder inside the allowed File Browser roots")
+        current_names = {item["name"].lower() for item in samba_shares_payload().get("shares", [])}
+        if name.lower() in current_names:
+            raise FileExistsError("A Samba share with this name already exists")
+        requested_users = payload.get("valid_users") or []
+        if isinstance(requested_users, str):
+            requested_users = samba_user_tokens(requested_users)
+        known_users = {item["name"] for item in samba_users()}
+        unknown = [user for user in requested_users if not user.startswith("@") and user not in known_users]
+        if unknown:
+            raise ValueError(f"Unknown Samba user: {', '.join(unknown)}")
+        if not payload.get("guest_ok") and not requested_users:
+            raise ValueError("Choose at least one Samba user or enable guest access")
+        state["shares"][name] = {
+            "path": str(target),
+            "browseable": bool(payload.get("browseable", True)),
+            "read_only": bool(payload.get("read_only", True)),
+            "guest_ok": bool(payload.get("guest_ok", False)),
+            "valid_users": requested_users,
+        }
+        state["disabled"] = [item for item in state["disabled"] if item != name]
+    elif action in {"disable", "enable", "delete"}:
+        name = validate_samba_share_name(payload.get("name"))
+        if action == "disable":
+            if name not in state["disabled"]:
+                state["disabled"].append(name)
+        elif action == "enable":
+            state["disabled"] = [item for item in state["disabled"] if item != name]
+        elif name in state["shares"]:
+            del state["shares"][name]
+            state["disabled"] = [item for item in state["disabled"] if item != name]
+        else:
+            raise PermissionError("Existing Samba shares can be disabled but not deleted by HomeStart")
+    else:
+        raise ValueError("Invalid Samba share action")
+    return save_samba_state(state)
+
+
 def trash_file_path(raw_path):
     ensure_file_operations_enabled()
     target = resolve_file_path(raw_path)
@@ -4149,6 +4426,13 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
 
+        if route == "/api/samba/shares":
+            try:
+                self.send_json(samba_shares_payload())
+            except (ValueError, OSError, PermissionError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/file/open":
             query = parse_qs(parsed.query)
             try:
@@ -4270,6 +4554,15 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_json(file_action(payload))
+            except (json.JSONDecodeError, ValueError, OSError, PermissionError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/samba/shares":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(samba_share_action(payload))
             except (json.JSONDecodeError, ValueError, OSError, PermissionError) as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return

@@ -323,6 +323,49 @@
               </div>
             </div>
           </section>
+
+          <section class="samba-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Network folders</p>
+                <h2>Samba Share Manager</h2>
+                <p>View shared folders, access rules and create or disable shares.</p>
+              </div>
+              <button id="samba-refresh" type="button">Refresh</button>
+            </div>
+            <p id="samba-status" class="form-note">Checking Samba…</p>
+            <div class="samba-layout">
+              <div>
+                <div id="samba-shares" class="samba-share-list"></div>
+              </div>
+              <form id="samba-share-form" class="samba-share-form">
+                <h3>Share a folder</h3>
+                <label>Share name<input id="samba-share-name" maxlength="80" required placeholder="Documents" /></label>
+                <label>Folder
+                  <div class="samba-path-field">
+                    <input id="samba-share-path" required placeholder="/srv/documents" />
+                    <button id="samba-use-current" type="button">Use current</button>
+                  </div>
+                </label>
+                <label>Allowed Samba users<input id="samba-share-users" list="samba-user-list" placeholder="user1, user2 or @group" /></label>
+                <datalist id="samba-user-list"></datalist>
+                <div class="samba-options">
+                  <label><input id="samba-share-writable" type="checkbox" /> Allow writing</label>
+                  <label><input id="samba-share-guest" type="checkbox" /> Guest access</label>
+                  <label><input id="samba-share-browseable" type="checkbox" checked /> Visible on network</label>
+                </div>
+                <p class="form-note">Passwords cannot be displayed because Samba stores non-reversible hashes. This list shows which accounts are authorized.</p>
+                <button id="samba-share-submit" type="submit">Create share</button>
+                <details class="samba-credentials">
+                  <summary>Manage Samba credentials</summary>
+                  <label>Existing Linux user<input id="samba-credential-user" list="samba-user-list" autocomplete="username" placeholder="username" /></label>
+                  <label>New Samba password<input id="samba-credential-password" type="password" minlength="4" maxlength="128" autocomplete="new-password" /></label>
+                  <button id="samba-credential-save" type="button">Set or reset password</button>
+                  <p class="form-note">For safety, the password is sent only to local <code>smbpasswd</code> and is never returned or stored by HomeStart.</p>
+                </details>
+              </form>
+            </div>
+          </section>
         </section>
 
         <section class="view" id="view-settings" data-view-panel="settings">

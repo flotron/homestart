@@ -24,6 +24,7 @@
     "file_browser": true,
     "file_operations": true,
     "file_mounts": true,
+    "samba_manager": true,
     "app_uninstall": true,
     "docker_app_store": true
   },
