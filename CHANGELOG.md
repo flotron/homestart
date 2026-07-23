@@ -4,6 +4,20 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-2100
+
+- Rebuilt the main navigation as consistent text cards with descriptive
+  subtitles and removed the isolated house icon from Overview.
+- Reorganized Settings into a File Browser-style workspace with separate
+  General, Backups, Network and Updates navigation cards.
+- Moved the network refresh action into the Network settings card.
+- History windows now use the Linux server timestamp instead of the browser
+  clock and no longer add a large empty tail in Available data mode.
+- Network chart scaling now focuses on the 98th percentile plus current values,
+  keeping recent traffic readable after isolated multi-gigabit peaks.
+- Peaks above the visual scale remain available in tooltips and are counted in
+  the graph metadata.
+
 ## 20260723-2030
 
 - Replaced the browser-dependent time-zone datalist with a real select menu.
