@@ -26,6 +26,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,6 +36,7 @@ DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
 TRASH_DIR = DATA_DIR / "trash"
 TRASH_INDEX = DATA_DIR / "trash.json"
+TRASH_LAST_CLEANUP = 0
 SAMBA_STATE_PATH = DATA_DIR / "samba-shares.json"
 SAMBA_CONFIG_PATH = Path(os.environ.get("HOMESTART_SAMBA_CONFIG", "/etc/samba/smb.conf"))
 SAMBA_MANAGED_PATH = Path(os.environ.get("HOMESTART_SAMBA_MANAGED_CONFIG", "/etc/samba/homestart-shares.conf"))
@@ -104,6 +106,8 @@ DEFAULT_CONFIG = {
     "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
     "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
     "network": {"monitor_interface": "auto"},
+    "time": {"timezone": "UTC"},
+    "trash": {"retention_days": 0},
 }
 
 CURATED_APPS = [
@@ -204,6 +208,50 @@ def save_config_file(config):
     return load_config_file()
 
 
+def system_timezone():
+    try:
+        value = subprocess.check_output(
+            ["timedatectl", "show", "--property=Timezone", "--value"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        ).strip()
+        if value:
+            return value
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    try:
+        value = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    try:
+        resolved = str(Path("/etc/localtime").resolve())
+        marker = "/zoneinfo/"
+        if marker in resolved:
+            return resolved.split(marker, 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
+def set_system_timezone(timezone_name):
+    timezone_name = str(timezone_name or "").strip()
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as error:
+        raise ValueError("Unknown time zone region") from error
+    try:
+        subprocess.check_output(
+            ["timedatectl", "set-timezone", timezone_name],
+            text=True, timeout=15, stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("This Linux server does not provide timedatectl") from error
+    except subprocess.CalledProcessError as error:
+        raise ValueError((error.output or "").strip() or "Could not change the Linux server time zone") from error
+    return timezone_name
+
+
 def settings_payload():
     config = load_config_file()
     return {
@@ -212,11 +260,27 @@ def settings_payload():
         "appearance": config["appearance"],
         "alerts": config["alerts"],
         "network": config["network"],
+        "time": {"timezone": system_timezone(), "server_timestamp": int(time.time())},
+        "trash": config["trash"],
+        "timezones": sorted(available_timezones()),
     }
 
 
 def update_settings(payload):
     config = load_config_file()
+    time_values = payload.get("time")
+    if isinstance(time_values, dict):
+        timezone_name = set_system_timezone(time_values.get("timezone", ""))
+        config["time"] = deep_merge(config.get("time", {}), {"timezone": timezone_name})
+    trash_values = payload.get("trash")
+    if isinstance(trash_values, dict):
+        try:
+            retention = int(trash_values.get("retention_days", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Invalid trash retention period") from error
+        if retention not in {0, 7, 30, 90}:
+            raise ValueError("Trash retention must be never, 7, 30 or 90 days")
+        config["trash"] = deep_merge(config.get("trash", {}), {"retention_days": retention})
     for section in ("dashboard", "appearance", "alerts", "network"):
         values = payload.get(section)
         if isinstance(values, dict):
@@ -1473,6 +1537,7 @@ def metrics_sampler():
         started = time.monotonic()
         try:
             record_system_metric(system_payload(None))
+            cleanup_expired_trash()
         except Exception as error:
             print(f"HomeStart metrics sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
@@ -2856,25 +2921,117 @@ def trash_file_path(raw_path):
     index = load_json_file(TRASH_INDEX, {})
     index[destination.name] = {"original": str(target), "name": target.name, "deleted_at": int(time.time())}
     shutil.move(str(target), destination)
-    TRASH_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_trash_index(index)
     return {"ok": True, "message": f"Moved {target.name} to HomeStart trash", "trash_path": str(destination)}
 
 
+def trash_path_size(path):
+    try:
+        if path.is_file() or path.is_symlink():
+            return path.lstat().st_size
+        total = 0
+        for root, _directories, files in os.walk(path):
+            for name in files:
+                try:
+                    total += (Path(root) / name).lstat().st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return 0
+
+
+def save_trash_index(index):
+    TRASH_INDEX.parent.mkdir(parents=True, exist_ok=True)
+    temporary = TRASH_INDEX.with_suffix(".tmp")
+    temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(TRASH_INDEX)
+
+
+def resolve_trash_item(key):
+    raw_key = str(key or "")
+    clean_key = Path(raw_key).name
+    if clean_key != raw_key or clean_key in {"", ".", ".."}:
+        raise ValueError("Invalid trash item")
+    root = TRASH_DIR.resolve()
+    path = root / clean_key
+    if path.parent != root:
+        raise ValueError("Invalid trash item")
+    return clean_key, path
+
+
+def delete_trash_item(key):
+    key, path = resolve_trash_item(key)
+    index = load_json_file(TRASH_INDEX, {})
+    if key not in index or not path.exists():
+        raise FileNotFoundError("Trash item not found")
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    index.pop(key, None)
+    save_trash_index(index)
+    return {"ok": True, "deleted": key}
+
+
+def empty_trash():
+    index = load_json_file(TRASH_INDEX, {})
+    deleted = 0
+    for key in list(index):
+        try:
+            delete_trash_item(key)
+            deleted += 1
+        except FileNotFoundError:
+            index.pop(key, None)
+    save_trash_index({})
+    return {"ok": True, "deleted": deleted}
+
+
+def cleanup_expired_trash(force=False):
+    global TRASH_LAST_CLEANUP
+    now = time.time()
+    if not force and now - TRASH_LAST_CLEANUP < 3600:
+        return 0
+    TRASH_LAST_CLEANUP = now
+    retention = int(load_config_file().get("trash", {}).get("retention_days", 0) or 0)
+    if retention <= 0:
+        return 0
+    cutoff = now - retention * 86400
+    index = load_json_file(TRASH_INDEX, {})
+    expired = [key for key, item in index.items() if float(item.get("deleted_at", 0)) < cutoff]
+    deleted = 0
+    for key in expired:
+        try:
+            delete_trash_item(key)
+            deleted += 1
+        except FileNotFoundError:
+            continue
+    return deleted
+
+
 def trash_listing():
+    cleanup_expired_trash(force=True)
     index = load_json_file(TRASH_INDEX, {})
     items = []
+    total_size = 0
     for key, metadata in index.items():
         path = TRASH_DIR / key
         if path.exists():
-            items.append({"key": key, **metadata, "size": path.stat().st_size if path.is_file() else None})
-    return {"ok": True, "items": sorted(items, key=lambda item: item.get("deleted_at", 0), reverse=True)}
+            size = trash_path_size(path)
+            total_size += size
+            items.append({"key": key, **metadata, "size": size, "type": "directory" if path.is_dir() else "file"})
+    return {
+        "ok": True,
+        "items": sorted(items, key=lambda item: item.get("deleted_at", 0), reverse=True),
+        "total_size": total_size,
+        "retention_days": int(load_config_file().get("trash", {}).get("retention_days", 0) or 0),
+    }
 
 
 def restore_trash_item(key):
-    key = Path(str(key or "")).name
+    key, source = resolve_trash_item(key)
     index = load_json_file(TRASH_INDEX, {})
     metadata = index.get(key)
-    source = TRASH_DIR / key
     if not metadata or not source.exists():
         raise FileNotFoundError("Trash item not found")
     destination = resolve_file_path(metadata["original"])
@@ -2883,7 +3040,7 @@ def restore_trash_item(key):
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), destination)
     index.pop(key, None)
-    TRASH_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_trash_index(index)
     return {"ok": True, "path": str(destination)}
 
 
@@ -4562,6 +4719,20 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 self.send_json(restore_trash_item(payload.get("key", "")))
             except (json.JSONDecodeError, ValueError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if route == "/api/trash/delete":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.send_json(delete_trash_item(payload.get("key", "")))
+            except (json.JSONDecodeError, ValueError, OSError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if route == "/api/trash/empty":
+            try:
+                self.send_json(empty_trash())
+            except OSError as error:
                 self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
             return
         if route == "/api/update":
