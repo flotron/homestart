@@ -4,6 +4,18 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1900
+
+- Fixed writable guest-share setup when a folder was created by the root-run
+  HomeStart service: automatic selection now walks up to the nearest non-root
+  Linux owner.
+- Saving a writable guest share grants its top-level folder to that selected
+  Linux user, with rollback if Samba validation or reload fails.
+- New folders and uploaded files created in File Browser now inherit the owner
+  and group of their parent folder instead of remaining root-owned.
+- Editing a share now reminds Windows clients to reconnect so new permissions
+  replace the cached SMB session.
+
 ## 20260723-1830
 
 - Fixed writable guest shares by mapping guest writes to the non-root Linux
