@@ -311,9 +311,12 @@ function metricStats(points, key) {
 
 function historyWindow(points, hours) {
   const now = Math.floor((Date.now() + state.serverClockOffsetMs) / 1000);
-  if (hours !== "auto") return { start: now - Number(hours || 24) * 3600, end: now };
   const first = Number(points[0]?.captured_at) || now;
   const last = Number(points.at(-1)?.captured_at) || now;
+  if (hours !== "auto") {
+    const requestedStart = now - Number(hours || 24) * 3600;
+    return { start: Math.max(requestedStart, first), end: Math.min(now, last) };
+  }
   const span = Math.max(60, last - first);
   const padding = Math.min(60, Math.max(5, span * 0.005));
   return { start: first - padding, end: last + padding };
@@ -390,7 +393,7 @@ function percentile(values, fraction) {
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
 }
 
-function renderBandwidthHistory(points, hours, interfaceName) {
+function renderBandwidthHistory(points, hours, interfaceName, status = {}, bucketSeconds = 2) {
   const values = points.flatMap((item) => [item.rx_bps, item.tx_bps]).filter((value) => value !== null && value !== undefined).map(Number).filter(Number.isFinite);
   bandwidthSubtitle.textContent = `Traffic through ${interfaceName || "the default network interface"}.`;
   if (!values.length) {
@@ -402,9 +405,8 @@ function renderBandwidthHistory(points, hours, interfaceName) {
   const width = 800; const height = 220;
   const { start, end } = historyWindow(points, hours);
   const currentValues = [points.at(-1)?.rx_bps, points.at(-1)?.tx_bps].map(Number).filter(Number.isFinite);
-  const visualMaximum = Math.max(1, percentile(values, .98), ...currentValues);
+  const visualMaximum = Math.max(1, ...values, ...currentValues);
   const verticalMax = bandwidthScale(visualMaximum);
-  const clippedPeaks = values.filter((value) => value > verticalMax).length;
   bandwidthChart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Network bandwidth history">
     <g class="chart-grid"><path d="M0 0H${width} M0 ${height / 2}H${width} M0 ${height}H${width}" /></g>
     <g class="chart-axis"><text x="4" y="13">${formatRate(verticalMax)}</text><text x="4" y="${height / 2 - 5}">${formatRate(verticalMax / 2)}</text><text x="4" y="${height - 6}">0 bps</text></g>
@@ -416,12 +418,19 @@ function renderBandwidthHistory(points, hours, interfaceName) {
   attachChartTooltip(bandwidthChart, points, start, end, "network");
   renderTimeAxis(bandwidthTimeAxis, start, end);
   bandwidthStats.replaceChildren(...[["rx_bps", "Download", "download"], ["tx_bps", "Upload", "upload"]].map(([key, label, className]) => {
-    const stats = metricStats(points, key); const node = document.createElement("article");
+    const stats = metricStats(points, key);
+    const averageKey = key === "rx_bps" ? "rx_avg_bps" : "tx_avg_bps";
+    const averages = points.map((item) => Number(item[averageKey])).filter(Number.isFinite);
+    const trueAverage = averages.length ? averages.reduce((sum, value) => sum + value, 0) / averages.length : stats?.average;
+    const node = document.createElement("article");
     node.className = `history-stat ${className}`;
-    node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(stats?.average)} · max ${formatRate(stats?.maximum)}</small>`;
+    node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(trueAverage)} · peak ${formatRate(stats?.maximum)}</small>`;
     return node;
   }));
-  bandwidthMeta.textContent = `${points.length} displayed points · sampled every 2 seconds · retained for 7 days · adaptive scale up to ${formatRate(verticalMax)}${clippedPeaks ? ` · ${clippedPeaks} peak${clippedPeaks === 1 ? "" : "s"} above visual scale (available in tooltip)` : ""}`;
+  const age = Number(status.last_sample_age_seconds);
+  const freshness = Number.isFinite(age) ? (age <= 10 ? "collector current" : `last sample ${Math.round(age / 60)} min ago`) : "collector has no samples";
+  const gaps = Number(status.gap_count) || 0;
+  bandwidthMeta.textContent = `${points.length} displayed points · 2-second samples grouped into ${bucketSeconds}s blocks · each point preserves the block peak · ${freshness} · ${gaps ? `${gaps} data gap${gaps === 1 ? "" : "s"} detected` : "no data gaps"} · scale 0–${formatRate(verticalMax)}`;
 }
 
 async function loadLiveNetwork() {
@@ -451,7 +460,13 @@ async function loadHistory() {
   const data = await response.json();
   if (data.server_timestamp) state.serverClockOffsetMs = data.server_timestamp * 1000 - Date.now();
   renderHistory(data.points || [], data.hours || historyRange?.value || 24);
-  renderBandwidthHistory(data.network_points || data.points || [], data.hours || historyRange?.value || 24, data.network_interface || "");
+  renderBandwidthHistory(
+    data.network_points || data.points || [],
+    data.hours || historyRange?.value || 24,
+    data.network_interface || "",
+    data.network_status || {},
+    data.network_bucket_seconds || data.network_sample_seconds || 2,
+  );
 }
 
 async function loadOverview() {
