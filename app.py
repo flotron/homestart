@@ -1511,38 +1511,73 @@ def metrics_history(hours=24):
         hours = 168 if automatic else max(1, min(168, int(hours)))
     except (TypeError, ValueError):
         hours = 24
-    since = int(time.time()) - hours * 3600
+    server_timestamp = int(time.time())
+    since = server_timestamp - hours * 3600
     with metrics_db() as connection:
         rows = connection.execute(
             "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
             (since,),
         ).fetchall()
         network_bounds = connection.execute(
-            "SELECT MIN(captured_at), MAX(captured_at) FROM network_metrics WHERE captured_at >= ?",
-            (since,),
+            "SELECT MIN(captured_at), MAX(captured_at), COUNT(*) FROM network_metrics WHERE captured_at BETWEEN ? AND ?",
+            (since, server_timestamp + 5),
         ).fetchone()
         available_span = max(0, (network_bounds[1] or 0) - (network_bounds[0] or 0))
         bucket_seconds = max(2, int((available_span + 1199) // 1200))
         network_rows = connection.execute(
             """
             SELECT (captured_at / ?) * ? AS captured_at,
-                   AVG(rx_bps) AS rx_bps,
-                   AVG(tx_bps) AS tx_bps
+                   MAX(rx_bps) AS rx_bps,
+                   MAX(tx_bps) AS tx_bps,
+                   AVG(rx_bps) AS rx_avg_bps,
+                   AVG(tx_bps) AS tx_avg_bps,
+                   COUNT(*) AS sample_count
             FROM network_metrics
-            WHERE captured_at >= ?
+            WHERE captured_at BETWEEN ? AND ?
             GROUP BY captured_at / ?
             ORDER BY captured_at
             """,
-            (bucket_seconds, bucket_seconds, since, bucket_seconds),
+            (bucket_seconds, bucket_seconds, since, server_timestamp + 5, bucket_seconds),
         ).fetchall()
         if not network_rows:
             network_rows = connection.execute(
                 "SELECT captured_at, rx_bps, tx_bps FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
                 (since,),
             ).fetchall()
-    return {"ok": True, "hours": "auto" if automatic else hours, "server_timestamp": int(time.time()), "network_interface": default_network_interface(),
-            "points": [dict(row) for row in rows], "network_points": [dict(row) for row in network_rows],
-            "network_sample_seconds": 2, "retention_days": 7}
+    network_points = []
+    for row in network_rows:
+        point = dict(row)
+        point.setdefault("rx_avg_bps", point.get("rx_bps"))
+        point.setdefault("tx_avg_bps", point.get("tx_bps"))
+        point.setdefault("sample_count", 1)
+        network_points.append(point)
+    gap_threshold = max(10, bucket_seconds * 3)
+    gaps = [
+        {"start": previous["captured_at"], "end": current["captured_at"],
+         "seconds": current["captured_at"] - previous["captured_at"]}
+        for previous, current in zip(network_points, network_points[1:])
+        if current["captured_at"] - previous["captured_at"] > gap_threshold
+    ]
+    latest_sample = network_points[-1]["captured_at"] if network_points else None
+    return {
+        "ok": True,
+        "hours": "auto" if automatic else hours,
+        "server_timestamp": server_timestamp,
+        "network_interface": default_network_interface(),
+        "points": [dict(row) for row in rows],
+        "network_points": network_points,
+        "network_sample_seconds": 2,
+        "network_bucket_seconds": bucket_seconds,
+        "network_status": {
+            "stored_samples": int(network_bounds[2] or 0),
+            "first_timestamp": network_bounds[0],
+            "last_timestamp": network_bounds[1],
+            "last_sample_age_seconds": max(0, server_timestamp - latest_sample) if latest_sample else None,
+            "gap_count": len(gaps),
+            "largest_gap_seconds": max((gap["seconds"] for gap in gaps), default=0),
+        },
+        "retention_days": 7,
+    }
 
 
 def metrics_sampler():
