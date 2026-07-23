@@ -4,6 +4,21 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-2200
+
+- Network history now keeps the real two-second download and upload peak from
+  every displayed time bucket instead of diluting short speed tests with an
+  average.
+- Average bandwidth remains available separately for accurate summary cards.
+- Fixed-range charts crop their axis to the samples that actually exist inside
+  the selected period, removing unexplained empty leading and trailing spans.
+- Network history reports collector freshness and detected sampling gaps so
+  missing data is never presented as zero traffic.
+- Future-dated samples caused by a corrected server clock are excluded from the
+  active chart window.
+- Adaptive network scaling now includes the real recorded maximum and rounds it
+  to a predictable readable ceiling instead of clipping speed-test peaks.
+
 ## 20260723-2100
 
 - Rebuilt the main navigation as consistent text cards with descriptive

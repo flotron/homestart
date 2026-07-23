@@ -331,6 +331,23 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(history["retention_days"], 7)
         self.assertEqual(len(history["network_points"]), 3)
         self.assertEqual(history["network_points"][-1]["rx_bps"], 7000)
+        self.assertEqual(history["network_points"][-1]["rx_avg_bps"], 7000)
+        self.assertLessEqual(history["network_status"]["last_sample_age_seconds"], 1)
+
+    def test_network_history_buckets_preserve_short_peaks(self):
+        self.app.DB_PATH = Path(self.temp.name) / "network-peak-metrics.db"
+        now = int(__import__("time").time())
+        for offset in range(-3599, 1):
+            self.app.record_network_metric({
+                "timestamp": now + offset,
+                "rx_bps": 875_000_000 if offset == -1800 else 1_000,
+                "tx_bps": 2_000,
+            })
+        history = self.app.metrics_history(1)
+        peak = max(history["network_points"], key=lambda point: point["rx_bps"])
+        self.assertEqual(peak["rx_bps"], 875_000_000)
+        self.assertLess(peak["rx_avg_bps"], peak["rx_bps"])
+        self.assertGreater(peak["sample_count"], 1)
 
 
 if __name__ == "__main__":
