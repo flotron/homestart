@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-2030
+
+- Replaced the browser-dependent time-zone datalist with a real select menu.
+- Time-zone choices are grouped by IANA region and combine Python tzdata with
+  the regions reported directly by `timedatectl`.
+- The server's current region remains selectable even if it is absent from one
+  of the available time-zone sources.
+
 ## 20260723-2000
 
 - Moved Trash from Settings into File Browser and added original path, item
