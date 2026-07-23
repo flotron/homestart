@@ -269,7 +269,11 @@ Automated checks and tagged release packaging are defined under
 - New shares are stored in `/etc/samba/homestart-shares.conf` and referenced
   from `smb.conf`; configuration is validated before Samba is reloaded.
 - Writable guest shares use the non-root Linux owner of the selected folder as
-  their Samba write identity, avoiding unsafe world-writable folder permissions.
+  their Samba write identity. If the folder itself is root-owned, HomeStart
+  walks up to the nearest non-root owner and grants that user ownership of only
+  the shared top-level folder, avoiding unsafe world-writable permissions.
+- New folders and uploads made through File Browser inherit their parent
+  folder's Linux owner and group.
 - HomeStart-managed shares can be edited after creation.
 - Samba passwords cannot be displayed because Samba stores non-reversible
   password hashes. HomeStart reports account names and access rules, and can

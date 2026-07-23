@@ -2404,7 +2404,17 @@ def create_folder(parent_path, name):
     if target.exists():
         raise FileExistsError("A file or folder with that name already exists")
     target.mkdir()
+    inherit_parent_ownership(target)
     return {"ok": True, "path": str(target), "action": "mkdir"}
+
+
+def inherit_parent_ownership(path):
+    """Avoid root-owned browser content when HomeStart runs as a system service."""
+    try:
+        parent_stat = path.parent.stat()
+        os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
+    except (OSError, PermissionError):
+        pass
 
 
 def delete_file_path(raw_path):
@@ -2478,6 +2488,7 @@ def upload_file(parent_path, name, content):
     if len(payload) > 100 * 1024 * 1024:
         raise ValueError("Uploaded file is too large")
     target.write_bytes(payload)
+    inherit_parent_ownership(target)
     return {
         "ok": True,
         "path": str(target),
@@ -2767,13 +2778,20 @@ def samba_share_action(payload):
         guest_ok = bool(payload.get("guest_ok", False))
         read_only = bool(payload.get("read_only", True))
         force_user = ""
+        ownership_before = None
         if guest_ok and not read_only:
             force_user = str(payload.get("force_user") or "").strip()
             if not force_user:
-                try:
-                    force_user = pwd.getpwuid(target.stat().st_uid).pw_name
-                except (KeyError, OSError) as error:
-                    raise ValueError("Could not identify the Linux owner used for guest writes") from error
+                for candidate in (target, *target.parents):
+                    try:
+                        owner = pwd.getpwuid(candidate.stat().st_uid)
+                    except (KeyError, OSError):
+                        continue
+                    if owner.pw_uid != 0:
+                        force_user = owner.pw_name
+                        break
+                if not force_user:
+                    raise ValueError("Could not find a non-root Linux owner; enter a Linux write user")
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", force_user):
                 raise ValueError("Invalid Linux write user")
             try:
@@ -2784,6 +2802,13 @@ def samba_share_action(payload):
                 raise ValueError("Guest write user must be an existing Linux account") from error
             if uid == 0:
                 raise PermissionError("Guest shares cannot write as root; choose a non-root Linux user")
+            target_stat = target.stat()
+            if target_stat.st_uid != uid:
+                ownership_before = (target_stat.st_uid, target_stat.st_gid)
+                try:
+                    os.chown(target, uid, -1)
+                except OSError as error:
+                    raise PermissionError(f"Could not grant folder ownership to {force_user}") from error
         state["shares"][name] = {
             "path": str(target),
             "browseable": bool(payload.get("browseable", True)),
@@ -2793,6 +2818,15 @@ def samba_share_action(payload):
             "force_user": force_user,
         }
         state["disabled"] = [item for item in state["disabled"] if item != name]
+        try:
+            return save_samba_state(state)
+        except Exception:
+            if ownership_before:
+                try:
+                    os.chown(target, ownership_before[0], ownership_before[1])
+                except OSError:
+                    pass
+            raise
     elif action in {"disable", "enable", "delete"}:
         name = validate_samba_share_name(payload.get("name"))
         if action == "disable":
