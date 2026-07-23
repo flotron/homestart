@@ -219,14 +219,27 @@ class HomeStartSmokeTests(unittest.TestCase):
         detected = {"ok": True, "shares": [], "users": []}
         with mock.patch.object(self.app, "samba_state", return_value=state), \
                 mock.patch.object(self.app, "samba_shares_payload", return_value=detected), \
-                mock.patch.object(self.app.pwd, "getpwuid", return_value=mock.Mock(pw_name="operator")), \
                 mock.patch.object(self.app.subprocess, "check_output", return_value="1000\n"), \
+                mock.patch.object(self.app.os, "chown") as chown, \
                 mock.patch.object(self.app, "save_samba_state", side_effect=lambda value: value):
             result = self.app.samba_share_action({
                 "action": "create", "name": "GuestFiles", "path": str(root),
                 "guest_ok": True, "read_only": False, "browseable": True,
+                "force_user": "operator",
             })
         self.assertEqual(result["shares"]["GuestFiles"]["force_user"], "operator")
+        chown.assert_called_once_with(root, 1000, -1)
+
+    def test_file_browser_content_inherits_parent_owner(self):
+        root = Path(self.temp.name) / "owned-files"
+        root.mkdir()
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        with mock.patch.object(self.app.os, "chown") as chown:
+            result = self.app.create_folder(str(root), "child")
+        parent_stat = root.stat()
+        chown.assert_called_once_with(Path(result["path"]), parent_stat.st_uid, parent_stat.st_gid)
 
     def test_samba_include_is_added_inside_global_section(self):
         with mock.patch.object(self.app, "SAMBA_MANAGED_PATH", Path("/etc/samba/homestart-shares.conf")):
