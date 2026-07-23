@@ -17,6 +17,10 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Docker support: detects published ports, including stopped containers.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
+- Permanent server clock: date and time follow the Linux server's configured
+  IANA region, editable from Settings.
+- Interactive history charts: hover or touch to inspect the exact server time
+  and CPU, memory, GPU, download and upload values for a sample.
 - Docker logs and curated installation templates with suggested ports and volumes.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
 - Manual downloadable backups for configuration, history, and custom icons.
@@ -278,3 +282,7 @@ Automated checks and tagged release packaging are defined under
 - Samba passwords cannot be displayed because Samba stores non-reversible
   password hashes. HomeStart reports account names and access rules, and can
   set or reset a Samba password for an existing Linux account via `smbpasswd`.
+- Trash is displayed directly below the explorer with original path, deletion
+  time, item size, restore, permanent deletion and empty-all actions.
+- Automatic Trash retention is opt-in and can be set to never, 7, 30 or 90
+  days. The default is never.
