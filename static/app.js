@@ -1510,8 +1510,15 @@ function renderNetworkInterface(item) {
     <span class="pill"></span>
   `;
   const ipv4 = item.ipv4?.length ? item.ipv4.map((address) => address.cidr).join(", ") : "No IPv4 address";
-  node.querySelector("strong").textContent = item.name;
-  node.querySelector("p").textContent = `${ipv4} · gateway ${item.gateway || "--"} · DNS ${(item.dns || []).join(", ") || "--"}`;
+  const speed = interfaceSpeedLabel(item);
+  node.querySelector("strong").textContent = item.label || item.name;
+  node.querySelector("p").textContent = [
+    item.label ? item.name : "",
+    speed,
+    ipv4,
+    `gateway ${item.gateway || "--"}`,
+    `DNS ${(item.dns || []).join(", ") || "--"}`,
+  ].filter(Boolean).join(" · ");
   const pill = node.querySelector(".pill");
   pill.textContent = `${item.state || "unknown"} · ${item.mode || "unknown"}`;
   pill.classList.add(item.state === "UP" ? "good" : "warn");
@@ -1529,7 +1536,8 @@ function selectNetworkInterface(item) {
   networkAddress.value = item.ipv4?.[0]?.cidr || "";
   networkGateway.value = item.gateway || "";
   networkDns.value = (item.dns || []).join(", ");
-  networkManagedBy.textContent = `Managed by ${item.managed_by || "unknown"}${item.netplan_file ? ` · ${item.netplan_file}` : ""}`;
+  const hardware = item.label ? `${item.label}${interfaceSpeedLabel(item) ? ` · ${interfaceSpeedLabel(item)}` : ""} · ` : "";
+  networkManagedBy.textContent = `${hardware}Managed by ${item.managed_by || "unknown"}${item.netplan_file ? ` · ${item.netplan_file}` : ""}`;
   renderNetworkInterfaces();
 }
 
