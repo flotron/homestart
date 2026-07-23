@@ -198,7 +198,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             "shares": {
                 "Media": {
                     "path": "/srv/media", "browseable": True, "read_only": False,
-                    "guest_ok": False, "valid_users": ["mediauser"],
+                    "guest_ok": True, "valid_users": [], "force_user": "mediauser",
                 }
             },
             "disabled": ["Media", "Legacy"],
@@ -206,6 +206,27 @@ class HomeStartSmokeTests(unittest.TestCase):
         rendered = self.app.render_homestart_samba_config(state)
         self.assertIn("[Media]\n    path = /srv/media\n    available = no", rendered)
         self.assertIn("[Legacy]\n    available = no", rendered)
+        self.assertIn("force user = mediauser", rendered)
+        self.assertIn("force directory mode = 0770", rendered)
+
+    def test_guest_writable_share_uses_non_root_folder_owner(self):
+        root = Path(self.temp.name) / "guest-share"
+        root.mkdir()
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        state = {"shares": {}, "disabled": []}
+        detected = {"ok": True, "shares": [], "users": []}
+        with mock.patch.object(self.app, "samba_state", return_value=state), \
+                mock.patch.object(self.app, "samba_shares_payload", return_value=detected), \
+                mock.patch.object(self.app.pwd, "getpwuid", return_value=mock.Mock(pw_name="operator")), \
+                mock.patch.object(self.app.subprocess, "check_output", return_value="1000\n"), \
+                mock.patch.object(self.app, "save_samba_state", side_effect=lambda value: value):
+            result = self.app.samba_share_action({
+                "action": "create", "name": "GuestFiles", "path": str(root),
+                "guest_ok": True, "read_only": False, "browseable": True,
+            })
+        self.assertEqual(result["shares"]["GuestFiles"]["force_user"], "operator")
 
     def test_samba_include_is_added_inside_global_section(self):
         with mock.patch.object(self.app, "SAMBA_MANAGED_PATH", Path("/etc/samba/homestart-shares.conf")):
