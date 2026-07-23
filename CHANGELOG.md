@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1500
+
+- Removed File Browser grid view and rebuilt its single list layout for narrow
+  screens, with a compact toolbar, smaller rows, and a mobile locations panel.
+- Added single-item selection and an action menu opened by right-click, the
+  three-dot button, or a 550 ms touch hold, with open, download, copy, rename,
+  and trash actions.
+- Named every stopped container directly in the corresponding overview alert.
+- Added locally persisted alert ignoring plus a visible control to restore all
+  currently ignored alerts.
+
 ## 20260723-1330
 
 - Replaced the CSS-drawn CPU, memory, and GPU illustrations with a consistent
