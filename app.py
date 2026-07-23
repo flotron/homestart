@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import mimetypes
 import os
+import pwd
 import re
 import shutil
 import socket
@@ -2584,6 +2585,7 @@ def samba_share_payload(name, values, state):
         "valid_users": valid_users,
         "write_users": write_users,
         "read_users": read_users,
+        "force_user": values.get("force user", ""),
         "managed": name in state["shares"],
         "disabled_by_homestart": name in state["disabled"],
     }
@@ -2644,6 +2646,14 @@ def render_homestart_samba_config(state):
         users = share.get("valid_users") or []
         if users:
             lines.append(f"    valid users = {' '.join(users)}")
+        if share.get("force_user"):
+            lines.extend([
+                f"    force user = {share['force_user']}",
+                "    create mask = 0664",
+                "    directory mask = 0775",
+                "    force create mode = 0660",
+                "    force directory mode = 0770",
+            ])
         lines.extend(["", ""])
     for name in sorted(set(state["disabled"]), key=str.lower):
         if name not in state["shares"]:
@@ -2735,13 +2745,15 @@ def samba_share_action(payload):
             raise ValueError((error.stderr or "").strip() or "Could not update the Samba password") from error
         return samba_shares_payload()
     state = samba_state()
-    if action == "create":
+    if action in {"create", "update"}:
         name = validate_samba_share_name(payload.get("name"))
+        if action == "update" and name not in state["shares"]:
+            raise PermissionError("Only shares created by HomeStart can be edited")
         target = resolve_file_path(payload.get("path", ""))
         if target is None or not target.exists() or not target.is_dir():
             raise NotADirectoryError("Select an existing folder inside the allowed File Browser roots")
         current_names = {item["name"].lower() for item in samba_shares_payload().get("shares", [])}
-        if name.lower() in current_names:
+        if action == "create" and name.lower() in current_names:
             raise FileExistsError("A Samba share with this name already exists")
         requested_users = payload.get("valid_users") or []
         if isinstance(requested_users, str):
@@ -2752,12 +2764,33 @@ def samba_share_action(payload):
             raise ValueError(f"Unknown Samba user: {', '.join(unknown)}")
         if not payload.get("guest_ok") and not requested_users:
             raise ValueError("Choose at least one Samba user or enable guest access")
+        guest_ok = bool(payload.get("guest_ok", False))
+        read_only = bool(payload.get("read_only", True))
+        force_user = ""
+        if guest_ok and not read_only:
+            force_user = str(payload.get("force_user") or "").strip()
+            if not force_user:
+                try:
+                    force_user = pwd.getpwuid(target.stat().st_uid).pw_name
+                except (KeyError, OSError) as error:
+                    raise ValueError("Could not identify the Linux owner used for guest writes") from error
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", force_user):
+                raise ValueError("Invalid Linux write user")
+            try:
+                uid = int(subprocess.check_output(
+                    ["id", "-u", force_user], text=True, timeout=5, stderr=subprocess.DEVNULL
+                ).strip())
+            except (FileNotFoundError, subprocess.SubprocessError, ValueError) as error:
+                raise ValueError("Guest write user must be an existing Linux account") from error
+            if uid == 0:
+                raise PermissionError("Guest shares cannot write as root; choose a non-root Linux user")
         state["shares"][name] = {
             "path": str(target),
             "browseable": bool(payload.get("browseable", True)),
-            "read_only": bool(payload.get("read_only", True)),
-            "guest_ok": bool(payload.get("guest_ok", False)),
+            "read_only": read_only,
+            "guest_ok": guest_ok,
             "valid_users": requested_users,
+            "force_user": force_user,
         }
         state["disabled"] = [item for item in state["disabled"] if item != name]
     elif action in {"disable", "enable", "delete"}:
