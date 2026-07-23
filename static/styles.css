@@ -156,10 +156,11 @@ body {
 .live-bandwidth-status small { grid-column:2; color:var(--muted); }.live-dot { width:8px; height:8px; margin-top:5px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); }
 .sampling-note { margin:0 0 12px; color:var(--muted); font-size:12px; }
 .history-meta { margin:0 0 10px; color:var(--muted); font-size:12px; }
-.alert-item { display:flex; gap:10px; padding:11px; border:1px solid var(--glass-line); border-radius:10px; background:rgb(255 255 255 / .025); }
+.alert-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; gap:10px; padding:11px; border:1px solid var(--glass-line); border-radius:10px; background:rgb(255 255 255 / .025); }
 .alert-item > span { width:8px; height:8px; margin-top:5px; flex:none; border-radius:50%; background:#38bdf8; }
 .alert-item.warning > span { background:#facc15; }.alert-item.critical > span { background:#f87171; }
 .alert-item p { margin:4px 0 0; color:var(--muted); }
+.alert-item button,.subtle-action { padding:6px 9px; background:var(--panel-strong); color:var(--muted); font-size:12px; }
 .empty-state { display:grid; min-height:120px; place-items:center; padding:20px; color:var(--muted); text-align:center; }
 .empty-state.success { min-height:90px; color:var(--ok); }
 .settings-grid-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; align-items:end; }
@@ -1650,6 +1651,43 @@ button:disabled {
   padding: 0;
 }
 
+.file-entry.selected {
+  background: rgb(56 189 248 / .14);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.file-context-menu {
+  position: fixed;
+  z-index: 1000;
+  width: 230px;
+  padding: 7px;
+  border: 1px solid var(--glass-line);
+  border-radius: 12px;
+  background: rgb(24 31 41 / .98);
+  box-shadow: 0 20px 55px rgb(0 0 0 / .45);
+  backdrop-filter: blur(18px);
+}
+
+.file-context-title {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px 10px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-context-title strong,
+.file-context-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-context-title small { color: var(--muted); }
+.file-context-menu button { width: 100%; margin-top: 3px; padding: 9px 10px; background: transparent; color: var(--text); text-align: left; }
+.file-context-menu button:hover { background: var(--panel-strong); }
+.file-context-menu button.danger { color: #fb7185; }
+
 .file-entry {
   width: 100%;
   min-width: 0;
@@ -2123,13 +2161,19 @@ button:disabled {
     padding: 14px;
   }
 
-  .file-toolbar,
-  .file-view-toggle {
+  .file-toolbar {
     width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
   }
 
-  .file-view-toggle button {
-    width: 50%;
+  .file-toolbar button,
+  .file-upload-button {
+    width: auto;
+    min-width: 0;
+    padding: 8px 5px;
+    font-size: 12px;
   }
 
   .file-path-form {
@@ -2143,15 +2187,21 @@ button:disabled {
     margin: 10px 14px 0;
   }
 
-  .file-columns {
-    top: 0;
-  }
-
-  .file-list.grid-view {
-    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-    gap: 14px 10px;
-    padding: 14px;
-  }
+  .file-columns { display: none; }
+  .file-list.list-view { padding: 0; }
+  .file-entry { min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 10px 12px; }
+  .file-entry .file-type,
+  .file-entry .file-size,
+  .file-entry .file-modified { display: none; }
+  .file-name { grid-template-columns: 42px minmax(0, 1fr); gap: 9px; }
+  .file-thumb { width: 42px; height: 40px; }
+  .file-actions { gap: 5px; }
+  .file-actions button { min-width: 42px; min-height: 40px; padding: 7px 6px; }
+  .file-open { display: none; }
+  .file-sidebar { display: block; max-height: 155px; overflow: auto; padding: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .file-context-menu { inset: auto 8px 8px !important; width: auto; border-radius: 16px; padding: 8px; }
+  .alert-item { grid-template-columns: auto minmax(0, 1fr); }
+  .alert-item button { grid-column: 2; justify-self: start; }
 
   .metric {
     min-height: 92px;
