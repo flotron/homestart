@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1830
+
+- Fixed writable guest shares by mapping guest writes to the non-root Linux
+  owner of the shared folder instead of Samba's unprivileged guest account.
+- Added safe file and directory creation masks for writable guest shares.
+- Added Edit share for HomeStart-managed shares, including path, authorized
+  users, guest access, read/write mode, visibility and guest write identity.
+- Guest shares are never allowed to force writes as the Linux root account.
+
 ## 20260723-1800
 
 - Added a responsive Samba Share Manager below File Browser.
