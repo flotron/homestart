@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-1730
+
+- Network Settings now shows the same runtime manufacturer/model information
+  as Overview, together with the Linux interface name and negotiated speed.
+- The IPv4 editor repeats the selected adapter identity above its Netplan
+  details.
+- Virtual bridges are no longer presented as detected physical adapters.
+
 ## 20260723-1500
 
 - Removed File Browser grid view and rebuilt its single list layout for narrow
