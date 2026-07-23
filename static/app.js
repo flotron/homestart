@@ -1918,6 +1918,7 @@ async function postSambaAction(payload) {
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(result.error || "Samba operation failed");
   await loadSambaShares();
+  return result;
 }
 
 async function changeSambaShare(action, share) {
@@ -1933,6 +1934,7 @@ async function changeSambaShare(action, share) {
 async function createSambaShare(event) {
   event.preventDefault();
   sambaShareSubmit.disabled = true;
+  const wasEditing = Boolean(state.editingSambaShare);
   try {
     await postSambaAction({
       action: state.editingSambaShare ? "update" : "create",
@@ -1945,6 +1947,7 @@ async function createSambaShare(event) {
       force_user: sambaForceUser.value.trim(),
     });
     resetSambaShareForm();
+    if (wasEditing) window.alert("Share updated. Reconnect the Windows network share so the new permissions take effect.");
   } catch (error) {
     window.alert(error.message);
   } finally {
