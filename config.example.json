@@ -12,6 +12,12 @@
   "network": {
     "monitor_interface": "auto"
   },
+  "time": {
+    "timezone": "UTC"
+  },
+  "trash": {
+    "retention_days": 0
+  },
   "alerts": {
     "cpu_percent": 90,
     "memory_percent": 90,

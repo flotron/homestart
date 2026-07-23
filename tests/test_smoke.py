@@ -39,6 +39,21 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(result["appearance"]["accent"], "#ff0000")
         self.assertIn("features", self.app.load_config_file())
 
+    def test_system_timezone_change_uses_timedatectl(self):
+        with mock.patch.object(self.app.subprocess, "check_output", return_value="") as check_output:
+            result = self.app.set_system_timezone("America/Argentina/Cordoba")
+        self.assertEqual(result, "America/Argentina/Cordoba")
+        check_output.assert_called_once_with(
+            ["timedatectl", "set-timezone", "America/Argentina/Cordoba"],
+            text=True, timeout=15, stderr=self.app.subprocess.STDOUT,
+        )
+
+    def test_trash_retention_accepts_supported_periods(self):
+        result = self.app.update_settings({"trash": {"retention_days": 30}})
+        self.assertEqual(result["trash"]["retention_days"], 30)
+        with self.assertRaises(ValueError):
+            self.app.update_settings({"trash": {"retention_days": 31}})
+
     def test_backup_extraction_rejects_parent_traversal(self):
         payload = io.BytesIO()
         with tarfile.open(fileobj=payload, mode="w:gz") as archive:
@@ -66,6 +81,25 @@ class HomeStartSmokeTests(unittest.TestCase):
         item = self.app.trash_listing()["items"][0]
         restored = self.app.restore_trash_item(item["key"])
         self.assertEqual(Path(restored["path"]).read_text(encoding="utf-8"), "recover me")
+
+    def test_trash_reports_recursive_size_and_permanent_delete(self):
+        self.app.TRASH_DIR = Path(self.temp.name) / "trash-size"
+        self.app.TRASH_INDEX = Path(self.temp.name) / "trash-size.json"
+        folder = self.app.TRASH_DIR / "item-folder"
+        folder.mkdir(parents=True)
+        (folder / "a.bin").write_bytes(b"a" * 10)
+        (folder / "b.bin").write_bytes(b"b" * 15)
+        self.app.save_trash_index({
+            "item-folder": {"original": "/tmp/folder", "name": "folder", "deleted_at": int(__import__("time").time())}
+        })
+        with mock.patch.object(self.app, "cleanup_expired_trash", return_value=0):
+            listing = self.app.trash_listing()
+        self.assertEqual(listing["items"][0]["size"], 25)
+        self.assertEqual(listing["total_size"], 25)
+        self.app.delete_trash_item("item-folder")
+        self.assertFalse(folder.exists())
+        with self.assertRaises(ValueError):
+            self.app.delete_trash_item("..")
 
     def test_copy_in_same_folder_creates_copy_name(self):
         root = Path(self.temp.name) / "copy-files"
