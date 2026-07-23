@@ -10,6 +10,16 @@ It gives you a browser UI to inspect the host, open local apps, manage Docker
 containers, browse files, run supported CLI wrappers such as Ookla Speedtest,
 and apply local or GitHub release updates without bundling private runtime data.
 
+## Screenshots
+
+| Overview and performance history | Apps and containers |
+| --- | --- |
+| [![HomeStart overview](docs/screenshots/overview.png)](docs/screenshots/overview.png) | [![HomeStart apps dashboard](docs/screenshots/apps.png)](docs/screenshots/apps.png) |
+
+| File Browser | Settings |
+| --- | --- |
+| [![HomeStart File Browser](docs/screenshots/file-browser.png)](docs/screenshots/file-browser.png) | [![HomeStart settings](docs/screenshots/settings.png)](docs/screenshots/settings.png) |
+
 ## Features
 
 - Professional overview with health state, local alerts, seven days of CPU, memory, and GPU history, physical disks, processes, and Docker resources.
