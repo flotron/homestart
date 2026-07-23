@@ -1489,20 +1489,23 @@ def overview_payload():
     temperature = system.get("temperature", {}).get("celsius")
     thresholds = load_config_file().get("alerts", {})
     if cpu is not None and cpu >= float(thresholds.get("cpu_percent", 90)):
-        alerts.append({"level": "warning", "title": "High CPU usage", "detail": f"CPU is at {cpu:.0f}%"})
+        alerts.append({"id": "cpu-high", "level": "warning", "title": "High CPU usage", "detail": f"CPU is at {cpu:.0f}%"})
     if memory is not None and memory >= float(thresholds.get("memory_percent", 90)):
-        alerts.append({"level": "warning", "title": "High memory usage", "detail": f"Memory is at {memory:.0f}%"})
+        alerts.append({"id": "memory-high", "level": "warning", "title": "High memory usage", "detail": f"Memory is at {memory:.0f}%"})
     if temperature is not None and temperature >= float(thresholds.get("temperature_c", 85)):
-        alerts.append({"level": "critical", "title": "High temperature", "detail": f"Host temperature is {temperature:.0f} °C"})
+        alerts.append({"id": "temperature-high", "level": "critical", "title": "High temperature", "detail": f"Host temperature is {temperature:.0f} °C"})
     for disk in status["disks"]:
         if disk.get("percent", 0) >= float(thresholds.get("disk_percent", 90)):
-            alerts.append({"level": "critical", "title": "Disk almost full", "detail": f"{disk['device']} is at {disk['percent']:.0f}%"})
+            alerts.append({"id": f"disk-{disk['device']}", "level": "critical", "title": "Disk almost full", "detail": f"{disk['device']} is at {disk['percent']:.0f}%"})
     for service in status["services"]:
         if service.get("active") != "active":
-            alerts.append({"level": "critical", "title": "Service unavailable", "detail": service.get("name", "Service")})
+            service_name = service.get("name", "Service")
+            alerts.append({"id": f"service-{service_name}", "level": "critical", "title": "Service unavailable", "detail": service_name})
     stopped = [item for item in status["containers"] if not item.get("docker_running")]
     if stopped:
-        alerts.append({"level": "info", "title": "Stopped containers", "detail": f"{len(stopped)} container(s) are stopped"})
+        stopped_names = [item.get("docker_name") or item.get("name") or "Unnamed container" for item in stopped]
+        alerts.append({"id": "stopped-containers", "level": "info", "title": "Stopped containers",
+                       "detail": f"{len(stopped_names)} stopped: {', '.join(stopped_names)}"})
     health = "critical" if any(item["level"] == "critical" for item in alerts) else "warning" if alerts else "healthy"
     return {
         "ok": True,
