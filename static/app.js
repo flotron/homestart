@@ -1367,12 +1367,33 @@ async function loadGeneralSettings() {
   document.querySelector("#setting-theme").value = data.appearance?.theme || "dark";
   document.querySelector("#setting-density").value = data.appearance?.density || "comfortable";
   state.serverTimezone = data.time?.timezone || "UTC";
-  document.querySelector("#setting-timezone").value = state.serverTimezone;
-  document.querySelector("#timezone-list").replaceChildren(...(data.timezones || []).map((timezone) => {
+  const timezoneSelect = document.querySelector("#setting-timezone");
+  const groupedTimezones = new Map();
+  (data.timezones || []).forEach((timezone) => {
+    const group = timezone.includes("/") ? timezone.split("/", 1)[0] : "Other";
+    if (!groupedTimezones.has(group)) groupedTimezones.set(group, []);
+    groupedTimezones.get(group).push(timezone);
+  });
+  const timezoneGroups = [...groupedTimezones.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([group, timezones]) => {
+    const node = document.createElement("optgroup");
+    node.label = group;
+    node.append(...timezones.map((timezone) => {
+      const option = document.createElement("option");
+      option.value = timezone;
+      option.textContent = timezone.replaceAll("_", " ");
+      return option;
+    }));
+    return node;
+  });
+  if (!(data.timezones || []).includes(state.serverTimezone)) {
     const option = document.createElement("option");
-    option.value = timezone;
-    return option;
-  }));
+    option.value = state.serverTimezone;
+    option.textContent = `${state.serverTimezone} (current)`;
+    timezoneSelect.replaceChildren(option, ...timezoneGroups);
+  } else {
+    timezoneSelect.replaceChildren(...timezoneGroups);
+  }
+  timezoneSelect.value = state.serverTimezone;
   document.querySelector("#setting-cpu-alert").value = data.alerts?.cpu_percent ?? 90;
   document.querySelector("#setting-memory-alert").value = data.alerts?.memory_percent ?? 90;
   document.querySelector("#setting-disk-alert").value = data.alerts?.disk_percent ?? 90;
