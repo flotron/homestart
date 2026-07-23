@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260723-2230
+
+- History SVGs now use the panel's real rendered width instead of a fixed
+  800-pixel internal canvas.
+- Fixed the wide-screen letterboxing that visually compressed samples into the
+  center of the chart while the HTML time axis still occupied the full panel.
+- Network and system samples now align horizontally with their corresponding
+  timestamps from the first available point through the latest point.
+
 ## 20260723-2200
 
 - Network history now keeps the real two-second download and upload peak from
