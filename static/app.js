@@ -49,12 +49,15 @@ const storeInstallDialog = document.querySelector("#store-install-dialog");
 const storeInstallForm = document.querySelector("#store-install-form");
 const storeInstallTitle = document.querySelector("#store-install-title");
 const storeInstallImage = document.querySelector("#store-install-image");
+const storeTemplateFields = document.querySelector("#store-template-fields");
+const storeLegacyFields = document.querySelector("#store-legacy-fields");
 const storeInstallName = document.querySelector("#store-install-name");
 const storeInstallHostPort = document.querySelector("#store-install-host-port");
 const storeInstallContainerPort = document.querySelector("#store-install-container-port");
 const storeInstallEnv = document.querySelector("#store-install-env");
 const storeInstallVolumes = document.querySelector("#store-install-volumes");
 const storeInstallRestart = document.querySelector("#store-install-restart");
+const storeInstallNote = document.querySelector("#store-install-note");
 const storeInstallCancel = document.querySelector("#store-install-cancel");
 const storeInstallSubmit = document.querySelector("#store-install-submit");
 const storeInstallProgress = document.querySelector("#store-install-progress");
@@ -868,17 +871,19 @@ function renderStoreResult(item) {
     ? `${item.namespace}/${item.repo || ""}`
     : item.name;
   node.querySelector("p").textContent = item.description || "Docker Hub image";
-  node.querySelector(".store-meta").textContent = [
-    item.official ? "Official" : "",
-    !item.official && item.verification_label ? item.verification_label : "",
-    item.automated ? "Automated" : "",
-    `${compactNumber(item.stars)} stars`,
-    `${compactNumber(item.pulls)} pulls`,
-  ].filter(Boolean).join(" · ");
+  node.querySelector(".store-meta").textContent = item.template_id
+    ? [item.category, "Managed Compose"].filter(Boolean).join(" · ")
+    : [
+        item.official ? "Official" : "",
+        !item.official && item.verification_label ? item.verification_label : "",
+        item.automated ? "Automated" : "",
+        `${compactNumber(item.stars)} stars`,
+        `${compactNumber(item.pulls)} pulls`,
+      ].filter(Boolean).join(" · ");
   const link = node.querySelector(".store-link");
   link.href = item.page_url || `https://hub.docker.com/r/${encodeURIComponent(item.image || item.name)}`;
   link.textContent = item.link_label || "Docker Hub";
-  link.title = `Open the image page for ${item.name}`;
+  link.title = item.template_id ? `Open the project page for ${item.name}` : `Open the image page for ${item.name}`;
   const install = node.querySelector("button");
   if (item.installed) {
     install.textContent = "Installed";
@@ -924,20 +929,68 @@ async function searchStore(event) {
 function openStoreInstall(item) {
   state.selectedStoreApp = item;
   storeInstallTitle.textContent = item.name;
-  storeInstallImage.textContent = item.image;
+  storeInstallImage.textContent = item.template_id
+    ? `Docker Compose · ${item.image}`
+    : item.image;
   storeInstallName.value = suggestedContainerName(item.image);
   storeInstallHostPort.value = item.host_port || "";
   storeInstallContainerPort.value = item.container_port || "";
   storeInstallEnv.value = "";
   storeInstallVolumes.value = item.volume || "";
   storeInstallRestart.value = "unless-stopped";
+  const declarative = Boolean(item.template_id);
+  storeLegacyFields.hidden = declarative;
+  storeTemplateFields.hidden = !declarative;
+  storeInstallName.required = !declarative;
+  storeTemplateFields.replaceChildren();
+  if (declarative) {
+    (item.inputs || []).forEach((definition) => {
+      const label = document.createElement("label");
+      label.textContent = definition.label;
+      let input;
+      if (definition.type === "select") {
+        input = document.createElement("select");
+        (definition.options || []).forEach((value) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          input.append(option);
+        });
+      } else {
+        input = document.createElement("input");
+        input.type = definition.type === "port" ? "number" : "text";
+        if (definition.type === "port") {
+          input.min = "1";
+          input.max = "65535";
+          input.inputMode = "numeric";
+        }
+        if (definition.type === "path") input.autocapitalize = "off";
+        input.autocomplete = "off";
+      }
+      input.required = true;
+      input.value = definition.default ?? "";
+      input.dataset.templateInput = definition.id;
+      input.dataset.templateType = definition.type;
+      label.append(input);
+      if (definition.help) {
+        const help = document.createElement("span");
+        help.className = "store-template-help";
+        help.textContent = definition.help;
+        label.append(help);
+      }
+      storeTemplateFields.append(label);
+    });
+    storeInstallNote.textContent = "HomeStart will validate these values and create a managed Docker Compose project from the official catalog.";
+  } else {
+    storeInstallNote.textContent = "Only install images you trust. HomeStart will pull the image and run it as a Docker container.";
+  }
   storeInstallProgress.hidden = true;
   storeInstallLog.textContent = "";
   storeInstallDialog.showModal();
 }
 
 function renderInstallProgress(job) {
-  const labels = { validating: "Validating", pulling: "Downloading image", creating: "Creating container", starting: "Starting container", completed: "Installed", failed: "Installation failed" };
+  const labels = { validating: "Validating", pulling: "Downloading images", creating: "Creating app", starting: "Starting app", completed: "Installed", failed: "Installation failed" };
   const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
   storeInstallProgress.hidden = false;
   storeInstallStage.textContent = labels[job.stage] || "Installing";
@@ -969,6 +1022,13 @@ async function loadStoreTemplates() {
   const response = await fetch("/api/store/templates", { cache: "no-store" });
   const data = await response.json();
   state.storeResults = (data.templates || []).map((item) => ({ ...item, repo: item.name, namespace: "HomeStart template" }));
+  const catalog = data.catalog || {};
+  const source = catalog.source === "remote"
+    ? "official catalog"
+    : catalog.source === "cache"
+      ? catalog.stale ? "cached catalog (offline)" : "cached catalog"
+      : "built-in recommendations";
+  storeStatus.textContent = `${state.storeResults.length} recommended apps · ${source}`;
   renderStoreResults();
 }
 
@@ -976,16 +1036,29 @@ async function installStoreApp(event) {
   event.preventDefault();
   const item = state.selectedStoreApp;
   if (!item) return;
-  const payload = {
-    image: item.image,
-    name: storeInstallName.value.trim(),
-    host_port: storeInstallHostPort.value.trim(),
-    container_port: storeInstallContainerPort.value.trim(),
-    env: storeInstallEnv.value.split("\n").map((line) => line.trim()).filter(Boolean),
-    volumes: storeInstallVolumes.value.split("\n").map((line) => line.trim()).filter(Boolean),
-    restart_policy: storeInstallRestart.value,
-  };
-  const confirmed = window.confirm(`Install ${payload.image} as Docker container "${payload.name}"?`);
+  const payload = item.template_id
+    ? {
+        template_id: item.template_id,
+        values: Object.fromEntries(
+          [...storeTemplateFields.querySelectorAll("[data-template-input]")]
+            .map((input) => [input.dataset.templateInput, input.value.trim()]),
+        ),
+      }
+    : {
+        image: item.image,
+        name: storeInstallName.value.trim(),
+        host_port: storeInstallHostPort.value.trim(),
+        container_port: storeInstallContainerPort.value.trim(),
+        env: storeInstallEnv.value.split("\n").map((line) => line.trim()).filter(Boolean),
+        volumes: storeInstallVolumes.value.split("\n").map((line) => line.trim()).filter(Boolean),
+        restart_policy: storeInstallRestart.value,
+      };
+  const displayName = payload.values?.container_name || payload.name || item.name;
+  const confirmed = window.confirm(
+    item.template_id
+      ? `Install ${item.name} as the managed Docker Compose app "${displayName}"?`
+      : `Install ${payload.image} as Docker container "${displayName}"?`,
+  );
   if (!confirmed) return;
 
   storeInstallSubmit.disabled = true;

@@ -44,6 +44,9 @@
   "updates": {
     "github_repo": "flotron/homestart"
   },
+  "app_store": {
+    "catalog_url": "https://raw.githubusercontent.com/flotron/homestart-apps/main/dist/catalog.json"
+  },
   "apps": [
     {
       "name": "Ookla Speedtest",

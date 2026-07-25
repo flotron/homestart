@@ -4,6 +4,23 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2400
+
+- Moved recommended App Store definitions to the separate declarative
+  `flotron/homestart-apps` catalog.
+- Recommended apps now declare their fields and Docker Compose services instead
+  of requiring application-specific installer code in HomeStart.
+- Added dynamic installation fields, managed Compose project generation,
+  HomeStart labels, image pulling, startup progress, and server-side value
+  validation.
+- HomeStart validates the remote catalog, caches the last valid copy for
+  offline use, and falls back to its built-in recommendations when no valid
+  catalog has been downloaded.
+- Direct Docker Hub searches and installations remain compatible with the
+  existing single-container installer.
+- Added `app_store.catalog_url` and `HOMESTART_APP_CATALOG_URL` so another
+  catalog can be selected without changing HomeStart source code.
+
 ## 20260725-2300
 
 - File Browser copies now prefer the host's GNU `cp` engine, allowing
