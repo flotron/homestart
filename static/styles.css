@@ -173,6 +173,19 @@ body {
 .live-bandwidth-status { display:grid; grid-template-columns:auto 1fr; align-content:center; gap:4px 8px; padding:12px; border:1px solid var(--glass-line); border-radius:12px; background:var(--glass); }
 .live-bandwidth-status small { grid-column:2; color:var(--muted); }.live-dot { width:8px; height:8px; margin-top:5px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); }
 .sampling-note { margin:0 0 12px; color:var(--muted); font-size:12px; }
+.bandwidth-ranking { margin-top:16px; padding-top:14px; border-top:1px solid var(--glass-line); }
+.bandwidth-ranking .section-head { margin-bottom:10px; }
+.bandwidth-ranking h3 { margin:0; }.bandwidth-ranking p { margin:3px 0 0; }
+.bandwidth-ranking-head,.bandwidth-ranking-row { display:grid; grid-template-columns:42px minmax(180px,1fr) repeat(3,minmax(105px,.55fr)); align-items:center; gap:10px; }
+.bandwidth-ranking-head { padding:0 12px 7px; color:var(--muted); font-size:11px; text-transform:uppercase; }
+.bandwidth-ranking-row { padding:10px 12px; border-top:1px solid var(--glass-line); }
+.bandwidth-ranking-row:first-child { border-top:0; }
+.bandwidth-ranking-row .rank { color:var(--accent); }
+.bandwidth-ranking-row .app-name { display:grid; min-width:0; }
+.bandwidth-ranking-row .app-name b,.bandwidth-ranking-row .app-name small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bandwidth-ranking-row .app-name small { color:var(--muted); }
+.bandwidth-ranking-list { overflow:hidden; border:1px solid var(--glass-line); border-radius:11px; background:rgb(255 255 255 / .02); }
+.bandwidth-ranking-list > .form-note { padding:14px; }
 .monitor-interface-control { display:grid; min-width:min(100%,360px); gap:5px; color:var(--muted); font-size:12px; }
 .monitor-interface-control select { max-width:420px; }
 .monitor-interface-control small { max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1660,6 +1673,17 @@ button:disabled {
   font-size: 12px;
   font-weight: 800;
 }
+.file-copy-progress { margin:10px 14px; padding:11px 12px; border:1px solid rgb(56 189 248 / .35); border-radius:10px; background:rgb(56 189 248 / .07); }
+.file-copy-progress > div:first-child { display:flex; justify-content:space-between; gap:12px; }
+.file-copy-progress small { display:block; margin-top:6px; overflow:hidden; color:var(--muted); text-overflow:ellipsis; white-space:nowrap; }
+.file-copy-track { height:7px; margin-top:8px; overflow:hidden; border-radius:99px; background:var(--panel-strong); }
+.file-copy-track span { display:block; width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),#34d399); transition:width .2s ease; }
+.file-properties-dialog { width:min(560px,calc(100vw - 24px)); }
+.file-properties-content { display:grid; gap:0; margin-top:12px; overflow:hidden; border:1px solid var(--glass-line); border-radius:11px; }
+.file-properties-content > div { display:grid; grid-template-columns:110px minmax(0,1fr); gap:14px; padding:11px 12px; border-top:1px solid var(--glass-line); }
+.file-properties-content > div:first-child { border-top:0; }
+.file-properties-content span { color:var(--muted); }
+.file-properties-content strong { overflow-wrap:anywhere; }
 
 .file-drop-status.active {
   border-color: var(--accent);
@@ -2172,6 +2196,12 @@ button:disabled {
   .bandwidth-stats { grid-template-columns:1fr; }
   .live-bandwidth { grid-template-columns:1fr; }
   .bandwidth-head { align-items:stretch; flex-direction:column; }
+  .bandwidth-ranking-head { display:none; }
+  .bandwidth-ranking-row { grid-template-columns:36px minmax(0,1fr) auto; gap:7px 10px; }
+  .bandwidth-ranking-row .app-name { grid-column:2/-1; }
+  .bandwidth-ranking-row [data-label] { display:grid; grid-column:2/-1; grid-template-columns:1fr auto; color:var(--text); }
+  .bandwidth-ranking-row [data-label]::before { content:attr(data-label); color:var(--muted); font-weight:400; }
+  .bandwidth-ranking-row .rank { grid-row:1/5; align-self:start; padding-top:2px; }
   .monitor-interface-control, .monitor-interface-control select, .monitor-interface-control small { width:100%; max-width:none; }
 
   .resource-summary {
