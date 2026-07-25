@@ -4,6 +4,21 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2300
+
+- File Browser copies now prefer the host's GNU `cp` engine, allowing
+  Coreutils and the Linux kernel to choose optimized native copy paths.
+- Native copies use automatic reflink and sparse-file support while avoiding
+  shell interpretation of file paths.
+- HomeStart supervises the native process to retain percentage, decimal
+  GB/MB speed, ETA and safe cancellation.
+- Cancelling terminates `cp` before HomeStart removes the incomplete
+  destination.
+- The existing buffered Python engine remains an automatic fallback when GNU
+  `cp` is not available.
+- Copy progress identifies the active engine so performance tests can confirm
+  whether `Native cp` or `Python fallback` was selected.
+
 ## 20260725-2240
 
 - Copy progress now uses familiar decimal GB, MB and KB units for transferred
