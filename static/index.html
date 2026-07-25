@@ -121,6 +121,19 @@
             <div id="bandwidth-time-axis" class="history-time-axis"></div>
             <p id="bandwidth-meta" class="history-meta">Loading bandwidth samples…</p>
             <div class="chart-legend bandwidth-legend"><span class="download">Download</span><span class="upload">Upload</span></div>
+            <section class="bandwidth-ranking">
+              <div class="section-head">
+                <div><h3>Apps / containers ranking</h3><p>Traffic attributed to Docker containers during the selected period.</p></div>
+                <select id="bandwidth-ranking-period" aria-label="Bandwidth ranking period">
+                  <option value="60">Last minute</option>
+                  <option value="3600" selected>Last hour</option>
+                  <option value="86400">Last day</option>
+                </select>
+              </div>
+              <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>App / container</span><span>Download</span><span>Upload</span><span>Total</span></div>
+              <div id="bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting container traffic…</p></div>
+              <p id="bandwidth-ranking-note" class="form-note">Containers using host networking and native Linux processes cannot be attributed separately.</p>
+            </section>
           </section>
 
           <details class="resources-panel" id="resources-panel">
@@ -317,6 +330,11 @@
                   <button type="submit">Go</button>
                 </form>
                 <div id="file-drop-status" class="file-drop-status">Drop files here to upload</div>
+                <div id="file-copy-progress" class="file-copy-progress" hidden>
+                  <div><strong id="file-copy-label">Preparing copy…</strong><span id="file-copy-percent">0%</span></div>
+                  <div class="file-copy-track"><span id="file-copy-bar"></span></div>
+                  <small id="file-copy-detail">Calculating size…</small>
+                </div>
                 <div class="file-columns">
                   <span>Name</span>
                   <span>Type</span>
@@ -548,9 +566,15 @@
       <button type="button" data-file-context-action="open">Open</button>
       <button type="button" data-file-context-action="download">Download</button>
       <button type="button" data-file-context-action="copy">Copy</button>
+      <button type="button" data-file-context-action="properties">Properties</button>
       <button type="button" data-file-context-action="rename">Rename</button>
       <button class="danger" type="button" data-file-context-action="delete">Move to trash</button>
     </div>
+
+    <dialog id="file-properties-dialog" class="store-dialog file-properties-dialog">
+      <div class="section-head"><div><p class="eyebrow">File Browser</p><h2 id="file-properties-title">Properties</h2></div><button id="file-properties-close" type="button">Close</button></div>
+      <div id="file-properties-content" class="file-properties-content"><p class="form-note">Calculating size…</p></div>
+    </dialog>
 
     <dialog id="logs-dialog" class="store-dialog logs-dialog">
       <div class="section-head"><div><p class="eyebrow">Docker logs</p><h2 id="logs-title">Container logs</h2></div><button id="logs-close" type="button">Close</button></div>

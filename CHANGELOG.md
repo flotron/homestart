@@ -4,6 +4,22 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-1330
+
+- Added File Browser Properties to the right-click, three-dot and touch-hold
+  menu, including recursive folder size, item counts, modification time,
+  permissions and Linux owner IDs.
+- File and folder pastes now run as background jobs with byte-accurate progress,
+  current file, transferred size and automatic cleanup of incomplete targets
+  after a failed copy.
+- Added persistent per-container network accounting sampled every two seconds
+  and retained for seven days.
+- Added an Apps / containers bandwidth ranking for the last minute, hour or
+  day, showing download, upload, total transferred data and average throughput.
+- The ranking explicitly excludes native processes and host-network containers
+  when their traffic cannot be attributed reliably without additional host
+  instrumentation.
+
 ## 20260723-2230
 
 - History SVGs now use the panel's real rendered width instead of a fixed
