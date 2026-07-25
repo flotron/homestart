@@ -27,6 +27,8 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Docker support: detects published ports, including stopped containers.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste with progress, live speed, ETA and safe cancellation, recursive properties, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
+- Large copies prefer native GNU `cp` with automatic kernel optimizations and
+  transparently fall back to the portable buffered engine when unavailable.
 - Permanent server clock: date and time follow the Linux server's configured
   IANA region, editable from Settings.
 - Interactive history charts: hover or touch to inspect the exact server time

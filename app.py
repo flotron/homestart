@@ -8,6 +8,7 @@ import mimetypes
 import os
 import pwd
 import re
+import signal
 import shutil
 import socket
 import sqlite3
@@ -65,6 +66,7 @@ INTERFACE_ADDRESS_CACHE = {"at": 0, "interface": "", "items": set()}
 FILE_COPY_JOBS = {}
 FILE_COPY_JOBS_LOCK = threading.Lock()
 FILE_COPY_BUFFER_SIZE = 8 * 1024 * 1024
+NATIVE_CP_CACHE = {"checked": False, "path": None}
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 ICON_CACHE = {}
@@ -3117,6 +3119,130 @@ def copy_job_cancelled(job_id):
         return bool(job and job.get("cancel_requested"))
 
 
+def native_cp_path():
+    global NATIVE_CP_CACHE
+    if NATIVE_CP_CACHE.get("checked"):
+        return NATIVE_CP_CACHE.get("path")
+    path = shutil.which("cp")
+    if path:
+        try:
+            version = subprocess.check_output(
+                [path, "--version"],
+                text=True,
+                timeout=2,
+                stderr=subprocess.STDOUT,
+            )
+            if "GNU coreutils" not in version:
+                path = None
+        except (OSError, subprocess.SubprocessError):
+            path = None
+    NATIVE_CP_CACHE = {"checked": True, "path": path}
+    return path
+
+
+def native_cp_command(path, source, target):
+    command = [
+        path,
+        "--reflink=auto",
+        "--sparse=auto",
+        "--preserve=timestamps",
+    ]
+    if source.is_dir():
+        command.extend(["--recursive", "--dereference"])
+    command.extend(["--", str(source), str(target)])
+    return command
+
+
+def process_copy_bytes(pid):
+    try:
+        content = Path(f"/proc/{int(pid)}/io").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    counters = {}
+    for line in content.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            try:
+                counters[key.strip()] = max(0, int(value.strip()))
+            except ValueError:
+                continue
+    return counters.get("wchar") or counters.get("write_bytes")
+
+
+def native_copy_progress(process, source, target, total_bytes):
+    copied = None
+    if source.is_file() and target.exists():
+        try:
+            copied = target.stat().st_size
+        except OSError:
+            pass
+    if copied is None:
+        copied = process_copy_bytes(process.pid)
+    return min(max(0, int(copied or 0)), max(0, int(total_bytes or 0)))
+
+
+def stop_native_copy(process):
+    if process.poll() is not None:
+        return
+    try:
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=3)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+
+
+def run_native_copy(source, target, job_id, total_bytes):
+    path = native_cp_path()
+    if not path:
+        return False
+    command = native_cp_command(path, source, target)
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_file:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=error_file,
+                text=True,
+            )
+        except OSError:
+            return False
+        update_copy_job(
+            job_id,
+            engine="native_cp",
+            engine_label="Native cp",
+            current_file=source.name,
+            message=f"Copying {source.name} with native cp…",
+        )
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                if return_code:
+                    error_file.seek(0)
+                    detail = error_file.read().strip()
+                    raise OSError(detail[-1200:] or f"Native cp exited with status {return_code}")
+                update_copy_job(job_id, copied_bytes=total_bytes)
+                return True
+            if copy_job_cancelled(job_id):
+                stop_native_copy(process)
+                raise CopyCancelled()
+            copied = native_copy_progress(process, source, target, total_bytes)
+            update_copy_job(job_id, copied_bytes=copied)
+            time.sleep(.25)
+
+
+def remove_incomplete_copy(target):
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+    except OSError:
+        pass
+
+
 def copy_file_with_progress(source, target, job_id):
     def copy_item(source_file, destination_file):
         if copy_job_cancelled(job_id):
@@ -3165,28 +3291,31 @@ def copy_file_with_progress(source, target, job_id):
             file_count=file_count,
             folder_count=folder_count,
             status="running",
+            speed_bps=0,
+            eta_seconds=None,
+            engine="python",
+            engine_label="Python fallback",
+            _speed_last_at=time.monotonic(),
+            _speed_last_bytes=0,
             message=f"Copying {source.name}…",
         )
-        if source.is_dir():
-            shutil.copytree(source, target, copy_function=copy_item)
-        else:
-            copy_item(source, target)
+        used_native = run_native_copy(source, target, job_id, total_bytes)
+        if not used_native:
+            if source.is_dir():
+                shutil.copytree(source, target, copy_function=copy_item)
+            else:
+                copy_item(source, target)
+        engine = copy_job_status(job_id).get("engine_label", "Python fallback")
         update_copy_job(
             job_id,
             status="completed",
             copied_bytes=total_bytes,
             path=str(target),
-            message=f"Pasted as {target.name}",
+            message=f"Pasted as {target.name} with {engine}",
             completed_at=int(time.time()),
         )
     except CopyCancelled:
-        try:
-            if target.is_dir():
-                shutil.rmtree(target)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            pass
+        remove_incomplete_copy(target)
         update_copy_job(
             job_id,
             status="cancelled",
@@ -3196,13 +3325,7 @@ def copy_file_with_progress(source, target, job_id):
             eta_seconds=None,
         )
     except Exception as error:
-        try:
-            if target.is_dir():
-                shutil.rmtree(target)
-            elif target.exists():
-                target.unlink()
-        except OSError:
-            pass
+        remove_incomplete_copy(target)
         update_copy_job(
             job_id,
             status="failed",
@@ -3235,6 +3358,8 @@ def start_copy_job(source_path, destination_path):
             "percent": 0,
             "speed_bps": 0,
             "eta_seconds": None,
+            "engine": "preparing",
+            "engine_label": "Selecting copy engine",
             "cancel_requested": False,
             "message": f"Calculating {source.name}…",
             "created_at": now,

@@ -1501,6 +1501,7 @@ async function pasteFileEntry() {
       if (status.total_bytes) {
         const detail = [`${formatCopySize(status.copied_bytes)} of ${formatCopySize(status.total_bytes)}`];
         if (status.eta_seconds != null) detail.push(`${formatCopyDuration(status.eta_seconds)} remaining`);
+        if (status.engine_label) detail.push(status.engine_label);
         if (status.current_file) detail.push(status.current_file);
         fileCopyDetail.textContent = detail.join(" · ");
       } else {
