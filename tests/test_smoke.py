@@ -140,6 +140,112 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(status["eta_seconds"], 1)
         self.assertNotIn("_speed_last_at", status)
 
+    def test_native_cp_command_uses_safe_gnu_copy_options(self):
+        root = Path(self.temp.name) / "native-command"
+        source = root / "source folder"
+        target = root / "target folder"
+        source.mkdir(parents=True)
+        command = self.app.native_cp_command("/usr/bin/cp", source, target)
+        self.assertIn("--reflink=auto", command)
+        self.assertIn("--sparse=auto", command)
+        self.assertIn("--recursive", command)
+        self.assertIn("--dereference", command)
+        self.assertEqual(command[-3:], ["--", str(source), str(target)])
+
+    def test_native_cp_engine_copies_regular_file(self):
+        if not self.app.native_cp_path():
+            self.skipTest("GNU cp is not available")
+        root = Path(self.temp.name) / "native-copy"
+        root.mkdir()
+        source = root / "source.bin"
+        target = root / "destination.bin"
+        source.write_bytes(b"native-copy" * 1000)
+        job_id = "native-job"
+        self.app.FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "preparing",
+            "copied_bytes": 0,
+            "total_bytes": 0,
+            "speed_bps": 0,
+            "cancel_requested": False,
+            "_speed_last_at": __import__("time").monotonic(),
+            "_speed_last_bytes": 0,
+        }
+        self.app.copy_file_with_progress(source, target, job_id)
+        status = self.app.copy_job_status(job_id)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["engine"], "native_cp")
+        self.assertEqual(status["copied_bytes"], source.stat().st_size)
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+
+    def test_python_copy_remains_available_as_fallback(self):
+        root = Path(self.temp.name) / "fallback-copy"
+        root.mkdir()
+        source = root / "source.bin"
+        target = root / "destination.bin"
+        source.write_bytes(b"fallback")
+        job_id = "fallback-job"
+        self.app.FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "preparing",
+            "copied_bytes": 0,
+            "total_bytes": 0,
+            "speed_bps": 0,
+            "cancel_requested": False,
+            "_speed_last_at": __import__("time").monotonic(),
+            "_speed_last_bytes": 0,
+        }
+        with mock.patch.object(self.app, "native_cp_path", return_value=None):
+            self.app.copy_file_with_progress(source, target, job_id)
+        status = self.app.copy_job_status(job_id)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["engine"], "python")
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+
+    def test_native_cp_cancellation_terminates_the_process(self):
+        class FakeProcess:
+            pid = 12345
+
+            def __init__(self):
+                self.signal = None
+                self.return_code = None
+
+            def poll(self):
+                return self.return_code
+
+            def send_signal(self, value):
+                self.signal = value
+                self.return_code = -value
+
+            def wait(self, timeout=None):
+                return self.return_code
+
+            def kill(self):
+                self.return_code = -9
+
+        root = Path(self.temp.name) / "native-cancel"
+        root.mkdir()
+        source = root / "source.bin"
+        target = root / "destination.bin"
+        source.write_bytes(b"x" * 100)
+        job_id = "native-cancel-job"
+        self.app.FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "cancelling",
+            "copied_bytes": 0,
+            "total_bytes": 100,
+            "speed_bps": 0,
+            "cancel_requested": True,
+            "_speed_last_at": __import__("time").monotonic(),
+            "_speed_last_bytes": 0,
+        }
+        process = FakeProcess()
+        with mock.patch.object(self.app, "native_cp_path", return_value="/usr/bin/cp"), \
+                mock.patch.object(self.app.subprocess, "Popen", return_value=process):
+            with self.assertRaises(self.app.CopyCancelled):
+                self.app.run_native_copy(source, target, job_id, 100)
+        self.assertEqual(process.signal, self.app.signal.SIGTERM)
+
     def test_cancelled_copy_removes_incomplete_destination(self):
         root = Path(self.temp.name) / "cancel-copy"
         root.mkdir()
@@ -510,6 +616,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn('id="host-bandwidth-ranking-list"', html)
         self.assertIn('action: "copy_cancel"', script)
         self.assertIn("function formatCopySize", script)
+        self.assertIn("status.engine_label", script)
         self.assertIn('id="file-copy-speed"', html)
         self.assertIn('id="file-copy-cancel"', html)
 
