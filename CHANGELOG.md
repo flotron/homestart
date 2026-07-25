@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2510
+
+- Fixed upgrades from pre-modular releases: their update allowlist did not yet
+  accept the new top-level `homestart/` package after replacing `app.py`.
+- Update archives now include a temporary compatibility copy under
+  `scripts/homestart/`, a path accepted by every previous online updater.
+- The entry point prefers the canonical package and falls back to the bridge
+  copy only when upgrading directly from an older release.
+- Package builds now run an import smoke test that simulates the legacy updater
+  installing only its historically allowed paths.
+
 ## 20260725-2500
 
 - Began a progressive, compatibility-preserving split of the former `app.py`
