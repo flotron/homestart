@@ -44,3 +44,9 @@ Online updates download only `homestart-update-*.tar.gz`. The updater validates
 the package manifest, rejects private/runtime files, preserves local config and
 data, backs up replaced files, installs both `app.py` and the `homestart/`
 package, and restarts the service.
+
+Release archives also contain a compatibility copy at `scripts/homestart/`.
+This lets an updater from before the package split install the modular server
+through its existing `scripts/` allowlist. `app.py` uses that copy only when the
+canonical top-level package is unavailable; subsequent updates can install and
+use `homestart/` normally.

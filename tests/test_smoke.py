@@ -32,6 +32,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         entry_point = (root / "app.py").read_text(encoding="utf-8-sig")
         self.assertIn("from homestart.server import main", entry_point)
+        self.assertIn("from scripts.homestart.server import main", entry_point)
         for relative_path in (
             "homestart/server.py",
             "homestart/api/router.py",
@@ -45,6 +46,9 @@ class HomeStartSmokeTests(unittest.TestCase):
             self.app.update_member_path("homestart/homestart/api/router.py"),
             Path("homestart/api/router.py"),
         )
+        package_script = (root / "scripts" / "build_package.sh").read_text(encoding="utf-8")
+        self.assertIn('"$PACKAGE_DIR/scripts/homestart/"', package_script)
+        self.assertIn("from app import main; assert callable(main)", package_script)
 
     def test_percent_is_clamped(self):
         self.assertEqual(self.app.clamp_percent(110), 100)
