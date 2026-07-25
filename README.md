@@ -176,6 +176,22 @@ an asset named like:
 homestart-update-VERSION.tar.gz
 ```
 
+## Code structure
+
+HomeStart is being modularized progressively without changing its startup
+command or introducing a web framework. Root `app.py` remains the compatible
+entry point, while focused code lives under `homestart/`:
+
+- `api/router.py`: API dispatch and HTTP error mapping
+- `config.py`: configuration defaults and persistence
+- `files/copy.py`: copy jobs, native `cp`, progress and cancellation
+- `system/network.py`: network parsing and interface selection
+- `updates/github.py`: GitHub release discovery and downloads
+- `server.py`: process lifecycle and domains awaiting extraction
+
+See [Architecture](docs/ARCHITECTURE.md) for the compatibility boundary and
+contribution guidance.
+
 ## Basic Usage
 
 ### Status

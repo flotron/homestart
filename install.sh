@@ -47,8 +47,11 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y python3 python3-yaml iproute2 procps util-linux
 fi
 
-mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/data"
+mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/data" "$INSTALL_DIR/homestart"
 install -m 0755 "$SRC_DIR/app.py" "$INSTALL_DIR/app.py"
+cp -a "$SRC_DIR/homestart/." "$INSTALL_DIR/homestart/"
+find "$INSTALL_DIR/homestart" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$INSTALL_DIR/homestart" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 install -m 0644 "$SRC_DIR/config.example.json" "$INSTALL_DIR/config.example.json"
 install -m 0644 "$SRC_DIR/README.md" "$INSTALL_DIR/README.md"
 install -m 0644 "$SRC_DIR/homestart.service.example" "$INSTALL_DIR/homestart.service.example"
