@@ -49,7 +49,12 @@ from .system.network import (
 from .updates.github import GitHubReleaseClient, update_asset_version
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+MODULE_PATH = Path(__file__).resolve()
+BASE_DIR = MODULE_PATH.parents[1]
+if not (BASE_DIR / "static").is_dir():
+    # Compatibility bridge for installs upgraded by a pre-modular updater:
+    # scripts/homestart/server.py still needs the installation root.
+    BASE_DIR = MODULE_PATH.parents[2]
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "homestart.db"
@@ -5415,5 +5420,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
