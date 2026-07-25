@@ -122,6 +122,41 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(copied.name, "manual - copy.pdf")
         self.assertEqual(copied.read_bytes(), b"pdf")
 
+    def test_file_properties_include_recursive_folder_size(self):
+        root = Path(self.temp.name) / "properties"
+        folder = root / "documents"
+        nested = folder / "nested"
+        nested.mkdir(parents=True)
+        (folder / "one.bin").write_bytes(b"a" * 10)
+        (nested / "two.bin").write_bytes(b"b" * 15)
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        properties = self.app.file_properties(str(folder))
+        self.assertEqual(properties["size_bytes"], 25)
+        self.assertEqual(properties["file_count"], 2)
+        self.assertEqual(properties["folder_count"], 2)
+
+    def test_async_copy_reports_byte_progress_and_completion(self):
+        root = Path(self.temp.name) / "copy-progress"
+        root.mkdir()
+        source = root / "archive.bin"
+        source.write_bytes(b"x" * (2 * 1024 * 1024 + 17))
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        started = self.app.start_copy_job(str(source), str(root))
+        deadline = __import__("time").time() + 3
+        while __import__("time").time() < deadline:
+            status = self.app.copy_job_status(started["job_id"])
+            if status["status"] in {"completed", "failed"}:
+                break
+            __import__("time").sleep(.02)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["percent"], 100)
+        self.assertEqual(status["copied_bytes"], source.stat().st_size)
+        self.assertEqual(Path(status["path"]).read_bytes(), source.read_bytes())
+
     def test_docker_image_matching_ignores_registry_tag(self):
         self.assertEqual(self.app.image_repository("docker.io/library/redis:7"), "redis")
         self.assertEqual(self.app.image_repository("jellyfin/jellyfin:latest"), "jellyfin/jellyfin")
@@ -349,11 +384,37 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertLess(peak["rx_avg_bps"], peak["rx_bps"])
         self.assertGreater(peak["sample_count"], 1)
 
+    def test_container_network_ranking_accumulates_traffic_by_name(self):
+        self.app.DB_PATH = Path(self.temp.name) / "container-network.db"
+        now = int(__import__("time").time())
+        self.app.record_container_network_metrics([
+            {"key": "alpha-1", "name": "alpha", "rx_bps": 1000, "tx_bps": 500, "sample_seconds": 2},
+            {"key": "beta-1", "name": "beta", "rx_bps": 100, "tx_bps": 50, "sample_seconds": 2},
+        ], now)
+        self.app.record_container_network_metrics([
+            {"key": "alpha-1", "name": "alpha", "rx_bps": 2000, "tx_bps": 1000, "sample_seconds": 2},
+        ], now + 1)
+        ranking = self.app.container_network_ranking(60)
+        self.assertEqual(ranking["items"][0]["name"], "alpha")
+        self.assertEqual(ranking["items"][0]["rx_bytes"], 6000)
+        self.assertEqual(ranking["items"][0]["tx_bytes"], 3000)
+        self.assertEqual(ranking["items"][0]["total_bytes"], 9000)
+
     def test_history_charts_use_their_rendered_panel_width(self):
         script = (Path(__file__).parents[1] / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("responsiveChartWidth(historyChart)", script)
         self.assertIn("responsiveChartWidth(bandwidthChart)", script)
         self.assertNotIn("const width = 800;", script)
+
+    def test_new_file_and_bandwidth_controls_are_wired(self):
+        root = Path(__file__).parents[1]
+        script = (root / "static" / "app.js").read_text(encoding="utf-8")
+        html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('action: "copy_start"', script)
+        self.assertIn("/api/file/properties", script)
+        self.assertIn("/api/network/ranking", script)
+        self.assertIn('data-file-context-action="properties"', html)
+        self.assertIn('id="bandwidth-ranking-period"', html)
 
 
 if __name__ == "__main__":
