@@ -59,6 +59,8 @@ CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
 CONTAINER_NETWORK_TARGETS = []
 CONTAINER_NETWORK_TARGETS_AT = 0
 CONTAINER_NETWORK_LOCK = threading.Lock()
+FILE_COPY_JOBS = {}
+FILE_COPY_JOBS_LOCK = threading.Lock()
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 ICON_CACHE = {}
@@ -1466,6 +1468,20 @@ def metrics_db():
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS container_network_metrics (
+          captured_at INTEGER,
+          container_key TEXT,
+          name TEXT,
+          rx_bytes REAL,
+          tx_bytes REAL,
+          rx_bps REAL,
+          tx_bps REAL,
+          PRIMARY KEY (captured_at, container_key)
+        )
+        """
+    )
     columns = {row[1] for row in connection.execute("PRAGMA table_info(system_metrics)")}
     for name in ("rx_bps", "tx_bps", "temperature"):
         if name not in columns:
@@ -1503,6 +1519,84 @@ def record_network_metric(payload):
             (captured_at, payload.get("rx_bps"), payload.get("tx_bps")),
         )
         connection.execute("DELETE FROM network_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
+
+
+def record_container_network_metrics(samples, captured_at=None):
+    captured_at = int(captured_at or time.time())
+    if not samples:
+        return
+    rows = [
+        (
+            captured_at,
+            str(sample.get("key") or sample.get("name") or ""),
+            str(sample.get("name") or "Unknown container"),
+            max(0, float(sample.get("rx_bps") or 0) * float(sample.get("sample_seconds") or 2)),
+            max(0, float(sample.get("tx_bps") or 0) * float(sample.get("sample_seconds") or 2)),
+            max(0, float(sample.get("rx_bps") or 0)),
+            max(0, float(sample.get("tx_bps") or 0)),
+        )
+        for sample in samples
+        if sample.get("key") or sample.get("name")
+    ]
+    if not rows:
+        return
+    with metrics_db() as connection:
+        connection.executemany(
+            """
+            INSERT OR REPLACE INTO container_network_metrics
+              (captured_at, container_key, name, rx_bytes, tx_bytes, rx_bps, tx_bps)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.execute(
+            "DELETE FROM container_network_metrics WHERE captured_at < ?",
+            (captured_at - 7 * 86400,),
+        )
+
+
+def container_network_ranking(period=3600, limit=12):
+    try:
+        period = int(period)
+    except (TypeError, ValueError):
+        period = 3600
+    if period not in {60, 3600, 86400}:
+        raise ValueError("Ranking period must be 60, 3600, or 86400 seconds")
+    limit = max(1, min(50, int(limit or 12)))
+    since = int(time.time()) - period
+    with metrics_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT name,
+                   SUM(rx_bytes) AS rx_bytes,
+                   SUM(tx_bytes) AS tx_bytes,
+                   AVG(rx_bps) AS rx_avg_bps,
+                   AVG(tx_bps) AS tx_avg_bps,
+                   MAX(rx_bps) AS rx_peak_bps,
+                   MAX(tx_bps) AS tx_peak_bps,
+                   COUNT(*) AS sample_count
+            FROM container_network_metrics
+            WHERE captured_at >= ?
+            GROUP BY name
+            HAVING (SUM(rx_bytes) + SUM(tx_bytes)) > 0
+            ORDER BY (SUM(rx_bytes) + SUM(tx_bytes)) DESC
+            LIMIT ?
+            """,
+            (since, limit),
+        ).fetchall()
+    items = []
+    for index, row in enumerate(rows, 1):
+        item = dict(row)
+        item["rank"] = index
+        item["total_bytes"] = float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
+        items.append(item)
+    return {
+        "ok": True,
+        "period_seconds": period,
+        "generated_at": int(time.time()),
+        "items": items,
+        "scope": "docker_containers",
+    }
 
 
 def metrics_history(hours=24):
@@ -1600,7 +1694,8 @@ def network_metrics_sampler():
         try:
             network = network_payload("history")
             record_network_metric({"timestamp": int(time.time()), **network})
-            update_container_network_top()
+            samples = update_container_network_top()
+            record_container_network_metrics(samples)
         except Exception as error:
             print(f"HomeStart network sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
@@ -1712,9 +1807,14 @@ def update_container_network_top():
         if not previous:
             continue
         elapsed = max(.001, now - previous[0])
-        samples.append({"name": target["name"], "kind": "container",
-                        "rx_bps": max(0, round((received - previous[1]) / elapsed)),
-                        "tx_bps": max(0, round((transmitted - previous[2]) / elapsed))})
+        samples.append({
+            "key": target["key"],
+            "name": target["name"],
+            "kind": "container",
+            "sample_seconds": elapsed,
+            "rx_bps": max(0, round((received - previous[1]) / elapsed)),
+            "tx_bps": max(0, round((transmitted - previous[2]) / elapsed)),
+        })
     download = max(samples, key=lambda item: item["rx_bps"], default=None)
     upload = max(samples, key=lambda item: item["tx_bps"], default=None)
     if download and not download["rx_bps"]:
@@ -1724,6 +1824,7 @@ def update_container_network_top():
     with CONTAINER_NETWORK_LOCK:
         CONTAINER_NETWORK_PREV = current
         CONTAINER_NETWORK_TOP = {"download": download, "upload": upload}
+    return samples
 
 
 def network_payload(channel="live"):
@@ -2548,8 +2649,58 @@ def delete_file_path(raw_path):
     return {"ok": True, "path": str(target), "action": "delete"}
 
 
-def copy_file_path(source_path, destination_path):
-    ensure_file_operations_enabled()
+def path_usage(path):
+    total_bytes = 0
+    file_count = 0
+    folder_count = 0
+    if path.is_file():
+        return path.stat().st_size, 1, 0
+    for root, directories, files in os.walk(path, followlinks=False):
+        folder_count += 1
+        for name in files:
+            item = Path(root) / name
+            try:
+                total_bytes += item.stat().st_size
+                file_count += 1
+            except OSError:
+                continue
+        for name in list(directories):
+            item = Path(root) / name
+            if item.is_symlink():
+                try:
+                    total_bytes += item.stat().st_size
+                    file_count += 1
+                except OSError:
+                    pass
+    return total_bytes, file_count, folder_count
+
+
+def file_properties(raw_path):
+    target = resolve_file_path(raw_path)
+    if target is None:
+        raise ValueError("Path is required")
+    if not target.exists():
+        raise FileNotFoundError("The path does not exist")
+    stat = target.stat()
+    total_bytes, file_count, folder_count = path_usage(target)
+    return {
+        "ok": True,
+        "name": target.name or str(target),
+        "path": str(target),
+        "type": "directory" if target.is_dir() else "file",
+        "kind": file_kind(target),
+        "size_bytes": total_bytes,
+        "size": format_bytes(total_bytes),
+        "file_count": file_count,
+        "folder_count": folder_count,
+        "modified": int(stat.st_mtime),
+        "permissions": oct(stat.st_mode & 0o777),
+        "owner_uid": stat.st_uid,
+        "group_gid": stat.st_gid,
+    }
+
+
+def resolve_copy_target(source_path, destination_path):
     source = resolve_file_path(source_path)
     destination = resolve_file_path(destination_path)
     if source is None or destination is None:
@@ -2575,12 +2726,135 @@ def copy_file_path(source_path, destination_path):
         raise FileExistsError("The destination already exists")
     if not target.parent.exists() or not target.parent.is_dir():
         raise NotADirectoryError("Destination parent folder does not exist")
+    return source, target
+
+
+def copy_file_path(source_path, destination_path):
+    ensure_file_operations_enabled()
+    source, target = resolve_copy_target(source_path, destination_path)
 
     if source.is_dir():
         shutil.copytree(source, target)
     else:
         shutil.copy2(source, target)
     return {"ok": True, "path": str(target), "action": "copy", "message": f"Pasted as {target.name}"}
+
+
+def update_copy_job(job_id, **changes):
+    with FILE_COPY_JOBS_LOCK:
+        job = FILE_COPY_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(changes)
+        total = max(0, int(job.get("total_bytes") or 0))
+        copied = max(0, int(job.get("copied_bytes") or 0))
+        if total:
+            job["percent"] = min(100, round(copied / total * 100, 1))
+        elif job.get("status") == "completed":
+            job["percent"] = 100
+        job["updated_at"] = int(time.time())
+
+
+def copy_file_with_progress(source, target, job_id):
+    total_bytes, file_count, folder_count = path_usage(source)
+    update_copy_job(
+        job_id,
+        total_bytes=total_bytes,
+        file_count=file_count,
+        folder_count=folder_count,
+        status="running",
+        message=f"Copying {source.name}…",
+    )
+
+    def copy_item(source_file, destination_file):
+        Path(destination_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(source_file, "rb") as input_file, open(destination_file, "wb") as output_file:
+            while True:
+                chunk = input_file.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_file.write(chunk)
+                with FILE_COPY_JOBS_LOCK:
+                    job = FILE_COPY_JOBS.get(job_id)
+                    copied = int(job.get("copied_bytes") or 0) + len(chunk) if job else len(chunk)
+                update_copy_job(
+                    job_id,
+                    copied_bytes=copied,
+                    current_file=Path(source_file).name,
+                )
+        shutil.copystat(source_file, destination_file)
+        return destination_file
+
+    try:
+        if source.is_dir():
+            shutil.copytree(source, target, copy_function=copy_item)
+        else:
+            copy_item(source, target)
+        update_copy_job(
+            job_id,
+            status="completed",
+            copied_bytes=total_bytes,
+            path=str(target),
+            message=f"Pasted as {target.name}",
+            completed_at=int(time.time()),
+        )
+    except Exception as error:
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        except OSError:
+            pass
+        update_copy_job(
+            job_id,
+            status="failed",
+            error=str(error),
+            message="Copy failed",
+            completed_at=int(time.time()),
+        )
+
+
+def start_copy_job(source_path, destination_path):
+    ensure_file_operations_enabled()
+    source, target = resolve_copy_target(source_path, destination_path)
+    now = int(time.time())
+    with FILE_COPY_JOBS_LOCK:
+        expired = [
+            key for key, job in FILE_COPY_JOBS.items()
+            if now - int(job.get("updated_at") or now) > 3600
+        ]
+        for key in expired:
+            FILE_COPY_JOBS.pop(key, None)
+        job_id = uuid.uuid4().hex
+        FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "preparing",
+            "source": str(source),
+            "destination": str(target),
+            "name": source.name,
+            "copied_bytes": 0,
+            "total_bytes": 0,
+            "percent": 0,
+            "message": f"Calculating {source.name}…",
+            "created_at": now,
+            "updated_at": now,
+        }
+    threading.Thread(
+        target=copy_file_with_progress,
+        args=(source, target, job_id),
+        name=f"file-copy-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return {"ok": True, "job_id": job_id, "status": "preparing", "name": source.name}
+
+
+def copy_job_status(job_id):
+    with FILE_COPY_JOBS_LOCK:
+        job = FILE_COPY_JOBS.get(str(job_id or ""))
+        if not job:
+            raise ValueError("Copy job was not found")
+        return {"ok": True, **dict(job)}
 
 
 def decode_data_url(content):
@@ -2621,6 +2895,8 @@ def file_action(payload):
         return rename_file_path(payload.get("path", ""), payload.get("name", ""))
     if action == "copy":
         return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
+    if action == "copy_start":
+        return start_copy_job(payload.get("source", ""), payload.get("destination", ""))
     if action == "upload":
         return upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
     if action == "mount_readonly":
@@ -4603,6 +4879,14 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "timestamp": int(time.time()), **network_payload("live")})
             return
 
+        if route == "/api/network/ranking":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(container_network_ranking(query.get("period", ["3600"])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
         if route == "/api/overview":
             self.send_json(overview_payload())
             return
@@ -4697,6 +4981,22 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
                 self.send_json(file_listing(query.get("path", [""])[0]))
             except (FileNotFoundError, NotADirectoryError, PermissionError) as error:
                 self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/file/properties":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(file_properties(query.get("path", [""])[0]))
+            except (FileNotFoundError, PermissionError, OSError, ValueError) as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if route == "/api/files/copy/status":
+            query = parse_qs(parsed.query)
+            try:
+                self.send_json(copy_job_status(query.get("job_id", [""])[0]))
+            except ValueError as error:
+                self.send_json({"ok": False, "error": str(error)}, HTTPStatus.NOT_FOUND)
             return
 
         if route == "/api/samba/shares":
