@@ -312,6 +312,101 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertNotIn("jellyfin/jellyfin:latest", images)
         self.assertIn("grafana/grafana:latest", images)
 
+    def declarative_catalog(self):
+        return {
+            "schema_version": 1,
+            "catalog_version": "test.1",
+            "name": "Test catalog",
+            "apps": [{
+                "id": "sample-app",
+                "name": "Sample App",
+                "description": "A test application",
+                "category": "Testing",
+                "verified": True,
+                "verification_label": "Reviewed",
+                "page_url": "https://example.com/sample",
+                "inputs": [
+                    {"id": "container_name", "label": "Container name", "type": "text",
+                     "default": "sample-app", "pattern": "^[A-Za-z0-9_.-]+$"},
+                    {"id": "host_port", "label": "Web port", "type": "port", "default": 8080},
+                    {"id": "data_path", "label": "Data folder", "type": "path",
+                     "default": "{{homestart_data}}/sample-app"},
+                ],
+                "compose": {"services": {"app": {
+                    "image": "example/sample:latest",
+                    "container_name": "{{container_name}}",
+                    "ports": ["{{host_port}}:80"],
+                    "volumes": ["{{data_path}}:/data"],
+                    "restart": "unless-stopped",
+                }}},
+            }],
+        }
+
+    def test_declarative_catalog_is_validated_and_rendered(self):
+        catalog = self.app.validate_store_catalog(self.declarative_catalog())
+        app = catalog["apps"][0]
+        self.app.COMPOSE_APP_DATA_DIR = Path(self.temp.name) / "app-data"
+        with mock.patch.object(self.app, "system_timezone", return_value="UTC"):
+            compose, values = self.app.render_catalog_compose(app, {
+                "container_name": "sample-one",
+                "host_port": "9090",
+                "data_path": str(Path(self.temp.name) / "sample"),
+            })
+        service = compose["services"]["app"]
+        self.assertEqual(service["container_name"], "sample-one")
+        self.assertEqual(service["ports"], ["9090:80"])
+        self.assertEqual(service["labels"]["com.homestart.template"], "sample-app")
+        self.assertEqual(values["host_port"], "9090")
+
+    def test_declarative_catalog_rejects_undeclared_placeholders(self):
+        catalog = self.declarative_catalog()
+        catalog["apps"][0]["compose"]["services"]["app"]["environment"] = {"SECRET": "{{not_declared}}"}
+        with self.assertRaises(ValueError):
+            self.app.validate_store_catalog(catalog)
+
+    def test_store_catalog_uses_stale_cache_when_remote_fetch_fails(self):
+        self.app.STORE_CATALOG_CACHE = Path(self.temp.name) / "catalog-cache.json"
+        catalog = self.app.validate_store_catalog(self.declarative_catalog())
+        self.app.save_store_catalog_cache(catalog)
+        wrapper = json.loads(self.app.STORE_CATALOG_CACHE.read_text(encoding="utf-8"))
+        wrapper["fetched_at"] = 1
+        self.app.STORE_CATALOG_CACHE.write_text(json.dumps(wrapper), encoding="utf-8")
+        with mock.patch.object(self.app, "fetch_store_catalog", side_effect=OSError("offline")):
+            loaded, metadata = self.app.load_store_catalog()
+        self.assertEqual(loaded["apps"][0]["id"], "sample-app")
+        self.assertEqual(metadata["source"], "cache")
+        self.assertTrue(metadata["stale"])
+
+    def test_compose_catalog_install_writes_project_and_runs_compose(self):
+        app = self.app.validate_store_catalog(self.declarative_catalog())["apps"][0]
+        self.app.COMPOSE_APP_DIR = Path(self.temp.name) / "compose-apps"
+        self.app.COMPOSE_APP_DATA_DIR = Path(self.temp.name) / "app-data"
+        commands = []
+
+        def docker(command, timeout=60):
+            commands.append(command)
+            if command[:2] == ["ps", "-a"]:
+                return ""
+            if "ps" in command and "-q" in command:
+                return "container-id"
+            return "ok"
+
+        values = {
+            "container_name": "sample-one",
+            "host_port": "9090",
+            "data_path": str(Path(self.temp.name) / "sample"),
+        }
+        with mock.patch.object(self.app, "store_catalog_app", return_value=app), \
+                mock.patch.object(self.app, "system_timezone", return_value="UTC"), \
+                mock.patch.object(self.app, "docker_container_exists", return_value=False), \
+                mock.patch.object(self.app, "run_docker_command", side_effect=docker):
+            result = self.app.compose_store_install({"template_id": "sample-app", "values": values})
+        compose_path = Path(result["compose_file"])
+        self.assertTrue(compose_path.is_file())
+        self.assertIn("com.homestart.template: sample-app", compose_path.read_text(encoding="utf-8"))
+        self.assertTrue(any(command[-1] == "pull" for command in commands))
+        self.assertTrue(any(command[-2:] == ["up", "-d"] for command in commands))
+
     def test_dockerhub_direct_links_are_parsed(self):
         self.assertEqual(
             self.app.dockerhub_repository_from_url("https://hub.docker.com/r/kasmweb/workspaces"),

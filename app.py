@@ -43,6 +43,14 @@ SAMBA_CONFIG_PATH = Path(os.environ.get("HOMESTART_SAMBA_CONFIG", "/etc/samba/sm
 SAMBA_MANAGED_PATH = Path(os.environ.get("HOMESTART_SAMBA_MANAGED_CONFIG", "/etc/samba/homestart-shares.conf"))
 APP_ICON_DIR = DATA_DIR / "app-icons"
 APP_ICON_INDEX = DATA_DIR / "app-icons.json"
+STORE_CATALOG_CACHE = DATA_DIR / "app-store-catalog.json"
+COMPOSE_APP_DIR = DATA_DIR / "compose-apps"
+COMPOSE_APP_DATA_DIR = DATA_DIR / "app-data"
+STORE_CATALOG_URL = os.environ.get(
+    "HOMESTART_APP_CATALOG_URL",
+    "https://raw.githubusercontent.com/flotron/homestart-apps/main/dist/catalog.json",
+)
+STORE_CATALOG_TTL = 15 * 60
 PACKAGE_PATH = BASE_DIR / "package.json"
 FILE_MOUNT_ROOT = Path("/mnt/homestart")
 CONFIG_PATH = Path(os.environ.get("HOMESTART_CONFIG", BASE_DIR / "config.json"))
@@ -69,6 +77,7 @@ FILE_COPY_BUFFER_SIZE = 8 * 1024 * 1024
 NATIVE_CP_CACHE = {"checked": False, "path": None}
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
+STORE_CATALOG_LOCK = threading.Lock()
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -110,6 +119,9 @@ DEFAULT_CONFIG = {
     },
     "updates": {
         "github_repo": "flotron/homestart",
+    },
+    "app_store": {
+        "catalog_url": STORE_CATALOG_URL,
     },
     "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
     "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
@@ -4278,6 +4290,265 @@ def curated_store_apps():
     return [dict(item) for item in CURATED_APPS if image_repository(item.get("image")) not in installed]
 
 
+STORE_PLACEHOLDER = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
+STORE_INPUT_TYPES = {"text", "port", "path", "select", "timezone"}
+STORE_RESERVED_VALUES = {"homestart_data", "server_timezone"}
+STORE_COMPOSE_KEYS = {"services", "volumes", "networks", "configs", "secrets"}
+
+
+def store_placeholders(value):
+    if isinstance(value, dict):
+        result = set()
+        for key, item in value.items():
+            result.update(store_placeholders(key))
+            result.update(store_placeholders(item))
+        return result
+    if isinstance(value, list):
+        result = set()
+        for item in value:
+            result.update(store_placeholders(item))
+        return result
+    return set(STORE_PLACEHOLDER.findall(value)) if isinstance(value, str) else set()
+
+
+def validate_store_catalog(catalog):
+    if not isinstance(catalog, dict) or catalog.get("schema_version") != 1:
+        raise ValueError("Unsupported app catalog schema")
+    if not isinstance(catalog.get("apps"), list) or len(catalog["apps"]) > 500:
+        raise ValueError("Invalid app catalog list")
+    normalized = {
+        "schema_version": 1,
+        "catalog_version": str(catalog.get("catalog_version") or ""),
+        "name": str(catalog.get("name") or "HomeStart Apps")[:120],
+        "apps": [],
+    }
+    seen = set()
+    for source in catalog["apps"]:
+        if not isinstance(source, dict):
+            raise ValueError("Invalid app catalog entry")
+        app_id = str(source.get("id") or "")
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", app_id) or app_id in seen:
+            raise ValueError(f"Invalid or duplicate catalog app id: {app_id}")
+        seen.add(app_id)
+        inputs = source.get("inputs")
+        compose = source.get("compose")
+        if not isinstance(inputs, list) or len(inputs) > 32:
+            raise ValueError(f"{app_id}: invalid inputs")
+        if not isinstance(compose, dict) or set(compose) - STORE_COMPOSE_KEYS:
+            raise ValueError(f"{app_id}: unsupported Compose section")
+        services = compose.get("services")
+        if not isinstance(services, dict) or not services or len(services) > 16:
+            raise ValueError(f"{app_id}: Compose services are required")
+        input_ids = set()
+        clean_inputs = []
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValueError(f"{app_id}: invalid input")
+            input_id = str(item.get("id") or "")
+            input_type = str(item.get("type") or "")
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", input_id) or input_id in input_ids:
+                raise ValueError(f"{app_id}: invalid or duplicate input")
+            if input_type not in STORE_INPUT_TYPES or "default" not in item:
+                raise ValueError(f"{app_id}: unsupported input {input_id}")
+            label = str(item.get("label") or "").strip()
+            if not label or len(label) > 100:
+                raise ValueError(f"{app_id}: invalid label for {input_id}")
+            clean = {"id": input_id, "label": label, "type": input_type, "default": item["default"]}
+            if store_placeholders(item["default"]) - STORE_RESERVED_VALUES:
+                raise ValueError(f"{app_id}: input defaults may only use reserved placeholders")
+            if "help" in item:
+                clean["help"] = str(item["help"])[:240]
+            if "pattern" in item:
+                pattern = str(item["pattern"])
+                if len(pattern) > 160:
+                    raise ValueError(f"{app_id}: input pattern is too long")
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    raise ValueError(f"{app_id}: invalid input pattern") from error
+                clean["pattern"] = pattern
+            if input_type == "select":
+                options = [str(value) for value in item.get("options", [])]
+                if not options or len(options) > 50:
+                    raise ValueError(f"{app_id}: select input needs options")
+                clean["options"] = options
+            input_ids.add(input_id)
+            clean_inputs.append(clean)
+        unknown = store_placeholders(compose) - input_ids - STORE_RESERVED_VALUES
+        if unknown:
+            raise ValueError(f"{app_id}: undeclared Compose placeholders")
+        for service_name, service in services.items():
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", str(service_name)) or not isinstance(service, dict):
+                raise ValueError(f"{app_id}: invalid Compose service")
+            if not isinstance(service.get("image"), str) or not service["image"].strip() or "build" in service:
+                raise ValueError(f"{app_id}: every Compose service needs a fixed image")
+        clean_app = {
+            "id": app_id,
+            "name": str(source.get("name") or app_id)[:120],
+            "description": str(source.get("description") or "")[:500],
+            "category": str(source.get("category") or "Other")[:80],
+            "verified": bool(source.get("verified")),
+            "verification_label": str(source.get("verification_label") or "")[:100],
+            "icon_url": str(source.get("icon_url") or "")[:1000],
+            "homepage": str(source.get("homepage") or "")[:1000],
+            "page_url": str(source.get("page_url") or "")[:1000],
+            "link_label": str(source.get("link_label") or "Project page")[:40],
+            "inputs": clean_inputs,
+            "compose": compose,
+        }
+        for url_field in ("icon_url", "homepage", "page_url"):
+            url = clean_app[url_field]
+            if url:
+                parsed = urlparse(url)
+                if parsed.scheme != "https" or not parsed.hostname:
+                    raise ValueError(f"{app_id}: {url_field} must use HTTPS")
+        normalized["apps"].append(clean_app)
+    return normalized
+
+
+def store_catalog_url():
+    return str(load_config_file().get("app_store", {}).get("catalog_url") or STORE_CATALOG_URL).strip()
+
+
+def read_store_catalog_cache():
+    wrapper = load_json_file(STORE_CATALOG_CACHE, {})
+    if not isinstance(wrapper.get("catalog"), dict):
+        return None, 0
+    try:
+        return validate_store_catalog(wrapper["catalog"]), int(wrapper.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        return None, 0
+
+
+def save_store_catalog_cache(catalog):
+    STORE_CATALOG_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STORE_CATALOG_CACHE.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps({"fetched_at": int(time.time()), "catalog": catalog}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(STORE_CATALOG_CACHE)
+
+
+def fetch_store_catalog(url):
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("The app catalog URL must use HTTPS")
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "HomeStart/1.0"})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        if int(getattr(response, "status", 200)) != 200:
+            raise ValueError("The app catalog server returned an error")
+        payload = response.read(4_000_001)
+    if len(payload) > 4_000_000:
+        raise ValueError("The app catalog is too large")
+    return validate_store_catalog(json.loads(payload.decode("utf-8")))
+
+
+def load_store_catalog(refresh=False):
+    with STORE_CATALOG_LOCK:
+        cached, fetched_at = read_store_catalog_cache()
+        if cached and not refresh and time.time() - fetched_at < STORE_CATALOG_TTL:
+            return cached, {"source": "cache", "stale": False, "fetched_at": fetched_at}
+        url = store_catalog_url()
+        if url:
+            try:
+                catalog = fetch_store_catalog(url)
+                save_store_catalog_cache(catalog)
+                return catalog, {"source": "remote", "stale": False, "fetched_at": int(time.time())}
+            except (ValueError, OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as error:
+                if cached:
+                    return cached, {
+                        "source": "cache",
+                        "stale": True,
+                        "fetched_at": fetched_at,
+                        "warning": f"Using the last valid catalog: {error}",
+                    }
+                return None, {"source": "builtin", "stale": True, "warning": str(error)}
+        if cached:
+            return cached, {"source": "cache", "stale": True, "fetched_at": fetched_at}
+        return None, {"source": "builtin", "stale": True}
+
+
+def replace_store_placeholders(value, values):
+    if isinstance(value, dict):
+        return {
+            replace_store_placeholders(key, values): replace_store_placeholders(item, values)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [replace_store_placeholders(item, values) for item in value]
+    if not isinstance(value, str):
+        return value
+    return STORE_PLACEHOLDER.sub(lambda match: str(values[match.group(1)]), value)
+
+
+def catalog_defaults(app):
+    reserved = {
+        "homestart_data": str(COMPOSE_APP_DATA_DIR),
+        "server_timezone": system_timezone(),
+    }
+    result = []
+    for item in app["inputs"]:
+        clean = dict(item)
+        clean["default"] = replace_store_placeholders(item["default"], reserved)
+        result.append(clean)
+    return result
+
+
+def store_templates_payload(refresh=False):
+    catalog, metadata = load_store_catalog(refresh)
+    if catalog is None:
+        return {"ok": True, "templates": curated_store_apps(), "catalog": metadata}
+    installed = installed_docker_images()
+    templates = []
+    for app in catalog["apps"]:
+        images = [
+            image_repository(service.get("image"))
+            for service in app["compose"]["services"].values()
+            if service.get("image")
+        ]
+        if any(image in installed for image in images):
+            continue
+        first_service = next(iter(app["compose"]["services"].values()))
+        templates.append({
+            "name": app["name"],
+            "image": first_service["image"],
+            "description": app["description"],
+            "category": app["category"],
+            "verified": app["verified"],
+            "verification_label": app["verification_label"],
+            "icon_url": app["icon_url"],
+            "page_url": app["page_url"] or app["homepage"],
+            "link_label": app["link_label"],
+            "template_id": app["id"],
+            "install_method": "compose",
+            "inputs": catalog_defaults(app),
+        })
+    return {
+        "ok": True,
+        "templates": templates,
+        "catalog": {
+            **metadata,
+            "name": catalog["name"],
+            "version": catalog["catalog_version"],
+            "schema_version": catalog["schema_version"],
+        },
+    }
+
+
+def store_catalog_app(template_id):
+    template_id = str(template_id or "")
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", template_id):
+        raise ValueError("Invalid app template")
+    catalog, _ = load_store_catalog()
+    if catalog is None:
+        raise ValueError("The declarative app catalog is not available")
+    for app in catalog["apps"]:
+        if app["id"] == template_id:
+            return app
+    raise ValueError("App template not found")
+
+
 def dockerhub_page_url(name, official=False):
     clean = str(name or "").strip()
     if official and "/" not in clean:
@@ -4645,9 +4916,168 @@ def docker_pull_with_progress(image, job_id):
         raise ValueError(detail)
 
 
+def catalog_install_values(app, supplied):
+    if supplied is None:
+        supplied = {}
+    if not isinstance(supplied, dict):
+        raise ValueError("Invalid app settings")
+    declared = {item["id"] for item in app["inputs"]}
+    if set(supplied) - declared:
+        raise ValueError("Unknown app setting")
+    reserved = {
+        "homestart_data": str(COMPOSE_APP_DATA_DIR),
+        "server_timezone": system_timezone(),
+    }
+    values = {}
+    for item in app["inputs"]:
+        input_id = item["id"]
+        default = replace_store_placeholders(item["default"], reserved)
+        value = supplied.get(input_id, default)
+        value = str(value).strip()
+        if not value or len(value) > 2048 or "\x00" in value or "\n" in value:
+            raise ValueError(f"{item['label']} is invalid")
+        input_type = item["type"]
+        if input_type == "port":
+            value = str(normalize_container_port(value))
+        elif input_type == "path":
+            if not value.startswith("/"):
+                raise ValueError(f"{item['label']} must be an absolute path")
+            value = os.path.normpath(value)
+        elif input_type == "timezone":
+            try:
+                ZoneInfo(value)
+            except ZoneInfoNotFoundError as error:
+                raise ValueError(f"{item['label']} is not a valid time zone") from error
+        elif input_type == "select" and value not in item.get("options", []):
+            raise ValueError(f"{item['label']} is not one of the allowed values")
+        pattern = item.get("pattern")
+        if pattern and not re.fullmatch(pattern, value):
+            raise ValueError(f"{item['label']} has an invalid format")
+        values[input_id] = value
+    return {**reserved, **values}
+
+
+def render_catalog_compose(app, supplied):
+    values = catalog_install_values(app, supplied)
+    compose = replace_store_placeholders(app["compose"], values)
+    remaining = store_placeholders(compose)
+    if remaining:
+        raise ValueError("The app template contains unresolved values")
+    for service_name, service in compose["services"].items():
+        labels = service.get("labels")
+        if labels is None:
+            labels = {}
+        elif isinstance(labels, list):
+            converted = {}
+            for label in labels:
+                key, separator, value = str(label).partition("=")
+                if separator:
+                    converted[key] = value
+            labels = converted
+        elif not isinstance(labels, dict):
+            raise ValueError(f"{app['id']}: invalid labels for {service_name}")
+        labels.update({
+            "com.homestart.managed": "true",
+            "com.homestart.template": app["id"],
+        })
+        service["labels"] = labels
+    compose["name"] = ""
+    return compose, values
+
+
+def compose_project_name(app_id, instance):
+    value = re.sub(r"[^a-z0-9_-]+", "-", f"homestart-{app_id}-{instance}".lower()).strip("-_")
+    return value[:63] or f"homestart-{uuid.uuid4().hex[:8]}"
+
+
+def compose_command_with_progress(command, job_id, stage, start, end):
+    process = subprocess.Popen(
+        ["docker", "compose", *command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    recent = []
+    line_count = 0
+    for raw_line in process.stdout or []:
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_count += 1
+        recent = (recent + [line])[-16:]
+        progress = min(end - 1, start + min(end - start - 1, line_count))
+        update_install_job(job_id, stage=stage, progress=progress, message=line, log=recent)
+    return_code = process.wait()
+    if return_code:
+        detail = recent[-1] if recent else f"docker compose exited with code {return_code}"
+        raise ValueError(detail)
+    return recent
+
+
+def compose_store_install(payload, job_id=None):
+    app = store_catalog_app(payload.get("template_id"))
+    compose, values = render_catalog_compose(app, payload.get("values"))
+    existing = run_docker_command(
+        ["ps", "-a", "--filter", f"label=com.homestart.template={app['id']}", "--format", "{{.Names}}"],
+        timeout=15,
+    )
+    if existing:
+        raise ValueError(f"{app['name']} is already installed as {', '.join(existing.splitlines())}")
+    container_names = [
+        str(service.get("container_name") or "")
+        for service in compose["services"].values()
+        if service.get("container_name")
+    ]
+    for name in container_names:
+        normalize_docker_name(name)
+        if docker_container_exists(name):
+            raise ValueError(f"A Docker container named {name} already exists")
+    try:
+        run_docker_command(["compose", "version"], timeout=15)
+    except ValueError as error:
+        raise ValueError("Docker Compose is required to install catalog apps") from error
+
+    instance = values.get("container_name") or app["id"]
+    project = compose_project_name(app["id"], instance)
+    compose["name"] = project
+    project_dir = COMPOSE_APP_DIR / f"{app['id']}--{project[-24:]}"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    compose_path = project_dir / "compose.yaml"
+    temporary = compose_path.with_suffix(".yaml.tmp")
+    temporary.write_text(yaml.safe_dump(compose, sort_keys=False), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(compose_path)
+
+    base = ["-f", str(compose_path), "-p", project]
+    if job_id:
+        update_install_job(job_id, stage="pulling", progress=10, message=f"Downloading images for {app['name']}…")
+        compose_command_with_progress([*base, "pull"], job_id, "pulling", 12, 78)
+        update_install_job(job_id, stage="creating", progress=82, message="Creating the Compose project…")
+        compose_command_with_progress([*base, "up", "-d"], job_id, "creating", 84, 97)
+    else:
+        run_docker_command(["compose", *base, "pull"], timeout=900)
+        run_docker_command(["compose", *base, "up", "-d"], timeout=180)
+    running = run_docker_command(["compose", *base, "ps", "--status", "running", "-q"], timeout=30)
+    state = "running" if running else "created"
+    return {
+        "ok": True,
+        "container": ", ".join(container_names) or app["name"],
+        "containers": container_names,
+        "image": next(iter(compose["services"].values()))["image"],
+        "template_id": app["id"],
+        "compose_file": str(compose_path),
+        "project": project,
+        "message": f"Installed {app['name']} with Docker Compose",
+        "state": state,
+    }
+
+
 def docker_store_install(payload, job_id=None):
     if not docker_app_store_enabled():
         raise ValueError("Docker app store is disabled")
+    if payload.get("template_id"):
+        return compose_store_install(payload, job_id)
 
     image = normalize_docker_image(payload.get("image", ""))
     installed = installed_docker_images()
@@ -5454,7 +5884,8 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             return
 
         if route == "/api/store/templates":
-            self.send_json({"ok": True, "templates": curated_store_apps()})
+            query = parse_qs(parsed.query)
+            self.send_json(store_templates_payload(query.get("refresh", ["0"])[0] == "1"))
             return
 
         if route == "/api/store/install/status":

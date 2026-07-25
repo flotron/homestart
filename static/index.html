@@ -260,38 +260,41 @@
                   <p id="store-install-image">Image</p>
                 </div>
               </div>
-              <label>
-                Container name
-                <input id="store-install-name" type="text" autocomplete="off" required />
-              </label>
-              <div class="split-fields">
+              <div id="store-template-fields" class="store-install-fields" hidden></div>
+              <div id="store-legacy-fields" class="store-install-fields">
                 <label>
-                  Host port
-                  <input id="store-install-host-port" type="number" min="1" max="65535" placeholder="8080" />
+                  Container name
+                  <input id="store-install-name" type="text" autocomplete="off" required />
+                </label>
+                <div class="split-fields">
+                  <label>
+                    Host port
+                    <input id="store-install-host-port" type="number" min="1" max="65535" placeholder="8080" />
+                  </label>
+                  <label>
+                    Container port
+                    <input id="store-install-container-port" type="number" min="1" max="65535" placeholder="80" />
+                  </label>
+                </div>
+                <label>
+                  Environment variables
+                  <textarea id="store-install-env" rows="3" placeholder="KEY=value, one per line"></textarea>
                 </label>
                 <label>
-                  Container port
-                  <input id="store-install-container-port" type="number" min="1" max="65535" placeholder="80" />
+                  Volumes
+                  <textarea id="store-install-volumes" rows="3" placeholder="/host/path:/container/path[:ro], one per line"></textarea>
+                </label>
+                <label>
+                  Restart policy
+                  <select id="store-install-restart">
+                    <option value="unless-stopped">unless-stopped</option>
+                    <option value="always">always</option>
+                    <option value="on-failure">on-failure</option>
+                    <option value="no">no</option>
+                  </select>
                 </label>
               </div>
-              <label>
-                Environment variables
-                <textarea id="store-install-env" rows="3" placeholder="KEY=value, one per line"></textarea>
-              </label>
-              <label>
-                Volumes
-                <textarea id="store-install-volumes" rows="3" placeholder="/host/path:/container/path[:ro], one per line"></textarea>
-              </label>
-              <label>
-                Restart policy
-                <select id="store-install-restart">
-                  <option value="unless-stopped">unless-stopped</option>
-                  <option value="always">always</option>
-                  <option value="on-failure">on-failure</option>
-                  <option value="no">no</option>
-                </select>
-              </label>
-              <p class="form-note">Only install images you trust. HomeStart will pull the image and run it as a Docker container.</p>
+              <p id="store-install-note" class="form-note">Only install images you trust. HomeStart will pull the image and run it as a Docker container.</p>
               <div id="store-install-progress" class="install-progress" hidden>
                 <div class="install-progress-head"><strong id="store-install-stage">Preparing…</strong><span id="store-install-percent">0%</span></div>
                 <div class="install-progress-track"><span id="store-install-bar"></span></div>

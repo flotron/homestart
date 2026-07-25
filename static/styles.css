@@ -539,6 +539,18 @@ button:disabled {
   font-weight: 700;
 }
 
+.store-install-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.store-template-help {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .split-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
