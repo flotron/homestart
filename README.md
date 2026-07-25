@@ -40,7 +40,9 @@ and apply local or GitHub release updates without bundling private runtime data.
   confidence level, and keep unassignable traffic in an Unattributed row.
 - Network history uses a percentile-based visual scale so isolated multi-gigabit
   peaks remain inspectable without flattening the latest normal traffic.
-- Docker logs and curated installation templates with suggested ports and volumes.
+- Docker logs and a declarative App Store backed by validated Docker Compose
+  templates from the separate
+  [HomeStart Apps catalog](https://github.com/flotron/homestart-apps).
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
 - Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
@@ -192,6 +194,17 @@ Use `Apps` to discover and control services:
   uninstall command when configured.
 
 Docker images and volumes are preserved by uninstall.
+
+Recommended App Store entries declare their own installation fields and Compose
+services in `flotron/homestart-apps`. HomeStart downloads and validates the
+catalog, keeps the last valid copy in `data/app-store-catalog.json`, and creates
+managed projects under `data/compose-apps/`. A catalog outage therefore does not
+remove already downloaded recommendations. Direct Docker Hub searches continue
+to use the single-container installer.
+
+The official catalog URL can be changed through `app_store.catalog_url` in
+`config.json`, or with the `HOMESTART_APP_CATALOG_URL` environment variable.
+Catalog installations require the Docker Compose plugin (`docker compose`).
 
 If HomeStart cannot find a useful app icon, hover the app card and use the
 small icon upload control. Uploaded icons are local runtime data and are not
