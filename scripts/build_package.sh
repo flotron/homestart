@@ -20,8 +20,6 @@ mkdir -p "$PACKAGE_DIR/static" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/docs" "$PACK
 
 install -m 0755 "$ROOT_DIR/app.py" "$PACKAGE_DIR/app.py"
 cp -a "$ROOT_DIR/homestart/." "$PACKAGE_DIR/homestart/"
-find "$PACKAGE_DIR/homestart" -type d -name '__pycache__' -prune -exec rm -rf {} +
-find "$PACKAGE_DIR/homestart" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 install -m 0644 "$ROOT_DIR/config.example.json" "$PACKAGE_DIR/config.example.json"
 install -m 0644 "$ROOT_DIR/README.md" "$PACKAGE_DIR/README.md"
 install -m 0644 "$ROOT_DIR/CHANGELOG.md" "$PACKAGE_DIR/CHANGELOG.md"
@@ -32,6 +30,10 @@ install -m 0644 "$ROOT_DIR/homestart.service.example" "$PACKAGE_DIR/homestart.se
 install -m 0755 "$ROOT_DIR/install.sh" "$PACKAGE_DIR/install.sh"
 cp -a "$ROOT_DIR/static/." "$PACKAGE_DIR/static/"
 cp -a "$ROOT_DIR/scripts/." "$PACKAGE_DIR/scripts/"
+mkdir -p "$PACKAGE_DIR/scripts/homestart"
+cp -a "$ROOT_DIR/homestart/." "$PACKAGE_DIR/scripts/homestart/"
+find "$PACKAGE_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$PACKAGE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 make_manifest() {
   local package_type="$1"
@@ -101,6 +103,15 @@ tar -C "$(dirname "$UPDATE_DIR")" -czf "$UPDATE" homestart
 
 validate_archive "$INSTALLER"
 validate_archive "$UPDATE"
+
+LEGACY_TEST_DIR="$WORK_DIR/legacy-update"
+mkdir -p "$LEGACY_TEST_DIR"
+cp -a "$PACKAGE_DIR/app.py" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/static" "$LEGACY_TEST_DIR/"
+(
+  cd "$LEGACY_TEST_DIR"
+  HOMESTART_CONFIG="$LEGACY_TEST_DIR/config.json" PYTHONPATH="$LEGACY_TEST_DIR" \
+    python3 -c 'from app import main; assert callable(main)'
+)
 
 echo "$INSTALLER"
 echo "$UPDATE"
