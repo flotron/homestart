@@ -123,7 +123,7 @@
             <div class="chart-legend bandwidth-legend"><span class="download">Download</span><span class="upload">Upload</span></div>
             <section class="bandwidth-ranking">
               <div class="section-head">
-                <div><h3>Apps / containers ranking</h3><p>Traffic attributed to Docker containers during the selected period.</p></div>
+                <div><h3>Measured Docker traffic</h3><p>Directly measured from isolated Docker network namespaces.</p></div>
                 <select id="bandwidth-ranking-period" aria-label="Bandwidth ranking period">
                   <option value="60">Last minute</option>
                   <option value="3600" selected>Last hour</option>
@@ -132,7 +132,16 @@
               </div>
               <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>App / container</span><span>Download</span><span>Upload</span><span>Total</span></div>
               <div id="bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting container traffic…</p></div>
-              <p id="bandwidth-ranking-note" class="form-note">Containers using host networking and native Linux processes cannot be attributed separately.</p>
+              <p id="bandwidth-ranking-note" class="form-note">Measured container traffic is collected every two seconds.</p>
+              <div class="estimated-bandwidth-ranking">
+                <div class="estimated-ranking-title">
+                  <div><h4>Estimated host traffic</h4><p>TCP traffic estimated from active sockets, process owners and Docker cgroups.</p></div>
+                  <span class="estimate-label">Estimate</span>
+                </div>
+                <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>Process / app</span><span>Download</span><span>Upload</span><span>Total</span></div>
+                <div id="host-bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting host TCP traffic…</p></div>
+                <p id="host-bandwidth-ranking-note" class="form-note">Confidence is shown for every result. UDP, short-lived connections and kernel traffic may appear as unattributed.</p>
+              </div>
             </section>
           </section>
 
@@ -331,7 +340,10 @@
                 </form>
                 <div id="file-drop-status" class="file-drop-status">Drop files here to upload</div>
                 <div id="file-copy-progress" class="file-copy-progress" hidden>
-                  <div><strong id="file-copy-label">Preparing copy…</strong><span id="file-copy-percent">0%</span></div>
+                  <div class="file-copy-progress-head">
+                    <strong id="file-copy-label">Preparing copy…</strong>
+                    <div><span id="file-copy-speed">--</span><span id="file-copy-percent">0%</span><button id="file-copy-cancel" type="button">Cancel</button></div>
+                  </div>
                   <div class="file-copy-track"><span id="file-copy-bar"></span></div>
                   <small id="file-copy-detail">Calculating size…</small>
                 </div>

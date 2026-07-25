@@ -122,6 +122,45 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(copied.name, "manual - copy.pdf")
         self.assertEqual(copied.read_bytes(), b"pdf")
 
+    def test_copy_progress_reports_speed_and_eta(self):
+        job_id = "speed-job"
+        self.app.FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "total_bytes": 1000,
+            "copied_bytes": 0,
+            "speed_bps": 0,
+            "_speed_last_at": 10,
+            "_speed_last_bytes": 0,
+        }
+        with mock.patch.object(self.app.time, "monotonic", return_value=11):
+            self.app.update_copy_job(job_id, copied_bytes=500)
+        status = self.app.copy_job_status(job_id)
+        self.assertEqual(status["speed_bps"], 500)
+        self.assertEqual(status["eta_seconds"], 1)
+        self.assertNotIn("_speed_last_at", status)
+
+    def test_cancelled_copy_removes_incomplete_destination(self):
+        root = Path(self.temp.name) / "cancel-copy"
+        root.mkdir()
+        source = root / "source.bin"
+        target = root / "destination.bin"
+        source.write_bytes(b"x" * 1024)
+        job_id = "cancel-job"
+        self.app.FILE_COPY_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "cancelling",
+            "copied_bytes": 0,
+            "total_bytes": 0,
+            "cancel_requested": True,
+            "speed_bps": 0,
+            "updated_at": 0,
+        }
+        self.app.copy_file_with_progress(source, target, job_id)
+        status = self.app.copy_job_status(job_id)
+        self.assertEqual(status["status"], "cancelled")
+        self.assertFalse(target.exists())
+
     def test_file_properties_include_recursive_folder_size(self):
         root = Path(self.temp.name) / "properties"
         folder = root / "documents"
@@ -340,6 +379,38 @@ class HomeStartSmokeTests(unittest.TestCase):
         content = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\n eth0: 3000 0 0 0 0 0 0 0 900 0 0 0 0 0 0 0\n"
         self.assertEqual(self.app.network_device_totals(content), (3000, 900))
 
+    def test_ss_tcp_counters_include_process_and_socket_totals(self):
+        output = (
+            'ESTAB 0 0 192.168.0.32:443 192.168.0.10:50100 users:(("nginx",pid=123,fd=6))\n'
+            " cubic wscale:7,7 bytes_sent:900 bytes_received:1200 segs_out:10 segs_in:12\n"
+        )
+        counters = self.app.parse_ss_tcp_counters(output)
+        self.assertEqual(len(counters), 1)
+        self.assertEqual(counters[0]["pid"], 123)
+        self.assertEqual(counters[0]["process"], "nginx")
+        self.assertEqual(counters[0]["local"], "192.168.0.32:443")
+        self.assertEqual(counters[0]["rx_total"], 1200)
+        self.assertEqual(counters[0]["tx_total"], 900)
+        self.assertEqual(self.app.endpoint_address("[::ffff:192.168.0.32]:443"), "192.168.0.32")
+
+    def test_host_network_estimate_uses_tcp_counter_deltas(self):
+        first = [{"key": "123:a>b", "pid": 123, "process": "curl", "local": "192.168.0.32:4000",
+                  "peer": "1.1.1.1:443", "rx_total": 1000, "tx_total": 500, "owner_count": 1}]
+        second = [{**first[0], "rx_total": 7000, "tx_total": 2500}]
+        identity = {"key": "process:curl", "name": "curl", "kind": "process", "confidence": "medium"}
+        with mock.patch.object(self.app, "ss_tcp_process_counters", side_effect=[first, second]), \
+                mock.patch.object(self.app, "interface_ip_addresses", return_value={"192.168.0.32"}), \
+                mock.patch.object(self.app, "docker_identity_names", return_value={}), \
+                mock.patch.object(self.app, "host_process_identity", return_value=identity), \
+                mock.patch.object(self.app.time, "monotonic", side_effect=[100, 102]):
+            self.assertEqual(self.app.update_host_network_estimates("eth0"), [])
+            samples = self.app.update_host_network_estimates("eth0")
+        self.assertEqual(samples[0]["name"], "curl")
+        self.assertEqual(samples[0]["rx_bytes"], 6000)
+        self.assertEqual(samples[0]["tx_bytes"], 2000)
+        self.assertEqual(samples[0]["rx_bps"], 3000)
+        self.assertEqual(samples[0]["confidence"], "medium")
+
     def test_stopped_container_alert_lists_names(self):
         system = {
             "cpu": {"percent": 1}, "memory": {"percent": 2},
@@ -400,6 +471,27 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(ranking["items"][0]["tx_bytes"], 3000)
         self.assertEqual(ranking["items"][0]["total_bytes"], 9000)
 
+    def test_host_network_ranking_separates_estimated_and_unattributed_traffic(self):
+        self.app.DB_PATH = Path(self.temp.name) / "host-network.db"
+        now = int(__import__("time").time())
+        self.app.record_host_network_estimates(
+            [{"key": "process:curl", "name": "curl", "kind": "process", "confidence": "medium",
+              "rx_bytes": 4000, "tx_bytes": 1000, "rx_bps": 2000, "tx_bps": 500}],
+            {"sample_seconds": 2, "rx_bps": 3000, "tx_bps": 1000},
+            [],
+            now,
+        )
+        ranking = self.app.container_network_ranking(60)
+        self.assertEqual(ranking["items"], [])
+        process = next(item for item in ranking["estimated_items"] if item["kind"] == "process")
+        unattributed = next(item for item in ranking["estimated_items"] if item["kind"] == "unattributed")
+        self.assertEqual(process["name"], "curl")
+        self.assertEqual(process["total_bytes"], 5000)
+        self.assertEqual(process["confidence"], "medium")
+        self.assertEqual(unattributed["rx_bytes"], 2000)
+        self.assertEqual(unattributed["tx_bytes"], 1000)
+        self.assertEqual(unattributed["confidence"], "low")
+
     def test_history_charts_use_their_rendered_panel_width(self):
         script = (Path(__file__).parents[1] / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("responsiveChartWidth(historyChart)", script)
@@ -415,6 +507,11 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("/api/network/ranking", script)
         self.assertIn('data-file-context-action="properties"', html)
         self.assertIn('id="bandwidth-ranking-period"', html)
+        self.assertIn('id="host-bandwidth-ranking-list"', html)
+        self.assertIn('action: "copy_cancel"', script)
+        self.assertIn("function formatCopySize", script)
+        self.assertIn('id="file-copy-speed"', html)
+        self.assertIn('id="file-copy-cancel"', html)
 
 
 if __name__ == "__main__":

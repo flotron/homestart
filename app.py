@@ -59,8 +59,12 @@ CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
 CONTAINER_NETWORK_TARGETS = []
 CONTAINER_NETWORK_TARGETS_AT = 0
 CONTAINER_NETWORK_LOCK = threading.Lock()
+HOST_TCP_PREV = {}
+DOCKER_IDENTITY_CACHE = {"at": 0, "items": {}}
+INTERFACE_ADDRESS_CACHE = {"at": 0, "interface": "", "items": set()}
 FILE_COPY_JOBS = {}
 FILE_COPY_JOBS_LOCK = threading.Lock()
+FILE_COPY_BUFFER_SIZE = 8 * 1024 * 1024
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 ICON_CACHE = {}
@@ -1482,6 +1486,22 @@ def metrics_db():
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS host_network_estimates (
+          captured_at INTEGER,
+          identity_key TEXT,
+          name TEXT,
+          kind TEXT,
+          confidence TEXT,
+          rx_bytes REAL,
+          tx_bytes REAL,
+          rx_bps REAL,
+          tx_bps REAL,
+          PRIMARY KEY (captured_at, identity_key)
+        )
+        """
+    )
     columns = {row[1] for row in connection.execute("PRAGMA table_info(system_metrics)")}
     for name in ("rx_bps", "tx_bps", "temperature"):
         if name not in columns:
@@ -1555,6 +1575,69 @@ def record_container_network_metrics(samples, captured_at=None):
         )
 
 
+def record_host_network_estimates(samples, network, container_samples, captured_at=None):
+    captured_at = int(captured_at or time.time())
+    sample_seconds = max(.001, float(network.get("sample_seconds") or 2))
+    rows = []
+    estimated_rx = estimated_tx = 0
+    for sample in samples:
+        rx_bytes = max(0, float(sample.get("rx_bytes") or 0))
+        tx_bytes = max(0, float(sample.get("tx_bytes") or 0))
+        estimated_rx += rx_bytes
+        estimated_tx += tx_bytes
+        rows.append((
+            captured_at,
+            str(sample.get("key") or sample.get("name") or ""),
+            str(sample.get("name") or "Unknown process"),
+            str(sample.get("kind") or "process"),
+            str(sample.get("confidence") or "medium"),
+            rx_bytes,
+            tx_bytes,
+            max(0, float(sample.get("rx_bps") or 0)),
+            max(0, float(sample.get("tx_bps") or 0)),
+        ))
+
+    measured_rx = sum(
+        max(0, float(item.get("rx_bps") or 0) * float(item.get("sample_seconds") or sample_seconds))
+        for item in container_samples
+    )
+    measured_tx = sum(
+        max(0, float(item.get("tx_bps") or 0) * float(item.get("sample_seconds") or sample_seconds))
+        for item in container_samples
+    )
+    host_rx = max(0, float(network.get("rx_bps") or 0) * sample_seconds)
+    host_tx = max(0, float(network.get("tx_bps") or 0) * sample_seconds)
+    unattributed_rx = max(0, host_rx - measured_rx - estimated_rx)
+    unattributed_tx = max(0, host_tx - measured_tx - estimated_tx)
+    if unattributed_rx or unattributed_tx:
+        rows.append((
+            captured_at,
+            "unattributed",
+            "Unattributed traffic",
+            "unattributed",
+            "low",
+            unattributed_rx,
+            unattributed_tx,
+            unattributed_rx / sample_seconds,
+            unattributed_tx / sample_seconds,
+        ))
+    if not rows:
+        return
+    with metrics_db() as connection:
+        connection.executemany(
+            """
+            INSERT OR REPLACE INTO host_network_estimates
+              (captured_at, identity_key, name, kind, confidence, rx_bytes, tx_bytes, rx_bps, tx_bps)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.execute(
+            "DELETE FROM host_network_estimates WHERE captured_at < ?",
+            (captured_at - 7 * 86400,),
+        )
+
+
 def container_network_ranking(period=3600, limit=12):
     try:
         period = int(period)
@@ -1584,18 +1667,48 @@ def container_network_ranking(period=3600, limit=12):
             """,
             (since, limit),
         ).fetchall()
+        estimated_rows = connection.execute(
+            """
+            SELECT identity_key,
+                   name,
+                   kind,
+                   confidence,
+                   SUM(rx_bytes) AS rx_bytes,
+                   SUM(tx_bytes) AS tx_bytes,
+                   AVG(rx_bps) AS rx_avg_bps,
+                   AVG(tx_bps) AS tx_avg_bps,
+                   MAX(rx_bps) AS rx_peak_bps,
+                   MAX(tx_bps) AS tx_peak_bps,
+                   COUNT(*) AS sample_count
+            FROM host_network_estimates
+            WHERE captured_at >= ?
+            GROUP BY identity_key, name, kind, confidence
+            HAVING (SUM(rx_bytes) + SUM(tx_bytes)) > 0
+            ORDER BY (SUM(rx_bytes) + SUM(tx_bytes)) DESC
+            LIMIT ?
+            """,
+            (since, limit),
+        ).fetchall()
     items = []
     for index, row in enumerate(rows, 1):
         item = dict(row)
         item["rank"] = index
         item["total_bytes"] = float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
         items.append(item)
+    estimated_items = []
+    for index, row in enumerate(estimated_rows, 1):
+        item = dict(row)
+        item["rank"] = index
+        item["total_bytes"] = float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
+        estimated_items.append(item)
     return {
         "ok": True,
         "period_seconds": period,
         "generated_at": int(time.time()),
         "items": items,
+        "estimated_items": estimated_items,
         "scope": "docker_containers",
+        "estimated_scope": "host_tcp_processes",
     }
 
 
@@ -1694,8 +1807,10 @@ def network_metrics_sampler():
         try:
             network = network_payload("history")
             record_network_metric({"timestamp": int(time.time()), **network})
-            samples = update_container_network_top()
-            record_container_network_metrics(samples)
+            container_samples = update_container_network_top()
+            record_container_network_metrics(container_samples)
+            host_samples = update_host_network_estimates(network.get("interface", ""))
+            record_host_network_estimates(host_samples, network, container_samples)
         except Exception as error:
             print(f"HomeStart network sampler: {error}", flush=True)
         elapsed = time.monotonic() - started
@@ -1759,6 +1874,217 @@ def network_device_totals(content):
             received += int(fields[0])
             transmitted += int(fields[8])
     return received, transmitted
+
+
+def parse_ss_tcp_counters(output):
+    connections = []
+    current = None
+
+    def finish(entry):
+        if not entry:
+            return
+        combined = f"{entry['header']} {entry['details']}"
+        pids = re.findall(r"\bpid=(\d+)", entry["header"])
+        fields = entry["header"].split()
+        if not pids or len(fields) < 5:
+            return
+        received = re.search(r"\bbytes_received:(\d+)", combined)
+        sent = re.search(r"\bbytes_sent:(\d+)", combined)
+        if not received and not sent:
+            return
+        process = re.search(r'\(\("([^"]+)"', entry["header"])
+        connections.append({
+            "key": f"{pids[0]}:{fields[3]}>{fields[4]}",
+            "pid": int(pids[0]),
+            "process": process.group(1) if process else "",
+            "local": fields[3],
+            "peer": fields[4],
+            "rx_total": int(received.group(1)) if received else 0,
+            "tx_total": int(sent.group(1)) if sent else 0,
+            "owner_count": len(set(pids)),
+        })
+
+    for raw_line in str(output or "").splitlines():
+        if not raw_line.strip():
+            continue
+        if raw_line[:1].isspace():
+            if current:
+                current["details"] += f" {raw_line.strip()}"
+            continue
+        finish(current)
+        current = {"header": raw_line.strip(), "details": ""}
+    finish(current)
+    return connections
+
+
+def endpoint_address(endpoint):
+    value = str(endpoint or "")
+    if value.startswith("[") and "]:" in value:
+        value = value[1:value.index("]:")]
+    elif ":" in value:
+        value = value.rsplit(":", 1)[0]
+    if value.startswith("::ffff:"):
+        value = value[7:]
+    return value
+
+
+def interface_ip_addresses(interface):
+    global INTERFACE_ADDRESS_CACHE
+    now = time.monotonic()
+    if (
+        interface
+        and INTERFACE_ADDRESS_CACHE.get("interface") == interface
+        and now - float(INTERFACE_ADDRESS_CACHE.get("at") or 0) < 30
+    ):
+        return set(INTERFACE_ADDRESS_CACHE.get("items") or set())
+    addresses = set()
+    if interface:
+        try:
+            output = subprocess.check_output(
+                ["ip", "-j", "address", "show", "dev", interface],
+                text=True,
+                timeout=2,
+                stderr=subprocess.DEVNULL,
+            )
+            for item in json.loads(output or "[]"):
+                for address in item.get("addr_info") or []:
+                    local = str(address.get("local") or "")
+                    if local:
+                        addresses.add(local)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            pass
+    INTERFACE_ADDRESS_CACHE = {"at": now, "interface": interface, "items": addresses}
+    return addresses
+
+
+def docker_identity_names():
+    global DOCKER_IDENTITY_CACHE
+    now = time.monotonic()
+    if now - float(DOCKER_IDENTITY_CACHE.get("at") or 0) < 15:
+        return dict(DOCKER_IDENTITY_CACHE.get("items") or {})
+    identities = {}
+    try:
+        output = run_docker_command(["ps", "--format", "{{.ID}}\t{{.Names}}"], timeout=10)
+        for line in output.splitlines():
+            identifier, separator, name = line.partition("\t")
+            if separator and identifier.strip() and name.strip():
+                identities[identifier.strip()] = name.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    DOCKER_IDENTITY_CACHE = {"at": now, "items": identities}
+    return identities
+
+
+def process_display_name(pid, fallback=""):
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        parts = [part.decode("utf-8", errors="replace") for part in command if part]
+    except OSError:
+        parts = []
+    executable = Path(parts[0]).name if parts else str(fallback or "")
+    interpreter = executable.lower() in {"python", "python3", "node", "bash", "sh", "perl", "ruby"}
+    if interpreter and len(parts) > 1 and not parts[1].startswith("-"):
+        return f"{executable} · {Path(parts[1]).name}"
+    if executable:
+        return executable
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return f"PID {pid}"
+
+
+def host_process_identity(pid, fallback="", docker_identities=None):
+    docker_identities = docker_identities or {}
+    try:
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        cgroup = ""
+    for identifier, name in docker_identities.items():
+        if identifier and identifier in cgroup:
+            return {
+                "key": f"host-container:{name}",
+                "name": name,
+                "kind": "host_container",
+                "confidence": "medium",
+            }
+    name = process_display_name(pid, fallback)
+    return {
+        "key": f"process:{name}",
+        "name": name,
+        "kind": "process",
+        "confidence": "medium" if name and not name.startswith("PID ") else "low",
+    }
+
+
+def ss_tcp_process_counters():
+    command = shutil.which("ss")
+    if not command:
+        return None
+    try:
+        output = subprocess.check_output(
+            [command, "-Htinp"],
+            text=True,
+            timeout=2,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_ss_tcp_counters(output)
+
+
+def update_host_network_estimates(interface):
+    global HOST_TCP_PREV
+    connections = ss_tcp_process_counters()
+    if connections is None:
+        return []
+    addresses = interface_ip_addresses(interface)
+    if addresses:
+        connections = [
+            connection for connection in connections
+            if endpoint_address(connection.get("local")) in addresses
+        ]
+    now = time.monotonic()
+    current = {
+        item["key"]: (now, item["rx_total"], item["tx_total"])
+        for item in connections
+    }
+    identities = docker_identity_names()
+    pid_identities = {}
+    aggregated = {}
+    for connection in connections:
+        previous = HOST_TCP_PREV.get(connection["key"])
+        if not previous:
+            continue
+        elapsed = max(.001, now - previous[0])
+        rx_bytes = max(0, connection["rx_total"] - previous[1])
+        tx_bytes = max(0, connection["tx_total"] - previous[2])
+        if not rx_bytes and not tx_bytes:
+            continue
+        pid = connection["pid"]
+        identity = pid_identities.setdefault(
+            pid,
+            host_process_identity(pid, connection.get("process", ""), identities),
+        )
+        item = aggregated.setdefault(identity["key"], {
+            **identity,
+            "rx_bytes": 0,
+            "tx_bytes": 0,
+            "elapsed_weight": 0,
+        })
+        item["rx_bytes"] += rx_bytes
+        item["tx_bytes"] += tx_bytes
+        item["elapsed_weight"] = max(item["elapsed_weight"], elapsed)
+        if connection.get("owner_count", 1) > 1:
+            item["confidence"] = "low"
+    HOST_TCP_PREV = current
+    samples = []
+    for item in aggregated.values():
+        elapsed = max(.001, item.pop("elapsed_weight"))
+        item["sample_seconds"] = elapsed
+        item["rx_bps"] = item["rx_bytes"] / elapsed
+        item["tx_bps"] = item["tx_bytes"] / elapsed
+        samples.append(item)
+    return samples
 
 
 def container_network_targets():
@@ -1844,16 +2170,24 @@ def network_payload(channel="live"):
         return {"interface": selected_interface, "rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
     now = time.monotonic()
     rx_bps = tx_bps = 0
+    sample_seconds = 0
     previous = NETWORK_HISTORY_PREV if channel == "history" else NETWORK_LIVE_PREV
     if previous and len(previous) >= 4 and previous[3] == selected_interface:
-        elapsed = max(.001, now - previous[0])
-        rx_bps = max(0, (received - previous[1]) / elapsed)
-        tx_bps = max(0, (transmitted - previous[2]) / elapsed)
+        sample_seconds = max(.001, now - previous[0])
+        rx_bps = max(0, (received - previous[1]) / sample_seconds)
+        tx_bps = max(0, (transmitted - previous[2]) / sample_seconds)
     if channel == "history":
         NETWORK_HISTORY_PREV = (now, received, transmitted, selected_interface)
     else:
         NETWORK_LIVE_PREV = (now, received, transmitted, selected_interface)
-    result = {"interface": selected_interface, "rx_bps": round(rx_bps), "tx_bps": round(tx_bps), "rx_label": f"{format_bytes(rx_bps)}/s", "tx_label": f"{format_bytes(tx_bps)}/s"}
+    result = {
+        "interface": selected_interface,
+        "rx_bps": round(rx_bps),
+        "tx_bps": round(tx_bps),
+        "sample_seconds": sample_seconds,
+        "rx_label": f"{format_bytes(rx_bps)}/s",
+        "tx_label": f"{format_bytes(tx_bps)}/s",
+    }
     if channel == "live":
         with CONTAINER_NETWORK_LOCK:
             result["top_consumers"] = dict(CONTAINER_NETWORK_TOP)
@@ -2649,15 +2983,21 @@ def delete_file_path(raw_path):
     return {"ok": True, "path": str(target), "action": "delete"}
 
 
-def path_usage(path):
+def path_usage(path, cancelled=None):
     total_bytes = 0
     file_count = 0
     folder_count = 0
+    if cancelled and cancelled():
+        raise CopyCancelled()
     if path.is_file():
         return path.stat().st_size, 1, 0
     for root, directories, files in os.walk(path, followlinks=False):
+        if cancelled and cancelled():
+            raise CopyCancelled()
         folder_count += 1
         for name in files:
+            if cancelled and cancelled():
+                raise CopyCancelled()
             item = Path(root) / name
             try:
                 total_bytes += item.stat().st_size
@@ -2748,6 +3088,18 @@ def update_copy_job(job_id, **changes):
         job.update(changes)
         total = max(0, int(job.get("total_bytes") or 0))
         copied = max(0, int(job.get("copied_bytes") or 0))
+        now_monotonic = time.monotonic()
+        last_speed_at = float(job.get("_speed_last_at") or now_monotonic)
+        last_speed_bytes = max(0, int(job.get("_speed_last_bytes") or 0))
+        speed_elapsed = now_monotonic - last_speed_at
+        if job.get("status") == "running" and copied >= last_speed_bytes and speed_elapsed >= .25:
+            current_speed = (copied - last_speed_bytes) / speed_elapsed
+            previous_speed = max(0, float(job.get("speed_bps") or 0))
+            job["speed_bps"] = round(current_speed if not previous_speed else previous_speed * .7 + current_speed * .3)
+            job["_speed_last_at"] = now_monotonic
+            job["_speed_last_bytes"] = copied
+        speed = max(0, float(job.get("speed_bps") or 0))
+        job["eta_seconds"] = round((total - copied) / speed) if total > copied and speed > 0 else None
         if total:
             job["percent"] = min(100, round(copied / total * 100, 1))
         elif job.get("status") == "completed":
@@ -2755,28 +3107,45 @@ def update_copy_job(job_id, **changes):
         job["updated_at"] = int(time.time())
 
 
-def copy_file_with_progress(source, target, job_id):
-    total_bytes, file_count, folder_count = path_usage(source)
-    update_copy_job(
-        job_id,
-        total_bytes=total_bytes,
-        file_count=file_count,
-        folder_count=folder_count,
-        status="running",
-        message=f"Copying {source.name}…",
-    )
+class CopyCancelled(Exception):
+    pass
 
+
+def copy_job_cancelled(job_id):
+    with FILE_COPY_JOBS_LOCK:
+        job = FILE_COPY_JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
+def copy_file_with_progress(source, target, job_id):
     def copy_item(source_file, destination_file):
+        if copy_job_cancelled(job_id):
+            raise CopyCancelled()
         Path(destination_file).parent.mkdir(parents=True, exist_ok=True)
-        with open(source_file, "rb") as input_file, open(destination_file, "wb") as output_file:
+        buffer = bytearray(FILE_COPY_BUFFER_SIZE)
+        with open(source_file, "rb", buffering=0) as input_file, open(destination_file, "wb", buffering=0) as output_file:
+            if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_SEQUENTIAL"):
+                try:
+                    os.posix_fadvise(input_file.fileno(), 0, 0, os.POSIX_FADV_SEQUENTIAL)
+                except OSError:
+                    pass
             while True:
-                chunk = input_file.read(1024 * 1024)
-                if not chunk:
+                if copy_job_cancelled(job_id):
+                    raise CopyCancelled()
+                chunk_size = input_file.readinto(buffer)
+                if not chunk_size:
                     break
-                output_file.write(chunk)
+                view = memoryview(buffer)[:chunk_size]
+                while view:
+                    if copy_job_cancelled(job_id):
+                        raise CopyCancelled()
+                    written = output_file.write(view)
+                    if not written:
+                        raise OSError("The destination stopped accepting data")
+                    view = view[written:]
                 with FILE_COPY_JOBS_LOCK:
                     job = FILE_COPY_JOBS.get(job_id)
-                    copied = int(job.get("copied_bytes") or 0) + len(chunk) if job else len(chunk)
+                    copied = int(job.get("copied_bytes") or 0) + chunk_size if job else chunk_size
                 update_copy_job(
                     job_id,
                     copied_bytes=copied,
@@ -2786,6 +3155,18 @@ def copy_file_with_progress(source, target, job_id):
         return destination_file
 
     try:
+        total_bytes, file_count, folder_count = path_usage(
+            source,
+            cancelled=lambda: copy_job_cancelled(job_id),
+        )
+        update_copy_job(
+            job_id,
+            total_bytes=total_bytes,
+            file_count=file_count,
+            folder_count=folder_count,
+            status="running",
+            message=f"Copying {source.name}…",
+        )
         if source.is_dir():
             shutil.copytree(source, target, copy_function=copy_item)
         else:
@@ -2797,6 +3178,22 @@ def copy_file_with_progress(source, target, job_id):
             path=str(target),
             message=f"Pasted as {target.name}",
             completed_at=int(time.time()),
+        )
+    except CopyCancelled:
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        except OSError:
+            pass
+        update_copy_job(
+            job_id,
+            status="cancelled",
+            message="Copy cancelled. The incomplete destination was removed.",
+            completed_at=int(time.time()),
+            speed_bps=0,
+            eta_seconds=None,
         )
     except Exception as error:
         try:
@@ -2836,9 +3233,14 @@ def start_copy_job(source_path, destination_path):
             "copied_bytes": 0,
             "total_bytes": 0,
             "percent": 0,
+            "speed_bps": 0,
+            "eta_seconds": None,
+            "cancel_requested": False,
             "message": f"Calculating {source.name}…",
             "created_at": now,
             "updated_at": now,
+            "_speed_last_at": time.monotonic(),
+            "_speed_last_bytes": 0,
         }
     threading.Thread(
         target=copy_file_with_progress,
@@ -2854,7 +3256,31 @@ def copy_job_status(job_id):
         job = FILE_COPY_JOBS.get(str(job_id or ""))
         if not job:
             raise ValueError("Copy job was not found")
-        return {"ok": True, **dict(job)}
+        return {"ok": True, **{
+            key: value for key, value in job.items()
+            if not key.startswith("_")
+        }}
+
+
+def cancel_copy_job(job_id):
+    with FILE_COPY_JOBS_LOCK:
+        job = FILE_COPY_JOBS.get(str(job_id or ""))
+        if not job:
+            raise ValueError("Copy job was not found")
+        if job.get("status") in {"completed", "failed", "cancelled"}:
+            return {"ok": True, **{
+                key: value for key, value in job.items()
+                if not key.startswith("_")
+            }}
+        job.update({
+            "cancel_requested": True,
+            "status": "cancelling",
+            "message": "Cancelling copy and removing incomplete data…",
+            "speed_bps": 0,
+            "eta_seconds": None,
+            "updated_at": int(time.time()),
+        })
+        return {"ok": True, "job_id": job["job_id"], "status": "cancelling"}
 
 
 def decode_data_url(content):
@@ -2897,6 +3323,8 @@ def file_action(payload):
         return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
     if action == "copy_start":
         return start_copy_job(payload.get("source", ""), payload.get("destination", ""))
+    if action == "copy_cancel":
+        return cancel_copy_job(payload.get("job_id", ""))
     if action == "upload":
         return upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
     if action == "mount_readonly":

@@ -26,13 +26,16 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
-- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste with progress, recursive properties, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
+- File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste with progress, live speed, ETA and safe cancellation, recursive properties, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
 - Permanent server clock: date and time follow the Linux server's configured
   IANA region, editable from Settings.
 - Interactive history charts: hover or touch to inspect the exact server time
   and CPU, memory, GPU, download and upload values for a sample.
 - Per-container network accounting and rankings for the last minute, hour or
   day, with download, upload, total traffic and average throughput.
+- Separate estimated host-traffic rankings use active TCP socket ownership to
+  identify native Linux processes and host-network containers, show a visible
+  confidence level, and keep unassignable traffic in an Unattributed row.
 - Network history uses a percentile-based visual scale so isolated multi-gigabit
   peaks remain inspectable without flattening the latest normal traffic.
 - Docker logs and curated installation templates with suggested ports and volumes.

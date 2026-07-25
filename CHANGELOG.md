@@ -4,6 +4,36 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2240
+
+- Copy progress now uses familiar decimal GB, MB and KB units for transferred
+  data, total size and live speed.
+- Other File Browser size displays retain their existing binary GiB and MiB
+  units.
+
+## 20260725-2230
+
+- File Browser copies now use a reusable 8 MiB buffer and sequential-access
+  hints instead of allocating and reporting progress for every 1 MiB block.
+- Copy progress now shows smoothed transfer speed and estimated time remaining.
+- Added safe copy cancellation during size calculation or transfer. HomeStart
+  closes the files and removes only the incomplete destination it created.
+- Cancellation, completion and failure states remain visible on desktop and
+  mobile layouts.
+
+## 20260725-2210
+
+- Added a separate Estimated host traffic ranking for native Linux processes
+  and Docker containers using host networking.
+- The estimator samples active TCP socket byte counters every two seconds and
+  maps their owning PIDs through Linux process and Docker cgroup information.
+- Every estimated result shows its confidence level and remains visually
+  separate from directly measured Docker namespace traffic.
+- Added an Unattributed traffic row for UDP, very short connections, kernel
+  traffic and differences between TCP payload and physical-interface counters.
+- Host traffic estimates share the existing minute, hour and day selectors and
+  seven-day retention without requiring eBPF or additional packages.
+
 ## 20260725-1330
 
 - Added File Browser Properties to the right-click, three-dot and touch-hold
