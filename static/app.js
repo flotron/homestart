@@ -170,6 +170,8 @@ const liveUpdated = document.querySelector("#live-updated");
 const bandwidthRankingPeriod = document.querySelector("#bandwidth-ranking-period");
 const bandwidthRankingList = document.querySelector("#bandwidth-ranking-list");
 const bandwidthRankingNote = document.querySelector("#bandwidth-ranking-note");
+const hostBandwidthRankingList = document.querySelector("#host-bandwidth-ranking-list");
+const hostBandwidthRankingNote = document.querySelector("#host-bandwidth-ranking-note");
 let liveNetworkLoading = false;
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
@@ -190,6 +192,8 @@ const fileCopyLabel = document.querySelector("#file-copy-label");
 const fileCopyPercent = document.querySelector("#file-copy-percent");
 const fileCopyBar = document.querySelector("#file-copy-bar");
 const fileCopyDetail = document.querySelector("#file-copy-detail");
+const fileCopySpeed = document.querySelector("#file-copy-speed");
+const fileCopyCancel = document.querySelector("#file-copy-cancel");
 const filePropertiesDialog = document.querySelector("#file-properties-dialog");
 const filePropertiesTitle = document.querySelector("#file-properties-title");
 const filePropertiesContent = document.querySelector("#file-properties-content");
@@ -472,6 +476,45 @@ async function loadLiveNetwork() {
   }
 }
 
+function bandwidthRankingRows(items, period, estimated = false) {
+  const kindLabels = {
+    host_container: "Host-network container",
+    process: "Linux process",
+    unattributed: "Not attributed",
+  };
+  return items.map((item) => {
+    const row = document.createElement("article");
+    row.className = `bandwidth-ranking-row${estimated ? " estimated" : ""}`;
+    row.innerHTML = `
+      <strong class="rank"></strong>
+      <span class="app-name"><b></b><small></small></span>
+      <span data-label="Download"></span>
+      <span data-label="Upload"></span>
+      <strong data-label="Total"></strong>
+    `;
+    row.querySelector(".rank").textContent = `#${item.rank}`;
+    row.querySelector(".app-name b").textContent = item.name || (estimated ? "Unknown process" : "Unknown container");
+    const average = `avg ${formatRate((Number(item.total_bytes) || 0) / Math.max(1, period))}`;
+    const metadata = row.querySelector(".app-name small");
+    if (estimated) {
+      const kind = document.createElement("span");
+      kind.textContent = `${average} · ${kindLabels[item.kind] || "Host traffic"}`;
+      const confidence = document.createElement("span");
+      const level = ["medium", "low"].includes(item.confidence) ? item.confidence : "low";
+      confidence.className = `confidence-badge ${level}`;
+      confidence.textContent = `${level} confidence`;
+      metadata.append(kind, confidence);
+    } else {
+      metadata.textContent = `${average} · measured`;
+    }
+    const values = row.querySelectorAll("[data-label]");
+    values[0].textContent = formatFileSize(item.rx_bytes);
+    values[1].textContent = formatFileSize(item.tx_bytes);
+    values[2].textContent = formatFileSize(item.total_bytes);
+    return row;
+  });
+}
+
 async function loadBandwidthRanking() {
   if (!bandwidthRankingList || document.hidden) return;
   const period = Number(bandwidthRankingPeriod?.value || 3600);
@@ -483,29 +526,24 @@ async function loadBandwidthRanking() {
     if (!items.length) {
       bandwidthRankingList.innerHTML = '<p class="form-note">No attributable Docker traffic has been collected for this period yet.</p>';
     } else {
-      bandwidthRankingList.replaceChildren(...items.map((item) => {
-        const row = document.createElement("article");
-        row.className = "bandwidth-ranking-row";
-        row.innerHTML = `
-          <strong class="rank"></strong>
-          <span class="app-name"><b></b><small></small></span>
-          <span data-label="Download"></span>
-          <span data-label="Upload"></span>
-          <strong data-label="Total"></strong>
-        `;
-        row.querySelector(".rank").textContent = `#${item.rank}`;
-        row.querySelector(".app-name b").textContent = item.name || "Unknown container";
-        row.querySelector(".app-name small").textContent = `avg ${formatRate((Number(item.total_bytes) || 0) / Math.max(1, period))}`;
-        const values = row.querySelectorAll("[data-label]");
-        values[0].textContent = formatFileSize(item.rx_bytes);
-        values[1].textContent = formatFileSize(item.tx_bytes);
-        values[2].textContent = formatFileSize(item.total_bytes);
-        return row;
-      }));
+      bandwidthRankingList.replaceChildren(...bandwidthRankingRows(items, period));
     }
-    bandwidthRankingNote.textContent = `Docker traffic accumulated during the selected period · updated ${new Date(data.generated_at * 1000).toLocaleTimeString()} · host-network containers and native Linux processes are not attributed separately.`;
+    const estimatedItems = data.estimated_items || [];
+    if (hostBandwidthRankingList) {
+      if (!estimatedItems.length) {
+        hostBandwidthRankingList.innerHTML = '<p class="form-note">No host TCP traffic has been observed for this period yet.</p>';
+      } else {
+        hostBandwidthRankingList.replaceChildren(...bandwidthRankingRows(estimatedItems, period, true));
+      }
+    }
+    const updated = new Date(data.generated_at * 1000).toLocaleTimeString();
+    bandwidthRankingNote.textContent = `Directly measured Docker traffic accumulated during the selected period · updated ${updated}.`;
+    if (hostBandwidthRankingNote) {
+      hostBandwidthRankingNote.textContent = `Estimated from active TCP socket counters · updated ${updated} · UDP, very short connections, kernel traffic and measurement differences appear as Unattributed traffic.`;
+    }
   } catch (error) {
     bandwidthRankingList.innerHTML = `<p class="form-note">${escapeHtml(error.message)}</p>`;
+    if (hostBandwidthRankingList) hostBandwidthRankingList.innerHTML = `<p class="form-note">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -1443,8 +1481,10 @@ async function pasteFileEntry() {
     state.activeCopyJob = result.job_id;
     updateFileControls();
     fileCopyProgress.hidden = false;
+    fileCopyCancel.disabled = false;
     fileCopyLabel.textContent = `Preparing ${clipboard.name}…`;
     fileCopyPercent.textContent = "0%";
+    fileCopySpeed.textContent = "--";
     fileCopyBar.style.width = "0%";
     fileCopyDetail.textContent = "Calculating total size…";
     while (state.activeCopyJob === result.job_id) {
@@ -1452,18 +1492,37 @@ async function pasteFileEntry() {
       const status = await response.json();
       if (!response.ok || !status.ok) throw new Error(status.error || "Could not read copy progress");
       const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
-      fileCopyLabel.textContent = status.status === "preparing" ? `Preparing ${clipboard.name}…` : `Copying ${clipboard.name}`;
+      fileCopyLabel.textContent = status.status === "preparing"
+        ? `Preparing ${clipboard.name}…`
+        : status.status === "cancelling" ? "Cancelling copy…" : `Copying ${clipboard.name}`;
       fileCopyPercent.textContent = `${percent.toFixed(percent % 1 ? 1 : 0)}%`;
+      fileCopySpeed.textContent = status.speed_bps ? `${formatCopySize(status.speed_bps)}/s` : (status.status === "running" ? "Measuring…" : "--");
       fileCopyBar.style.width = `${percent}%`;
-      fileCopyDetail.textContent = status.total_bytes
-        ? `${formatFileSize(status.copied_bytes)} of ${formatFileSize(status.total_bytes)}${status.current_file ? ` · ${status.current_file}` : ""}`
-        : (status.message || "Calculating total size…");
+      if (status.total_bytes) {
+        const detail = [`${formatCopySize(status.copied_bytes)} of ${formatCopySize(status.total_bytes)}`];
+        if (status.eta_seconds != null) detail.push(`${formatCopyDuration(status.eta_seconds)} remaining`);
+        if (status.current_file) detail.push(status.current_file);
+        fileCopyDetail.textContent = detail.join(" · ");
+      } else {
+        fileCopyDetail.textContent = status.message || "Calculating total size…";
+      }
       if (status.status === "completed") {
         fileCopyLabel.textContent = "Copy complete";
+        fileCopyCancel.disabled = true;
         fileCopyDetail.textContent = status.message || `${clipboard.name} pasted`;
         await loadFiles(destination);
         toast(status.message || `${clipboard.name} pasted`, "success");
         window.setTimeout(() => { fileCopyProgress.hidden = true; }, 2500);
+        break;
+      }
+      if (status.status === "cancelled") {
+        fileCopyLabel.textContent = "Copy cancelled";
+        fileCopySpeed.textContent = "--";
+        fileCopyCancel.disabled = true;
+        fileCopyDetail.textContent = status.message || "The incomplete destination was removed.";
+        await loadFiles(destination);
+        toast("Copy cancelled", "info");
+        window.setTimeout(() => { fileCopyProgress.hidden = true; }, 3500);
         break;
       }
       if (status.status === "failed") throw new Error(status.error || "Copy failed");
@@ -1472,11 +1531,43 @@ async function pasteFileEntry() {
   } catch (error) {
     toast(error.message, "error");
     fileCopyLabel.textContent = "Copy failed";
+    fileCopyCancel.disabled = true;
     fileCopyDetail.textContent = error.message;
     fileCopyProgress.hidden = false;
   } finally {
     state.activeCopyJob = null;
     updateFileControls();
+  }
+}
+
+function formatCopySize(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)} GB`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)} KB`;
+  return `${Math.round(value)} B`;
+}
+
+function formatCopyDuration(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 60) return `${value}s`;
+  if (value < 3600) return `${Math.floor(value / 60)}m ${value % 60}s`;
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  return `${hours}h ${minutes}m`;
+}
+
+async function cancelActiveCopy() {
+  const jobId = state.activeCopyJob;
+  if (!jobId) return;
+  fileCopyCancel.disabled = true;
+  fileCopyLabel.textContent = "Cancelling copy…";
+  fileCopyDetail.textContent = "Stopping the transfer and removing incomplete data…";
+  try {
+    await postFileAction({ action: "copy_cancel", job_id: jobId });
+  } catch (error) {
+    fileCopyCancel.disabled = false;
+    toast(error.message, "error");
   }
 }
 
@@ -2467,6 +2558,7 @@ fileUp.addEventListener("click", () => loadFiles(state.fileParent));
 fileHome.addEventListener("click", () => loadFiles(""));
 fileNewFolder.addEventListener("click", createFolder);
 filePaste.addEventListener("click", pasteFileEntry);
+fileCopyCancel?.addEventListener("click", cancelActiveCopy);
 fileUpload.addEventListener("change", () => {
   const selected = [...(fileUpload.files || [])];
   fileUpload.value = "";
