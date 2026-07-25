@@ -1,6 +1,7 @@
-import importlib.util
+import importlib
 import json
 import os
+import signal
 import tempfile
 import io
 import tarfile
@@ -15,9 +16,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.config = Path(self.temp.name) / "config.json"
         self.config.write_text(json.dumps({"dashboard": {"title": "TestStart"}}), encoding="utf-8")
         os.environ["HOMESTART_CONFIG"] = str(self.config)
-        spec = importlib.util.spec_from_file_location("homestart_app", Path(__file__).parents[1] / "app.py")
-        self.app = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.app)
+        self.app = importlib.reload(importlib.import_module("homestart.server"))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -28,6 +27,24 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(config["dashboard"]["title"], "TestStart")
         self.assertIn("features", config)
         self.assertIn("updates", config)
+
+    def test_modular_entry_point_and_update_paths_are_compatible(self):
+        root = Path(__file__).parents[1]
+        entry_point = (root / "app.py").read_text(encoding="utf-8-sig")
+        self.assertIn("from homestart.server import main", entry_point)
+        for relative_path in (
+            "homestart/server.py",
+            "homestart/api/router.py",
+            "homestart/config.py",
+            "homestart/files/copy.py",
+            "homestart/system/network.py",
+            "homestart/updates/github.py",
+        ):
+            self.assertTrue((root / relative_path).is_file(), relative_path)
+        self.assertEqual(
+            self.app.update_member_path("homestart/homestart/api/router.py"),
+            Path("homestart/api/router.py"),
+        )
 
     def test_percent_is_clamped(self):
         self.assertEqual(self.app.clamp_percent(110), 100)
@@ -195,7 +212,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_at": __import__("time").monotonic(),
             "_speed_last_bytes": 0,
         }
-        with mock.patch.object(self.app, "native_cp_path", return_value=None):
+        with mock.patch.object(self.app.copy_manager(), "native_cp_path", return_value=None):
             self.app.copy_file_with_progress(source, target, job_id)
         status = self.app.copy_job_status(job_id)
         self.assertEqual(status["status"], "completed")
@@ -240,11 +257,11 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_bytes": 0,
         }
         process = FakeProcess()
-        with mock.patch.object(self.app, "native_cp_path", return_value="/usr/bin/cp"), \
-                mock.patch.object(self.app.subprocess, "Popen", return_value=process):
+        with mock.patch.object(self.app.copy_manager(), "native_cp_path", return_value="/usr/bin/cp"), \
+                mock.patch("homestart.files.copy.subprocess.Popen", return_value=process):
             with self.assertRaises(self.app.CopyCancelled):
                 self.app.run_native_copy(source, target, job_id, 100)
-        self.assertEqual(process.signal, self.app.signal.SIGTERM)
+        self.assertEqual(process.signal, signal.SIGTERM)
 
     def test_cancelled_copy_removes_incomplete_destination(self):
         root = Path(self.temp.name) / "cancel-copy"

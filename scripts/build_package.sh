@@ -16,9 +16,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$PACKAGE_DIR/static" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/docs" "$DIST_DIR"
+mkdir -p "$PACKAGE_DIR/static" "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/docs" "$PACKAGE_DIR/homestart" "$DIST_DIR"
 
 install -m 0755 "$ROOT_DIR/app.py" "$PACKAGE_DIR/app.py"
+cp -a "$ROOT_DIR/homestart/." "$PACKAGE_DIR/homestart/"
+find "$PACKAGE_DIR/homestart" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$PACKAGE_DIR/homestart" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 install -m 0644 "$ROOT_DIR/config.example.json" "$PACKAGE_DIR/config.example.json"
 install -m 0644 "$ROOT_DIR/README.md" "$PACKAGE_DIR/README.md"
 install -m 0644 "$ROOT_DIR/CHANGELOG.md" "$PACKAGE_DIR/CHANGELOG.md"
