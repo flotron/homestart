@@ -4,6 +4,21 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2500
+
+- Began a progressive, compatibility-preserving split of the former `app.py`
+  monolith into a proper `homestart` package.
+- Kept `app.py` as the existing executable entry point, so systemd services,
+  manual startup commands and existing installations do not need migration.
+- Separated HTTP API routing, configuration persistence, asynchronous/native
+  file copies, GitHub release access and pure network parsing into focused
+  modules.
+- Preserved the current standard-library HTTP server and public server
+  functions while creating stable boundaries for future domain extraction and
+  isolated tests.
+- Updated the installer, release packages and online updater to distribute the
+  new package tree without including Python caches or local runtime data.
+
 ## 20260725-2400
 
 - Moved recommended App Store definitions to the separate declarative
