@@ -11,6 +11,7 @@ const state = {
     try { return JSON.parse(sessionStorage.getItem("homestart-file-clipboard") || "null"); }
     catch { return null; }
   })(),
+  activeCopyJob: null,
   selectedFile: null,
   editingSambaShare: null,
   features: { file_operations: true },
@@ -166,6 +167,9 @@ const liveDownloadTop = document.querySelector("#live-download-top");
 const liveUploadTop = document.querySelector("#live-upload-top");
 const liveInterface = document.querySelector("#live-interface");
 const liveUpdated = document.querySelector("#live-updated");
+const bandwidthRankingPeriod = document.querySelector("#bandwidth-ranking-period");
+const bandwidthRankingList = document.querySelector("#bandwidth-ranking-list");
+const bandwidthRankingNote = document.querySelector("#bandwidth-ranking-note");
 let liveNetworkLoading = false;
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
@@ -181,6 +185,15 @@ const trashEmpty = document.querySelector("#trash-empty");
 const permanentClock = document.querySelector("#permanent-clock");
 const permanentDate = document.querySelector("#permanent-date");
 const permanentTimezone = document.querySelector("#permanent-timezone");
+const fileCopyProgress = document.querySelector("#file-copy-progress");
+const fileCopyLabel = document.querySelector("#file-copy-label");
+const fileCopyPercent = document.querySelector("#file-copy-percent");
+const fileCopyBar = document.querySelector("#file-copy-bar");
+const fileCopyDetail = document.querySelector("#file-copy-detail");
+const filePropertiesDialog = document.querySelector("#file-properties-dialog");
+const filePropertiesTitle = document.querySelector("#file-properties-title");
+const filePropertiesContent = document.querySelector("#file-properties-content");
+const filePropertiesClose = document.querySelector("#file-properties-close");
 
 function toast(message, kind = "info") {
   const node = document.createElement("div");
@@ -456,6 +469,43 @@ async function loadLiveNetwork() {
     liveUpdated.textContent = error.message;
   } finally {
     liveNetworkLoading = false;
+  }
+}
+
+async function loadBandwidthRanking() {
+  if (!bandwidthRankingList || document.hidden) return;
+  const period = Number(bandwidthRankingPeriod?.value || 3600);
+  try {
+    const response = await fetch(`/api/network/ranking?period=${period}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Bandwidth ranking unavailable");
+    const items = data.items || [];
+    if (!items.length) {
+      bandwidthRankingList.innerHTML = '<p class="form-note">No attributable Docker traffic has been collected for this period yet.</p>';
+    } else {
+      bandwidthRankingList.replaceChildren(...items.map((item) => {
+        const row = document.createElement("article");
+        row.className = "bandwidth-ranking-row";
+        row.innerHTML = `
+          <strong class="rank"></strong>
+          <span class="app-name"><b></b><small></small></span>
+          <span data-label="Download"></span>
+          <span data-label="Upload"></span>
+          <strong data-label="Total"></strong>
+        `;
+        row.querySelector(".rank").textContent = `#${item.rank}`;
+        row.querySelector(".app-name b").textContent = item.name || "Unknown container";
+        row.querySelector(".app-name small").textContent = `avg ${formatRate((Number(item.total_bytes) || 0) / Math.max(1, period))}`;
+        const values = row.querySelectorAll("[data-label]");
+        values[0].textContent = formatFileSize(item.rx_bytes);
+        values[1].textContent = formatFileSize(item.tx_bytes);
+        values[2].textContent = formatFileSize(item.total_bytes);
+        return row;
+      }));
+    }
+    bandwidthRankingNote.textContent = `Docker traffic accumulated during the selected period · updated ${new Date(data.generated_at * 1000).toLocaleTimeString()} · host-network containers and native Linux processes are not attributed separately.`;
+  } catch (error) {
+    bandwidthRankingList.innerHTML = `<p class="form-note">${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -1234,7 +1284,7 @@ function openFileContextMenu(entry, node, x = 0, y = 0) {
   const width = 230;
   const bounds = node.getBoundingClientRect();
   fileContextMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, x || bounds.right - width))}px`;
-  fileContextMenu.style.top = `${Math.max(8, Math.min(window.innerHeight - 310, y || bounds.bottom))}px`;
+  fileContextMenu.style.top = `${Math.max(8, Math.min(window.innerHeight - 360, y || bounds.bottom))}px`;
 }
 
 async function runFileContextAction(action) {
@@ -1247,8 +1297,40 @@ async function runFileContextAction(action) {
   } else if (action === "download") {
     window.location.href = `/api/file/download?path=${encodeURIComponent(entry.path)}`;
   } else if (action === "copy") await copyFileEntry(entry);
+  else if (action === "properties") await showFileProperties(entry);
   else if (action === "rename") await renameFileEntry(entry);
   else if (action === "delete") await deleteFileEntry(entry);
+}
+
+async function showFileProperties(entry) {
+  filePropertiesTitle.textContent = `${entry.name} properties`;
+  filePropertiesContent.innerHTML = '<p class="form-note">Calculating folder contents and size…</p>';
+  filePropertiesDialog.showModal();
+  try {
+    const response = await fetch(`/api/file/properties?path=${encodeURIComponent(entry.path)}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Could not read properties");
+    const rows = [
+      ["Type", data.type === "directory" ? "Folder" : fileTypeLabel(data)],
+      ["Location", data.path],
+      ["Size", `${data.size} (${Number(data.size_bytes).toLocaleString()} bytes)`],
+      ...(data.type === "directory" ? [["Contains", `${data.file_count} files, ${Math.max(0, Number(data.folder_count) - 1)} folders`]] : []),
+      ["Modified", formatServerTimestamp(data.modified, true)],
+      ["Permissions", data.permissions],
+      ["Owner", `UID ${data.owner_uid} · GID ${data.group_gid}`],
+    ];
+    filePropertiesContent.replaceChildren(...rows.map(([label, value]) => {
+      const row = document.createElement("div");
+      const title = document.createElement("span");
+      const detail = document.createElement("strong");
+      title.textContent = label;
+      detail.textContent = value;
+      row.append(title, detail);
+      return row;
+    }));
+  } catch (error) {
+    filePropertiesContent.innerHTML = `<p class="form-note">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function updateFileControls() {
@@ -1257,7 +1339,7 @@ function updateFileControls() {
   const canOperate = hasFolder && operationsEnabled;
   fileNewFolder.disabled = !canOperate;
   fileUpload.disabled = !canOperate;
-  filePaste.disabled = !canOperate || !state.fileClipboard;
+  filePaste.disabled = !canOperate || !state.fileClipboard || Boolean(state.activeCopyJob);
   filePaste.textContent = state.fileClipboard ? `Paste ${state.fileClipboard.name}` : "Paste";
   if (!operationsEnabled) {
     fileDropStatus.textContent = "File operations are disabled";
@@ -1356,15 +1438,44 @@ async function pasteFileEntry() {
   if (!state.filePath || !state.fileClipboard || !state.features.file_operations) return;
   const destination = state.filePath;
   const clipboard = { ...state.fileClipboard };
-  filePaste.disabled = true;
-  filePaste.textContent = `Pasting ${clipboard.name}…`;
   try {
-    const result = await postFileAction({ action: "copy", source: clipboard.path, destination });
-    await loadFiles(destination);
-    toast(result.message || `${clipboard.name} pasted`, "success");
+    const result = await postFileAction({ action: "copy_start", source: clipboard.path, destination });
+    state.activeCopyJob = result.job_id;
+    updateFileControls();
+    fileCopyProgress.hidden = false;
+    fileCopyLabel.textContent = `Preparing ${clipboard.name}…`;
+    fileCopyPercent.textContent = "0%";
+    fileCopyBar.style.width = "0%";
+    fileCopyDetail.textContent = "Calculating total size…";
+    while (state.activeCopyJob === result.job_id) {
+      const response = await fetch(`/api/files/copy/status?job_id=${encodeURIComponent(result.job_id)}`, { cache: "no-store" });
+      const status = await response.json();
+      if (!response.ok || !status.ok) throw new Error(status.error || "Could not read copy progress");
+      const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+      fileCopyLabel.textContent = status.status === "preparing" ? `Preparing ${clipboard.name}…` : `Copying ${clipboard.name}`;
+      fileCopyPercent.textContent = `${percent.toFixed(percent % 1 ? 1 : 0)}%`;
+      fileCopyBar.style.width = `${percent}%`;
+      fileCopyDetail.textContent = status.total_bytes
+        ? `${formatFileSize(status.copied_bytes)} of ${formatFileSize(status.total_bytes)}${status.current_file ? ` · ${status.current_file}` : ""}`
+        : (status.message || "Calculating total size…");
+      if (status.status === "completed") {
+        fileCopyLabel.textContent = "Copy complete";
+        fileCopyDetail.textContent = status.message || `${clipboard.name} pasted`;
+        await loadFiles(destination);
+        toast(status.message || `${clipboard.name} pasted`, "success");
+        window.setTimeout(() => { fileCopyProgress.hidden = true; }, 2500);
+        break;
+      }
+      if (status.status === "failed") throw new Error(status.error || "Copy failed");
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
   } catch (error) {
     toast(error.message, "error");
+    fileCopyLabel.textContent = "Copy failed";
+    fileCopyDetail.textContent = error.message;
+    fileCopyProgress.hidden = false;
   } finally {
+    state.activeCopyJob = null;
     updateFileControls();
   }
 }
@@ -2364,6 +2475,7 @@ fileUpload.addEventListener("change", () => {
 fileContextActions.forEach((button) => button.addEventListener("click", () => {
   runFileContextAction(button.dataset.fileContextAction).catch((error) => toast(error.message, "error"));
 }));
+filePropertiesClose?.addEventListener("click", () => filePropertiesDialog.close());
 document.addEventListener("pointerdown", (event) => {
   if (!fileContextMenu.hidden && !fileContextMenu.contains(event.target) && !event.target.closest(".file-more")) closeFileContextMenu();
 });
@@ -2399,6 +2511,7 @@ loadStatus().catch(console.error);
 loadOverview().catch(console.error);
 loadHistory().catch(console.error);
 loadLiveNetwork().catch(console.error);
+loadBandwidthRanking().catch(console.error);
 loadNetworkSettings().catch(console.error);
 loadGeneralSettings().catch(console.error);
 loadTrash().catch(console.error);
@@ -2409,8 +2522,10 @@ setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
 setInterval(() => loadLiveNetwork().catch(console.error), 2000);
 setInterval(() => loadHistory().catch(console.error), 2000);
+setInterval(() => loadBandwidthRanking().catch(console.error), 10000);
 setInterval(updatePermanentClock, 1000);
 historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
+bandwidthRankingPeriod?.addEventListener("change", () => loadBandwidthRanking().catch(console.error));
 if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));
 if (sambaShareForm) sambaShareForm.addEventListener("submit", createSambaShare);
 if (sambaShareCancel) sambaShareCancel.addEventListener("click", resetSambaShareForm);
