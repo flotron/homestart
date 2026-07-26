@@ -25,6 +25,8 @@ const state = {
   serverClockOffsetMs: 0,
   storeResults: [],
   selectedStoreApp: null,
+  selectedUninstallApp: null,
+  hostArchitecture: "unknown",
   favorites: new Set(JSON.parse(localStorage.getItem("homestart-favorites") || "[]")),
 };
 
@@ -58,6 +60,7 @@ const storeInstallEnv = document.querySelector("#store-install-env");
 const storeInstallVolumes = document.querySelector("#store-install-volumes");
 const storeInstallRestart = document.querySelector("#store-install-restart");
 const storeInstallNote = document.querySelector("#store-install-note");
+const storeRisk = document.querySelector("#store-risk");
 const storeInstallCancel = document.querySelector("#store-install-cancel");
 const storeInstallSubmit = document.querySelector("#store-install-submit");
 const storeInstallProgress = document.querySelector("#store-install-progress");
@@ -66,6 +69,15 @@ const storeInstallPercent = document.querySelector("#store-install-percent");
 const storeInstallBar = document.querySelector("#store-install-bar");
 const storeInstallMessage = document.querySelector("#store-install-message");
 const storeInstallLog = document.querySelector("#store-install-log");
+const appUninstallDialog = document.querySelector("#app-uninstall-dialog");
+const appUninstallForm = document.querySelector("#app-uninstall-form");
+const appUninstallTitle = document.querySelector("#app-uninstall-title");
+const appUninstallDescription = document.querySelector("#app-uninstall-description");
+const appUninstallOptions = document.querySelector("#app-uninstall-options");
+const appUninstallConfirmationLabel = document.querySelector("#app-uninstall-confirmation-label");
+const appUninstallConfirmation = document.querySelector("#app-uninstall-confirmation");
+const appUninstallWarning = document.querySelector("#app-uninstall-warning");
+const appUninstallCancel = document.querySelector("#app-uninstall-cancel");
 const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
 const cpuBar = document.querySelector("#cpu-bar");
@@ -134,6 +146,7 @@ const networkAddress = document.querySelector("#network-address");
 const networkGateway = document.querySelector("#network-gateway");
 const networkDns = document.querySelector("#network-dns");
 const networkManagedBy = document.querySelector("#network-managed-by");
+const networkApply = document.querySelector("#network-apply");
 const monitorInterface = document.querySelector("#monitor-interface");
 const monitorInterfaceDetail = document.querySelector("#monitor-interface-detail");
 const updateForm = document.querySelector("#update-form");
@@ -625,12 +638,32 @@ function matches(app) {
 }
 
 function buttonLabel(action) {
+  if (action === "start") return "start";
   if (action === "stop") return "stop";
   if (action === "restart") return "restart";
+  if (action === "update") return "update";
   return "uninstall";
 }
 
-async function runAppAction(app, action) {
+function openAppUninstallDialog(app) {
+  state.selectedUninstallApp = app;
+  const confirmation = `UNINSTALL ${app.name}`;
+  appUninstallTitle.textContent = `Remove ${app.name}`;
+  appUninstallDescription.textContent = app.compose_project
+    ? `This removes the complete Compose project and its ${app.compose_services?.length || 0} services.`
+    : "This removes the Docker container. Images and volumes are preserved.";
+  appUninstallOptions.hidden = !app.compose_project;
+  appUninstallOptions.querySelector('input[value="keep"]').checked = true;
+  appUninstallConfirmationLabel.textContent = confirmation;
+  appUninstallConfirmation.value = "";
+  appUninstallWarning.textContent = app.compose_project
+    ? "External bind-mounted folders are never deleted automatically."
+    : "Images and volumes are preserved.";
+  appUninstallDialog.showModal();
+  appUninstallConfirmation.focus();
+}
+
+async function runAppAction(app, action, options = {}) {
   if (action === "uninstall" && !state.features.app_uninstall) {
     window.alert("App uninstall is disabled in HomeStart settings.");
     return;
@@ -645,17 +678,11 @@ async function runAppAction(app, action) {
   }
 
   const label = buttonLabel(action);
-  if (action === "uninstall") {
-    const confirmation = `UNINSTALL ${app.name}`;
-    const typed = window.prompt(
-      `This will remove ${app.name} from HomeStart.\n\nFor Docker apps, only the container is removed. Images and volumes are preserved.\n\nType "${confirmation}" to continue.`
-    );
-    if (typed === null) return;
-    if (typed !== confirmation) {
-      window.alert(`Confirmation did not match.\n\nExpected exactly:\n${confirmation}`);
-      return;
-    }
-  } else {
+  if (action === "uninstall" && !options.confirmed) {
+    openAppUninstallDialog(app);
+    return;
+  }
+  if (action !== "uninstall") {
     const confirmed = window.confirm(`Confirm ${label} for ${app.name}. This action can interrupt the service.`);
     if (!confirmed) return;
   }
@@ -663,7 +690,11 @@ async function runAppAction(app, action) {
   const busyButton = document.querySelector(`[data-action-key="${app.action_key || ""}-${action}"]`);
   if (busyButton) {
     busyButton.disabled = true;
-    busyButton.textContent = action === "uninstall" ? "Removing..." : "Working...";
+    busyButton.textContent = action === "uninstall"
+      ? "Removing..."
+      : action === "update"
+        ? "Updating..."
+        : "Working...";
   }
 
   let result = {};
@@ -674,8 +705,10 @@ async function runAppAction(app, action) {
       body: JSON.stringify({
         docker_name: app.docker_name,
         service_name: app.service_name,
+        compose_project: app.compose_project,
         app_name: app.name,
         action,
+        delete_data: Boolean(options.deleteData),
       }),
     });
     result = await response.json();
@@ -716,9 +749,10 @@ function render() {
     const open = node.querySelector(".open");
     const stop = node.querySelector(".stop");
     const restart = node.querySelector(".restart");
+    const update = node.querySelector(".update");
     const logs = node.querySelector(".logs");
     const uninstall = node.querySelector(".uninstall");
-    app.action_key = app.icon_key || normalize(`${app.name}-${app.docker_name || app.service_name || ""}`);
+    app.action_key = app.icon_key || normalize(`${app.name}-${app.compose_project || app.docker_name || app.service_name || ""}`);
     const favoriteKey = app.icon_key || app.action_key;
     favorite.textContent = state.favorites.has(favoriteKey) ? "★" : "☆";
     favorite.classList.toggle("active", state.favorites.has(favoriteKey));
@@ -747,14 +781,22 @@ function render() {
     }
     iconUploadInput.addEventListener("change", () => uploadAppIcon(app, iconUploadInput));
     kind.textContent = app.kind || app.app_type_label || "Service";
-    badges.replaceChildren(...(app.tags || [app.app_type_label]).filter(Boolean).map((tag) => {
+    const visibleTags = [...(app.tags || [app.app_type_label]).filter(Boolean)];
+    if (app.risk?.level && app.risk.level !== "none") visibleTags.push(`Risk: ${app.risk.level}`);
+    badges.replaceChildren(...visibleTags.map((tag) => {
       const badge = document.createElement("span");
       badge.className = `badge ${app.app_type || ""}`;
       badge.textContent = tag;
+      if (String(tag).startsWith("Risk:")) badge.classList.add("risk");
       return badge;
     }));
     description.textContent = app.description || app.image || "Installed service";
     meta.textContent = app.status || (app.ports || []).map((port) => `Port ${port}`).join(" · ");
+    if (app.compose_services?.length) {
+      meta.title = app.compose_services
+        .map((service) => `${service.name}: ${service.status || (service.running ? "running" : "stopped")}`)
+        .join("\n");
+    }
 
     if (app.url) {
       open.href = app.url;
@@ -771,7 +813,16 @@ function render() {
       card.classList.add("disabled");
     }
 
-    if (
+    if (app.compose_project && state.features.docker_actions) {
+      const startStopAction = app.docker_running ? "stop" : "start";
+      stop.textContent = app.docker_running ? "Stop" : "Start";
+      stop.dataset.actionKey = `${app.action_key}-${startStopAction}`;
+      restart.dataset.actionKey = `${app.action_key}-restart`;
+      update.dataset.actionKey = `${app.action_key}-update`;
+      stop.addEventListener("click", () => runAppAction(app, startStopAction));
+      restart.addEventListener("click", () => runAppAction(app, "restart"));
+      update.addEventListener("click", () => runAppAction(app, "update"));
+    } else if (
       (app.docker_name && state.features.docker_actions)
       || (app.service_actionable && app.service_name && state.features.native_service_actions)
     ) {
@@ -779,11 +830,15 @@ function render() {
       restart.dataset.actionKey = `${app.action_key}-restart`;
       stop.addEventListener("click", () => runAppAction(app, "stop"));
       restart.addEventListener("click", () => runAppAction(app, "restart"));
+      update.disabled = true;
+      update.title = "Updates are available for managed Compose applications";
     } else {
       stop.disabled = true;
       restart.disabled = true;
+      update.disabled = true;
       stop.title = "This app has no linked Docker container or native service";
       restart.title = "This app has no linked Docker container or native service";
+      update.title = "This app is not a managed Compose application";
     }
     if (app.docker_name) logs.addEventListener("click", () => showDockerLogs(app));
     else { logs.disabled = true; logs.title = "Logs are available for Docker apps"; }
@@ -871,14 +926,23 @@ function renderStoreResult(item) {
     ? `${item.namespace}/${item.repo || ""}`
     : item.name;
   node.querySelector("p").textContent = item.description || "Docker Hub image";
+  const architecture = item.host_architecture || state.hostArchitecture;
+  const architectureLabel = item.architecture_status === "compatible"
+    ? `${architecture} compatible`
+    : item.architecture_status === "incompatible"
+      ? `Not available for ${architecture}`
+      : architecture && architecture !== "unknown"
+        ? `${architecture} not declared`
+        : "";
   node.querySelector(".store-meta").textContent = item.template_id
-    ? [item.category, "Managed Compose"].filter(Boolean).join(" · ")
+    ? [item.category, "Managed Compose", architectureLabel].filter(Boolean).join(" · ")
     : [
         item.official ? "Official" : "",
         !item.official && item.verification_label ? item.verification_label : "",
         item.automated ? "Automated" : "",
         `${compactNumber(item.stars)} stars`,
         `${compactNumber(item.pulls)} pulls`,
+        architectureLabel,
       ].filter(Boolean).join(" · ");
   const link = node.querySelector(".store-link");
   link.href = item.page_url || `https://hub.docker.com/r/${encodeURIComponent(item.image || item.name)}`;
@@ -890,6 +954,11 @@ function renderStoreResult(item) {
     install.disabled = true;
     install.title = `Installed as ${(item.installed_containers || []).join(", ")}`;
     node.classList.add("installed");
+  } else if (item.architecture_compatible === false) {
+    install.textContent = "Incompatible";
+    install.disabled = true;
+    install.title = `This template does not declare support for ${architecture}`;
+    node.classList.add("incompatible");
   } else {
     install.addEventListener("click", () => openStoreInstall(item));
   }
@@ -920,6 +989,7 @@ async function searchStore(event) {
     return;
   }
   state.storeResults = result.results || [];
+  state.hostArchitecture = result.host_architecture || state.hostArchitecture;
   storeStatus.textContent = state.storeResults.length
     ? `${state.storeResults.length} Docker Hub results`
     : "No Docker Hub results found.";
@@ -984,6 +1054,21 @@ function openStoreInstall(item) {
   } else {
     storeInstallNote.textContent = "Only install images you trust. HomeStart will pull the image and run it as a Docker container.";
   }
+  const risk = item.risk || {};
+  const riskWarnings = risk.warnings || [];
+  storeRisk.hidden = riskWarnings.length === 0;
+  storeRisk.replaceChildren();
+  if (riskWarnings.length) {
+    const heading = document.createElement("strong");
+    heading.textContent = `${String(risk.level || "unknown").toUpperCase()} template access`;
+    const list = document.createElement("ul");
+    riskWarnings.forEach((warning) => {
+      const entry = document.createElement("li");
+      entry.textContent = `${warning.service}: ${warning.message}`;
+      list.append(entry);
+    });
+    storeRisk.append(heading, list);
+  }
   storeInstallProgress.hidden = true;
   storeInstallLog.textContent = "";
   storeInstallDialog.showModal();
@@ -1023,6 +1108,7 @@ async function loadStoreTemplates() {
   const data = await response.json();
   state.storeResults = (data.templates || []).map((item) => ({ ...item, repo: item.name, namespace: "HomeStart template" }));
   const catalog = data.catalog || {};
+  state.hostArchitecture = catalog.architecture || state.hostArchitecture;
   const source = catalog.source === "remote"
     ? "official catalog"
     : catalog.source === "cache"
@@ -2049,7 +2135,20 @@ function selectNetworkInterface(item) {
   networkGateway.value = item.gateway || "";
   networkDns.value = (item.dns || []).join(", ");
   const hardware = item.label ? `${item.label}${interfaceSpeedLabel(item) ? ` · ${interfaceSpeedLabel(item)}` : ""} · ` : "";
-  networkManagedBy.textContent = `${hardware}Managed by ${item.managed_by || "unknown"}${item.netplan_file ? ` · ${item.netplan_file}` : ""}`;
+  const managerLabels = {
+    netplan: "Netplan",
+    networkmanager: "NetworkManager",
+    unknown: "unknown",
+  };
+  const source = item.configuration_source ? ` · ${item.configuration_source}` : "";
+  networkManagedBy.textContent = `${hardware}Managed by ${managerLabels[item.managed_by] || item.managed_by || "unknown"}${source}`;
+  [...networkForm.querySelectorAll("select, input:not([readonly])")].forEach((control) => {
+    control.disabled = item.editable === false;
+  });
+  networkApply.disabled = item.editable === false;
+  networkApply.title = item.editable === false
+    ? "This interface is available for monitoring, but no supported configuration backend manages it."
+    : "";
   renderNetworkInterfaces();
 }
 
@@ -2610,6 +2709,23 @@ storeInstallForm.addEventListener("submit", (event) => installStoreApp(event).ca
   window.alert(error.message);
 }));
 storeInstallCancel.addEventListener("click", () => storeInstallDialog.close());
+appUninstallCancel.addEventListener("click", () => appUninstallDialog.close());
+appUninstallForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const app = state.selectedUninstallApp;
+  if (!app) return;
+  const expected = `UNINSTALL ${app.name}`;
+  if (appUninstallConfirmation.value !== expected) {
+    window.alert(`Confirmation did not match.\n\nExpected exactly:\n${expected}`);
+    return;
+  }
+  const deleteData = app.compose_project
+    && appUninstallForm.querySelector('input[name="uninstall-data"]:checked')?.value === "delete";
+  appUninstallDialog.close();
+  runAppAction(app, "uninstall", { confirmed: true, deleteData }).catch((error) => {
+    window.alert(error.message);
+  });
+});
 refreshStatus.addEventListener("click", loadStatus);
 resourcesPanel.addEventListener("toggle", () => loadResources().catch(console.error));
 processSortButtons.forEach((button) => {

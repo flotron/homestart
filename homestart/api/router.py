@@ -166,7 +166,7 @@ class ApiRouter:
                 handler.send_json(b.speedtest_run())
             elif route == "/api/settings/network":
                 payload = self.json_body(handler)
-                handler.send_json(b.update_netplan_interface(
+                handler.send_json(b.update_network_interface(
                     payload.get("interface", ""),
                     payload.get("mode", ""),
                     payload.get("address", ""),

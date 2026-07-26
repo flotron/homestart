@@ -405,6 +405,10 @@ button:disabled {
 }
 
 .store-card.installed { opacity: 0.72; }
+.store-card.incompatible {
+  border-color: color-mix(in srgb, #ff647c 42%, var(--border));
+  opacity: 0.72;
+}
 
 .store-card-head {
   display: grid;
@@ -549,6 +553,56 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
+}
+
+.compose-risk {
+  padding: 12px;
+  border: 1px solid rgb(251 146 60 / 0.38);
+  border-radius: 8px;
+  background: rgb(251 146 60 / 0.08);
+  color: #fed7aa;
+  font-size: 12px;
+}
+
+.compose-risk ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.uninstall-options {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.uninstall-options label {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  padding: 10px;
+  border-radius: 7px;
+  background: rgb(255 255 255 / 0.035);
+}
+
+.uninstall-options input {
+  margin-top: 3px;
+}
+
+.uninstall-options span,
+.uninstall-options small {
+  display: grid;
+  gap: 3px;
+}
+
+.uninstall-options small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.dialog-actions .danger {
+  background: #be123c;
+  color: white;
 }
 
 .split-fields {
@@ -799,6 +853,12 @@ button:disabled {
   color: #fde68a;
 }
 
+.badge.risk {
+  border-color: rgb(251 146 60 / 0.4);
+  background: rgb(251 146 60 / 0.1);
+  color: #fdba74;
+}
+
 .kind,
 .description,
 .meta {
@@ -845,6 +905,10 @@ button:disabled {
 
 .actions .restart {
   color: #fde68a;
+}
+
+.actions .update {
+  color: #7dd3fc;
 }
 
 .actions .uninstall {

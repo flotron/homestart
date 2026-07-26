@@ -3,7 +3,6 @@ import json
 import base64
 import binascii
 import hashlib
-import ipaddress
 import mimetypes
 import os
 import pwd
@@ -25,7 +24,7 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
@@ -38,6 +37,7 @@ from .config import (
     load_json_file,
     save_config as save_config_data,
 )
+from .docker.projects import ComposeProjectManager, compose_risk_report
 from .files.copy import CopyCancelled, CopyManager
 from .system.network import (
     choose_monitor_interface as select_monitor_interface,
@@ -46,7 +46,22 @@ from .system.network import (
     parse_ss_tcp_counters as parse_socket_tcp_counters,
     parse_udev_properties as parse_network_udev_properties,
 )
+from .system.network_config import (
+    NetplanBackend,
+    NetworkManagerBackend,
+    SUPPORTED_ARCHITECTURES,
+    host_architecture as detect_host_architecture,
+    normalize_architecture,
+    parse_nmcli_rows,
+    validate_ipv4_settings as validate_network_ipv4_settings,
+)
 from .updates.github import GitHubReleaseClient, update_asset_version
+from .updates.package import (
+    TransactionalPackageUpdater,
+    member_parts as package_member_parts,
+    member_path as package_member_path,
+    validate_manifest as validate_package_manifest,
+)
 
 
 MODULE_PATH = Path(__file__).resolve()
@@ -101,6 +116,7 @@ COPY_MANAGER = None
 GITHUB_RELEASE_CLIENT = None
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
+DOCKER_ARCHITECTURE_CACHE = {}
 STORE_CATALOG_LOCK = threading.Lock()
 ICON_CACHE = {}
 APP_NAME_ALIASES = {
@@ -153,24 +169,6 @@ ICON_CANDIDATES = [
     "/apple-touch-icon-precomposed.png",
 ]
 VIRTUAL_INTERFACE_PREFIXES = ("br-", "docker", "veth")
-UPDATE_EXCLUDED = {"config.json", "data", ".git", "__pycache__", "dist", "backups", ".env", "homestart.service"}
-UPDATE_ALLOWED_PREFIXES = {"static", "scripts", "docs", "homestart"}
-UPDATE_ALLOWED_FILES = {
-    ".gitignore",
-    "README.md",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "VERSION",
-    "app.py",
-    "config.example.json",
-    "homestart.service.example",
-    "install.sh",
-    "package.json",
-}
-UPDATE_PRIVATE_SUFFIXES = (".db", ".sqlite", ".log")
-UPDATE_PRIVATE_FRAGMENTS = (".sqlite-",)
-
-
 def load_config_file():
     return load_config_data(CONFIG_PATH)
 
@@ -472,6 +470,11 @@ def apply_uninstall_metadata(app):
     if not enabled:
         return app
 
+    if app.get("compose_managed") and app.get("compose_project"):
+        app["uninstallable"] = True
+        app["uninstall_reason"] = "Removes the complete Docker Compose application."
+        return app
+
     if app.get("docker_name"):
         app["uninstallable"] = True
         app["uninstall_reason"] = "Removes the Docker container. Images and volumes are preserved."
@@ -538,8 +541,8 @@ def parse_container_port(value):
     return port if port.isdigit() else "", protocol or "tcp"
 
 
-def docker_port_mappings(container_name):
-    data = docker_inspect(container_name)
+def docker_port_mappings(container_name, data=None):
+    data = data or docker_inspect(container_name)
     if not data:
         return []
 
@@ -678,7 +681,9 @@ def docker_apps(host, all_containers=True):
         except json.JSONDecodeError:
             continue
 
-        mappings = docker_port_mappings(item.get("Names", ""))
+        details = docker_inspect(item.get("Names", "")) or {}
+        labels = details.get("Config", {}).get("Labels") or {}
+        mappings = docker_port_mappings(item.get("Names", ""), details)
         selected_port = select_docker_web_mapping(mappings)
         ports = docker_ports_for_display(mappings, selected_port)
         url = docker_url_from_mapping(host, selected_port)
@@ -700,6 +705,10 @@ def docker_apps(host, all_containers=True):
                     "available": True,
                     "docker_name": item.get("Names", ""),
                     "docker_running": str(item.get("State", "")).lower() == "running",
+                    "compose_project": labels.get("com.docker.compose.project", ""),
+                    "compose_service": labels.get("com.docker.compose.service", ""),
+                    "compose_managed": labels.get("com.homestart.managed") == "true",
+                    "template_id": labels.get("com.homestart.template", ""),
                 }
             )
         )
@@ -709,6 +718,85 @@ def docker_apps(host, all_containers=True):
 
 def docker_map(host):
     return {normalized_name(app["name"]): app for app in docker_apps(host)}
+
+
+def compose_project_manager():
+    return ComposeProjectManager(COMPOSE_APP_DIR, COMPOSE_APP_DATA_DIR, run_docker_command)
+
+
+def managed_compose_apps(host, containers):
+    manager = compose_project_manager()
+    records = manager.projects()
+    grouped = {}
+    regular = []
+    for container in containers:
+        project = str(container.get("compose_project") or "")
+        if project and (container.get("compose_managed") or project in records):
+            grouped.setdefault(project, []).append(container)
+        else:
+            regular.append(container)
+
+    apps = []
+    for project in sorted(set(records) | set(grouped)):
+        services = grouped.get(project, [])
+        record = records.get(project, {
+            "project": project,
+            "name": project,
+            "template_id": services[0].get("template_id", "") if services else "",
+            "state": "installed",
+            "risk": {"level": "none", "warning_count": 0, "warnings": []},
+        })
+        running = [service for service in services if service.get("docker_running")]
+        primary = next((service for service in services if service.get("url")), services[0] if services else {})
+        ports = []
+        for service in services:
+            for port in service.get("ports") or []:
+                if port not in ports:
+                    ports.append(port)
+        if services:
+            status = f"{len(running)}/{len(services)} services running"
+        elif record.get("state") == "data-preserved":
+            status = "Removed · data preserved"
+        else:
+            status = "Stopped"
+        app = {
+            "name": record.get("name") or project,
+            "kind": "Docker Compose",
+            "status": status,
+            "description": (
+                f"Managed Compose project · {len(services)} services"
+                if services
+                else "Managed Compose project ready to be started"
+            ),
+            "image": primary.get("image", ""),
+            "ports": ports,
+            "url": primary.get("url", ""),
+            "source": "docker-compose",
+            "app_type": "docker",
+            "app_type_label": "Docker Compose",
+            "tags": ["Docker Compose", f"{len(services)} services"],
+            "available": True,
+            "docker_name": primary.get("docker_name", ""),
+            "docker_running": bool(running),
+            "compose_project": project,
+            "compose_managed": True,
+            "compose_services": [
+                {
+                    "name": service.get("compose_service") or service.get("name"),
+                    "container": service.get("docker_name"),
+                    "status": service.get("status"),
+                    "running": service.get("docker_running"),
+                    "image": service.get("image"),
+                }
+                for service in services
+            ],
+            "template_id": record.get("template_id", ""),
+            "risk": record.get("risk") or {"level": "none", "warning_count": 0, "warnings": []},
+            "uninstallable": app_uninstall_enabled(),
+            "uninstall_reason": "Removes the complete Docker Compose application.",
+        }
+        apps.append(with_icon(app))
+    return regular + apps
 
 
 def conf_text(path):
@@ -3899,7 +3987,11 @@ def installed_docker_images():
 
 def curated_store_apps():
     installed = installed_docker_images()
-    return [dict(item) for item in CURATED_APPS if image_repository(item.get("image")) not in installed]
+    return [
+        {**dict(item), **catalog_architecture_payload(item)}
+        for item in CURATED_APPS
+        if image_repository(item.get("image")) not in installed
+    ]
 
 
 STORE_PLACEHOLDER = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
@@ -3994,6 +4086,18 @@ def validate_store_catalog(catalog):
                 raise ValueError(f"{app_id}: invalid Compose service")
             if not isinstance(service.get("image"), str) or not service["image"].strip() or "build" in service:
                 raise ValueError(f"{app_id}: every Compose service needs a fixed image")
+        architectures = source.get("architectures", [])
+        if architectures is None:
+            architectures = []
+        if not isinstance(architectures, list) or len(architectures) > len(SUPPORTED_ARCHITECTURES):
+            raise ValueError(f"{app_id}: invalid architectures")
+        clean_architectures = []
+        for value in architectures:
+            architecture = normalize_architecture(value)
+            if architecture not in SUPPORTED_ARCHITECTURES:
+                raise ValueError(f"{app_id}: unsupported architecture {value}")
+            if architecture not in clean_architectures:
+                clean_architectures.append(architecture)
         clean_app = {
             "id": app_id,
             "name": str(source.get("name") or app_id)[:120],
@@ -4005,6 +4109,7 @@ def validate_store_catalog(catalog):
             "homepage": str(source.get("homepage") or "")[:1000],
             "page_url": str(source.get("page_url") or "")[:1000],
             "link_label": str(source.get("link_label") or "Project page")[:40],
+            "architectures": clean_architectures,
             "inputs": clean_inputs,
             "compose": compose,
         }
@@ -4107,11 +4212,52 @@ def catalog_defaults(app):
     return result
 
 
+def host_architecture_payload():
+    return detect_host_architecture()
+
+
+def catalog_architecture_payload(app):
+    host = host_architecture_payload()["architecture"]
+    declared = list(app.get("architectures") or [])
+    if not declared or host == "unknown":
+        status = "unknown"
+        compatible = None
+    else:
+        compatible = host in declared
+        status = "compatible" if compatible else "incompatible"
+    return {
+        "host_architecture": host,
+        "architectures": declared,
+        "architecture_status": status,
+        "architecture_compatible": compatible,
+    }
+
+
+def require_catalog_architecture(app):
+    architecture = catalog_architecture_payload(app)
+    if architecture["architecture_compatible"] is False:
+        supported = ", ".join(architecture["architectures"])
+        raise ValueError(
+            f"{app['name']} does not declare support for this host architecture "
+            f"({architecture['host_architecture']}); declared: {supported}"
+        )
+    return architecture
+
+
 def store_templates_payload(refresh=False):
     catalog, metadata = load_store_catalog(refresh)
     if catalog is None:
-        return {"ok": True, "templates": curated_store_apps(), "catalog": metadata}
+        return {
+            "ok": True,
+            "templates": curated_store_apps(),
+            "catalog": {**metadata, **host_architecture_payload()},
+        }
     installed = installed_docker_images()
+    installed_templates = {
+        record.get("template_id")
+        for record in compose_project_manager().projects().values()
+        if record.get("template_id")
+    }
     templates = []
     for app in catalog["apps"]:
         images = [
@@ -4119,7 +4265,7 @@ def store_templates_payload(refresh=False):
             for service in app["compose"]["services"].values()
             if service.get("image")
         ]
-        if any(image in installed for image in images):
+        if app["id"] in installed_templates or any(image in installed for image in images):
             continue
         first_service = next(iter(app["compose"]["services"].values()))
         templates.append({
@@ -4135,6 +4281,8 @@ def store_templates_payload(refresh=False):
             "template_id": app["id"],
             "install_method": "compose",
             "inputs": catalog_defaults(app),
+            "risk": compose_risk_report(app["compose"]),
+            **catalog_architecture_payload(app),
         })
     return {
         "ok": True,
@@ -4144,6 +4292,7 @@ def store_templates_payload(refresh=False):
             "name": catalog["name"],
             "version": catalog["catalog_version"],
             "schema_version": catalog["schema_version"],
+            **host_architecture_payload(),
         },
     }
 
@@ -4367,11 +4516,19 @@ def dockerhub_search(query, limit=12):
                 "relevance": dockerhub_result_score(name, description, query_tokens, compact_query, item),
                 "installed": image_repository(name) in installed,
                 "installed_containers": installed.get(image_repository(name), []),
+                "host_architecture": host_architecture_payload()["architecture"],
+                "architectures": [],
+                "architecture_status": "unknown",
+                "architecture_compatible": None,
             }
         )
     add_dockerhub_verification(results)
     results.sort(key=lambda item: (item.get("trusted_rank", 0), item["relevance"], item["pulls"], item["stars"]), reverse=True)
-    return {"ok": True, "results": results}
+    return {
+        "ok": True,
+        "results": results,
+        **host_architecture_payload(),
+    }
 
 
 def dockerhub_icon_slug(image):
@@ -4447,6 +4604,72 @@ def normalize_docker_image(image):
     if ".." in image or image.startswith(("-", "/")):
         raise ValueError("Docker image is invalid")
     return image
+
+
+def docker_manifest_architectures(image):
+    image = normalize_docker_image(image)
+    cached = DOCKER_ARCHITECTURE_CACHE.get(image)
+    if cached and time.time() - cached[0] < 21600:
+        return set(cached[1])
+    try:
+        payload = json.loads(
+            run_docker_command(["manifest", "inspect", "--verbose", image], timeout=45)
+        )
+    except (ValueError, json.JSONDecodeError):
+        return set()
+
+    architectures = set()
+
+    def collect(value):
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        platform_value = value.get("platform") or value.get("Platform")
+        if isinstance(platform_value, dict):
+            operating_system = str(
+                platform_value.get("os") or platform_value.get("OS") or "linux"
+            ).lower()
+            architecture = normalize_architecture(
+                platform_value.get("architecture") or platform_value.get("Architecture")
+            )
+            variant = str(platform_value.get("variant") or platform_value.get("Variant") or "").lower()
+            if architecture == "unknown" and str(platform_value.get("architecture") or "").startswith("arm"):
+                architecture = "arm/v7" if variant == "v7" else architecture
+            if operating_system == "linux" and architecture in SUPPORTED_ARCHITECTURES:
+                architectures.add(architecture)
+        top_architecture = normalize_architecture(value.get("Architecture"))
+        if str(value.get("Os") or value.get("OS") or "linux").lower() == "linux" \
+                and top_architecture in SUPPORTED_ARCHITECTURES:
+            architectures.add(top_architecture)
+        for key in ("manifests", "Descriptor"):
+            if key in value:
+                collect(value[key])
+
+    collect(payload)
+    DOCKER_ARCHITECTURE_CACHE[image] = (time.time(), sorted(architectures))
+    return architectures
+
+
+def verify_docker_image_architecture(image):
+    host = host_architecture_payload()["architecture"]
+    architectures = docker_manifest_architectures(image)
+    if host != "unknown" and architectures and host not in architectures:
+        supported = ", ".join(sorted(architectures))
+        raise ValueError(
+            f"{image} does not publish a Linux image for {host}; available: {supported}"
+        )
+    return {
+        "host_architecture": host,
+        "architectures": sorted(architectures),
+        "architecture_status": (
+            "compatible" if host in architectures
+            else "unknown" if not architectures or host == "unknown"
+            else "incompatible"
+        ),
+    }
 
 
 def normalize_container_port(value):
@@ -4629,7 +4852,22 @@ def compose_command_with_progress(command, job_id, stage, start, end):
 
 def compose_store_install(payload, job_id=None):
     app = store_catalog_app(payload.get("template_id"))
+    require_catalog_architecture(app)
     compose, values = render_catalog_compose(app, payload.get("values"))
+    for image in {
+        str(service.get("image") or "")
+        for service in compose["services"].values()
+        if service.get("image")
+    }:
+        verify_docker_image_architecture(image)
+    managed = [
+        record for record in compose_project_manager().projects().values()
+        if record.get("template_id") == app["id"]
+    ]
+    if managed:
+        raise ValueError(
+            f"{app['name']} is already managed as {managed[0].get('name') or managed[0]['project']}"
+        )
     existing = run_docker_command(
         ["ps", "-a", "--filter", f"label=com.homestart.template={app['id']}", "--format", "{{.Names}}"],
         timeout=15,
@@ -4672,6 +4910,13 @@ def compose_store_install(payload, job_id=None):
         run_docker_command(["compose", *base, "up", "-d"], timeout=180)
     running = run_docker_command(["compose", *base, "ps", "--status", "running", "-q"], timeout=30)
     state = "running" if running else "created"
+    compose_project_manager().record_install(
+        compose_path,
+        project,
+        app["id"],
+        app["name"],
+        compose,
+    )
     return {
         "ok": True,
         "container": ", ".join(container_names) or app["name"],
@@ -4692,6 +4937,7 @@ def docker_store_install(payload, job_id=None):
         return compose_store_install(payload, job_id)
 
     image = normalize_docker_image(payload.get("image", ""))
+    verify_docker_image_architecture(image)
     installed = installed_docker_images()
     if image_repository(image) in installed:
         names = ", ".join(installed[image_repository(image)])
@@ -4783,11 +5029,20 @@ def app_action(payload):
     action = payload.get("action", "")
     docker_name = payload.get("docker_name", "")
     service_name = payload.get("service_name", "")
+    compose_project = str(payload.get("compose_project") or "").strip()
 
-    if action in {"stop", "restart"}:
+    if action in {"start", "stop", "restart", "update"}:
+        if compose_project:
+            if not load_config_file().get("features", {}).get("docker_actions", True):
+                raise ValueError("Docker actions are disabled")
+            return compose_project_manager().action(compose_project, action)
         if docker_name:
+            if action not in {"stop", "restart"}:
+                raise ValueError("This action is available only for managed Compose applications")
             return docker_action(docker_name, action)
         if service_name:
+            if action not in {"stop", "restart"}:
+                raise ValueError("This action is available only for managed Compose applications")
             return service_action(service_name, action)
         raise ValueError("No Docker container or native service is linked to this app")
 
@@ -4795,6 +5050,13 @@ def app_action(payload):
         raise ValueError("Invalid action")
     if not app_uninstall_enabled():
         raise ValueError("App uninstall is disabled")
+
+    if compose_project:
+        return compose_project_manager().action(
+            compose_project,
+            "uninstall",
+            delete_data=bool(payload.get("delete_data")),
+        )
 
     docker_name = str(docker_name or "").strip()
     if docker_name:
@@ -4947,7 +5209,9 @@ def speedtest_history(limit=20):
 
 def app_payload():
     host = local_ip()
-    containers = docker_map(host)
+    raw_containers = docker_apps(host)
+    containers = {normalized_name(app["name"]): app for app in raw_containers}
+    discovered_docker = managed_compose_apps(host, raw_containers)
     configured = load_config()
     discovered_native = native_web_apps(host)
     discovered_services = native_service_apps()
@@ -4968,7 +5232,7 @@ def app_payload():
     seen = {normalized_name(app.get("name", "")) for app in configured}
     seen_urls = {str(app.get("url") or "") for app in configured if app.get("url")}
     discovered = [
-        app for app in containers.values() if normalized_name(app.get("name", "")) not in seen
+        app for app in discovered_docker if normalized_name(app.get("name", "")) not in seen
     ]
     for app in discovered:
         apply_uninstall_metadata(app)
@@ -5004,29 +5268,83 @@ def default_routes():
 
 
 def netplan_files():
-    root = Path("/etc/netplan")
-    if not root.exists():
-        return []
-    return sorted([*root.glob("*.yaml"), *root.glob("*.yml")])
+    return NetplanBackend(Path("/etc/netplan"), run_netplan_command).files()
 
 
 def load_netplan_file(path):
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            return yaml.safe_load(file) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+    return NetplanBackend.load(path)
 
 
 def netplan_interface_config(interface):
-    for path in netplan_files():
-        data = load_netplan_file(path)
-        network = data.get("network", {})
-        for section in ("ethernets", "wifis"):
-            interfaces = network.get(section, {})
-            if interface in interfaces:
-                return path, interfaces[interface]
-    return None, {}
+    return NetplanBackend(Path("/etc/netplan"), run_netplan_command).interface_config(interface)
+
+
+def run_netplan_command(command, timeout=20):
+    return subprocess.check_output(
+        command,
+        text=True,
+        timeout=timeout,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def nmcli_output(arguments, timeout=12):
+    executable = shutil.which("nmcli")
+    if not executable:
+        raise FileNotFoundError("NetworkManager command nmcli is not available")
+    environment = dict(os.environ)
+    environment["LC_ALL"] = "C"
+    return subprocess.check_output(
+        [executable, *arguments],
+        text=True,
+        timeout=timeout,
+        stderr=subprocess.STDOUT,
+        env=environment,
+    )
+
+
+def network_manager_devices():
+    return NetworkManagerBackend(nmcli_output, BACKUP_DIR).devices()
+
+
+def network_manager_interface_config(interface, device=None):
+    return NetworkManagerBackend(nmcli_output, BACKUP_DIR).interface_config(interface, device)
+
+
+def interface_configuration(interface, network_manager_device=None):
+    netplan_path, netplan_config = netplan_interface_config(interface)
+    if netplan_path:
+        return {
+            "managed_by": "netplan",
+            "source": str(netplan_path),
+            "connection": "",
+            "mode": (
+                "dhcp" if netplan_config.get("dhcp4")
+                else "static" if netplan_config
+                else "unknown"
+            ),
+            "dns": netplan_config.get("nameservers", {}).get("addresses", []),
+            "editable": True,
+        }
+    device = network_manager_device or {}
+    if device and str(device.get("state") or "").lower() != "unmanaged":
+        connection, config = network_manager_interface_config(interface, device)
+        return {
+            "managed_by": "networkmanager",
+            "source": connection,
+            "connection": connection,
+            "mode": config.get("mode", "unknown"),
+            "dns": config.get("dns", []),
+            "editable": bool(connection) or device.get("type") == "ethernet",
+        }
+    return {
+        "managed_by": "unknown",
+        "source": "",
+        "connection": "",
+        "mode": "unknown",
+        "dns": [],
+        "editable": False,
+    }
 
 
 def is_physical_network_interface(item):
@@ -5053,6 +5371,7 @@ def network_interfaces_payload():
         addresses = []
 
     routes = default_routes()
+    network_manager = network_manager_devices()
     monitor_items = monitorable_network_interfaces(refresh=True)
     hardware_by_name = {item["name"]: item for item in monitor_items}
     interfaces = []
@@ -5062,7 +5381,7 @@ def network_interfaces_payload():
 
         name = item.get("ifname", "")
         hardware = hardware_by_name.get(name, {})
-        netplan_path, netplan_config = netplan_interface_config(name)
+        configuration = interface_configuration(name, network_manager.get(name))
         ipv4 = [
             {
                 "address": address.get("local"),
@@ -5073,8 +5392,6 @@ def network_interfaces_payload():
             if address.get("family") == "inet"
         ]
         route = routes.get(name, {})
-        nameservers = netplan_config.get("nameservers", {}).get("addresses", [])
-        mode = "dhcp" if netplan_config.get("dhcp4") else "static" if netplan_config else "unknown"
         interfaces.append(
             {
                 "name": name,
@@ -5091,17 +5408,23 @@ def network_interfaces_payload():
                 "mtu": item.get("mtu"),
                 "ipv4": ipv4,
                 "gateway": route.get("gateway", ""),
-                "dns": nameservers,
-                "mode": mode,
-                "netplan_file": str(netplan_path) if netplan_path else "",
-                "managed_by": "netplan" if netplan_path else "unknown",
+                "dns": configuration["dns"],
+                "mode": configuration["mode"],
+                "netplan_file": configuration["source"] if configuration["managed_by"] == "netplan" else "",
+                "connection_name": configuration["connection"],
+                "configuration_source": configuration["source"],
+                "managed_by": configuration["managed_by"],
+                "editable": configuration["editable"],
             }
         )
 
     selected = load_config_file().get("network", {}).get("monitor_interface", "auto")
     active = choose_monitor_interface(monitor_items, selected, default_route_interfaces())
+    renderers = sorted({
+        item["managed_by"] for item in interfaces if item["managed_by"] != "unknown"
+    })
     return {
-        "renderer": "netplan",
+        "renderer": renderers[0] if len(renderers) == 1 else "mixed" if renderers else "unknown",
         "interfaces": interfaces,
         "monitor": {
             "selected": selected,
@@ -5118,124 +5441,103 @@ def validate_interface_name(name):
         raise ValueError("Unknown or unsupported network interface")
 
 
+def validate_ipv4_settings(mode, address, gateway, dns):
+    return validate_network_ipv4_settings(mode, address, gateway, dns)
+
+
 def update_netplan_interface(interface, mode, address, gateway, dns):
     validate_interface_name(interface)
-    if mode not in {"dhcp", "static"}:
-        raise ValueError("Invalid network mode")
+    return NetplanBackend(Path("/etc/netplan"), run_netplan_command).apply(
+        interface, mode, address, gateway, dns,
+    )
 
-    target_file, _ = netplan_interface_config(interface)
-    if target_file is None:
-        target_file = Path(f"/etc/netplan/90-homestart-{interface}.yaml")
-        section = "wifis" if interface.startswith("wl") else "ethernets"
-        data = {"network": {"version": 2, "renderer": "networkd", section: {}}}
-    else:
-        data = load_netplan_file(target_file)
-        network = data.setdefault("network", {})
-        network.setdefault("version", 2)
-        network.setdefault("renderer", "networkd")
-        section = "ethernets" if interface in network.get("ethernets", {}) else "wifis"
-        network.setdefault(section, {})
 
-    network = data.setdefault("network", {})
-    interface_config = network.setdefault(section, {}).setdefault(interface, {})
-    if mode == "dhcp":
-        interface_config.clear()
-        interface_config["dhcp4"] = True
-    else:
-        try:
-            ipaddress.ip_interface(address)
-            ipaddress.ip_address(gateway)
-            dns_addresses = [str(ipaddress.ip_address(item.strip())) for item in dns if item.strip()]
-        except ValueError as error:
-            raise ValueError(f"Invalid network value: {error}") from error
+def update_network_manager_interface(interface, mode, address, gateway, dns):
+    validate_interface_name(interface)
+    device = network_manager_devices().get(interface)
+    backend = NetworkManagerBackend(nmcli_output, BACKUP_DIR)
+    profile = network_manager_interface_config(interface, device) if device else None
+    return backend.apply(
+        interface, mode, address, gateway, dns,
+        device=device, profile=profile,
+    )
 
-        interface_config.clear()
-        interface_config["dhcp4"] = False
-        interface_config["addresses"] = [address]
-        interface_config["routes"] = [{"to": "default", "via": gateway}]
-        if dns_addresses:
-            interface_config["nameservers"] = {"addresses": dns_addresses}
 
-    backup = target_file.with_suffix(target_file.suffix + f".bak-{int(time.time())}")
-    if target_file.exists():
-        shutil.copy2(target_file, backup)
-
-    with target_file.open("w", encoding="utf-8") as file:
-        yaml.safe_dump(data, file, sort_keys=False)
-
-    subprocess.check_output(["netplan", "generate"], text=True, timeout=10, stderr=subprocess.STDOUT)
-    subprocess.check_output(["netplan", "apply"], text=True, timeout=20, stderr=subprocess.STDOUT)
-    return {
-        "ok": True,
-        "interface": interface,
-        "mode": mode,
-        "backup": str(backup) if backup.exists() else "",
-    }
+def update_network_interface(interface, mode, address, gateway, dns):
+    validate_interface_name(interface)
+    netplan_path, _ = netplan_interface_config(interface)
+    if netplan_path:
+        return update_netplan_interface(interface, mode, address, gateway, dns)
+    device = network_manager_devices().get(interface)
+    if device and str(device.get("state") or "").lower() != "unmanaged":
+        return update_network_manager_interface(interface, mode, address, gateway, dns)
+    raise ValueError("No supported network configuration backend manages this interface")
 
 
 def update_member_path(name):
-    path = PurePosixPath(name)
-    parts = [part for part in path.parts if part not in {"", "."}]
-    if not parts:
-        return None
-    if parts[0] in {"homestart", "package"}:
-        parts = parts[1:]
-    if not parts or any(part == ".." for part in parts):
-        return None
-    lower_parts = [part.lower() for part in parts]
-    if any(part in UPDATE_EXCLUDED for part in lower_parts):
-        raise ValueError(f"Update package contains protected entry: {name}")
-    if any(part.endswith(UPDATE_PRIVATE_SUFFIXES) for part in lower_parts):
-        raise ValueError(f"Update package contains private data file: {name}")
-    if any(fragment in part for part in lower_parts for fragment in UPDATE_PRIVATE_FRAGMENTS):
-        raise ValueError(f"Update package contains private data file: {name}")
-    if parts[0] in UPDATE_ALLOWED_PREFIXES or parts[0] in UPDATE_ALLOWED_FILES:
-        return Path(*parts)
-    return None
+    return package_member_path(name)
 
 
 def update_member_parts(name):
-    path = PurePosixPath(name)
-    parts = [part for part in path.parts if part not in {"", "."}]
-    if parts and parts[0] in {"homestart", "package"}:
-        parts = parts[1:]
-    return parts
+    return package_member_parts(name)
 
 
 def validate_update_manifest(archive):
-    manifest_member = None
-    for member in archive.getmembers():
-        parts = update_member_parts(member.name)
-        if parts == ["package.json"]:
-            manifest_member = member
-            break
-    if manifest_member is None:
-        raise ValueError("Update package is missing package.json metadata")
-    if not manifest_member.isfile():
-        raise ValueError("Update package metadata is invalid")
-
-    source = archive.extractfile(manifest_member)
-    if source is None:
-        raise ValueError("Update package metadata could not be read")
-    try:
-        manifest = json.loads(source.read().decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("Update package metadata is invalid JSON") from error
-
-    if manifest.get("name") != "homestart":
-        raise ValueError("Update package is not a HomeStart package")
-    if manifest.get("package_type") != "update":
-        raise ValueError("This file is not a HomeStart update package")
-    return manifest
+    return validate_package_manifest(archive)
 
 
 def restart_service_later():
     def restart():
-      subprocess.run(["systemctl", "restart", "homestart.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["systemctl", "restart", "homestart.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     # Leave enough time for ThreadingHTTPServer to flush the successful update
     # response before systemd terminates this process.
     threading.Timer(3.0, restart).start()
+
+
+def schedule_update_verifier(backup, version):
+    verifier = BASE_DIR / "scripts" / "verify_update.py"
+    systemd_run = shutil.which("systemd-run")
+    if not verifier.is_file() or not systemd_run:
+        return False
+    try:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "homestart.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if active.returncode != 0:
+        return False
+    unit = f"homestart-update-verify-{int(time.time())}"
+    port = int(os.environ.get("PORT", "80"))
+    try:
+        result = subprocess.run(
+            [
+                systemd_run,
+                "--unit", unit,
+                "--collect",
+                "--property", "Type=exec",
+                sys.executable,
+                str(verifier),
+                "--install-dir", str(BASE_DIR),
+                "--backup-dir", str(backup),
+                "--version", str(version),
+                "--port", str(port),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def apply_update_package(filename, content):
@@ -5251,75 +5553,16 @@ def apply_update_package(filename, content):
     if len(payload) > 30 * 1024 * 1024:
         raise ValueError("Update package is too large")
 
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    backup_root = BACKUP_DIR / f"update-{timestamp}"
-    backup_root.mkdir(parents=True, exist_ok=True)
-    changed = []
-
-    with tempfile.NamedTemporaryFile(prefix="homestart-update-", suffix=".tar.gz", delete=False) as file:
-        archive_path = Path(file.name)
-        file.write(payload)
-
-    try:
-        with tarfile.open(archive_path, "r:gz") as archive:
-            manifest = validate_update_manifest(archive)
-            members = []
-            for member in archive.getmembers():
-                target = update_member_path(member.name)
-                if target is None or member.isdir():
-                    continue
-                if not member.isfile():
-                    raise ValueError(f"Unsupported package entry: {member.name}")
-                members.append((member, target))
-
-            if not members:
-                raise ValueError("No updatable files found in package")
-
-            packaged_static = {
-                relative_target
-                for _member, relative_target in members
-                if relative_target.parts and relative_target.parts[0] == "static"
-            }
-            for member, relative_target in members:
-                target = BASE_DIR / relative_target
-                if target.exists():
-                    backup_target = backup_root / relative_target
-                    backup_target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(target, backup_target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                if source is None:
-                    continue
-                with target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-                mode = member.mode & 0o777
-                if mode:
-                    os.chmod(target, mode)
-                changed.append(str(relative_target))
-
-            if packaged_static:
-                for existing in STATIC_DIR.rglob("*"):
-                    if not existing.is_file():
-                        continue
-                    relative_existing = existing.relative_to(BASE_DIR)
-                    if relative_existing in packaged_static:
-                        continue
-                    backup_target = backup_root / relative_existing
-                    backup_target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(existing, backup_target)
-                    existing.unlink()
-                    changed.append(f"removed {relative_existing}")
-    finally:
-        archive_path.unlink(missing_ok=True)
-
+    result = TransactionalPackageUpdater(BASE_DIR, BACKUP_DIR, STATIC_DIR).apply_bytes(payload)
+    rollback_watch = schedule_update_verifier(result["backup"], result["manifest"]["version"])
     restart_service_later()
     return {
         "ok": True,
-        "changed": changed,
-        "backup": str(backup_root),
+        "changed": result["changed"],
+        "backup": result["backup"],
         "restart": True,
-        "package": manifest,
+        "rollback_watch": rollback_watch,
+        "package": result["manifest"],
     }
 
 
@@ -5420,4 +5663,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

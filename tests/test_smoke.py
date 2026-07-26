@@ -39,6 +39,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             "homestart/config.py",
             "homestart/files/copy.py",
             "homestart/system/network.py",
+            "homestart/system/network_config.py",
             "homestart/updates/github.py",
         ):
             self.assertTrue((root / relative_path).is_file(), relative_path)
@@ -385,6 +386,44 @@ class HomeStartSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.validate_store_catalog(catalog)
 
+    def test_catalog_architecture_is_normalized_and_blocks_explicit_mismatch(self):
+        catalog = self.declarative_catalog()
+        catalog["apps"][0]["architectures"] = ["x86_64", "aarch64"]
+        app = self.app.validate_store_catalog(catalog)["apps"][0]
+        self.assertEqual(app["architectures"], ["amd64", "arm64"])
+        with mock.patch.object(
+            self.app,
+            "detect_host_architecture",
+            return_value={"machine": "aarch64", "architecture": "arm64", "docker_platform": "linux/arm64"},
+        ):
+            self.assertTrue(self.app.require_catalog_architecture(app)["architecture_compatible"])
+            app["architectures"] = ["amd64"]
+            with self.assertRaisesRegex(ValueError, "does not declare support"):
+                self.app.require_catalog_architecture(app)
+
+    def test_docker_manifest_architecture_detects_multi_platform_images(self):
+        manifest = json.dumps([
+            {"Descriptor": {"platform": {"architecture": "amd64", "os": "linux"}}},
+            {"Descriptor": {"platform": {"architecture": "arm64", "os": "linux"}}},
+        ])
+        self.app.DOCKER_ARCHITECTURE_CACHE = {}
+        with mock.patch.object(self.app, "run_docker_command", return_value=manifest):
+            architectures = self.app.docker_manifest_architectures("example/image:latest")
+        self.assertEqual(architectures, {"amd64", "arm64"})
+
+    def test_docker_manifest_preflight_rejects_known_host_mismatch(self):
+        with mock.patch.object(
+            self.app,
+            "detect_host_architecture",
+            return_value={"machine": "aarch64", "architecture": "arm64", "docker_platform": "linux/arm64"},
+        ), mock.patch.object(
+            self.app,
+            "docker_manifest_architectures",
+            return_value={"amd64"},
+        ):
+            with self.assertRaisesRegex(ValueError, "does not publish"):
+                self.app.verify_docker_image_architecture("example/amd64-only:latest")
+
     def test_store_catalog_uses_stale_cache_when_remote_fetch_fails(self):
         self.app.STORE_CATALOG_CACHE = Path(self.temp.name) / "catalog-cache.json"
         catalog = self.app.validate_store_catalog(self.declarative_catalog())
@@ -424,9 +463,254 @@ class HomeStartSmokeTests(unittest.TestCase):
             result = self.app.compose_store_install({"template_id": "sample-app", "values": values})
         compose_path = Path(result["compose_file"])
         self.assertTrue(compose_path.is_file())
+        self.assertTrue((compose_path.parent / "project.json").is_file())
         self.assertIn("com.homestart.template: sample-app", compose_path.read_text(encoding="utf-8"))
         self.assertTrue(any(command[-1] == "pull" for command in commands))
         self.assertTrue(any(command[-2:] == ["up", "-d"] for command in commands))
+
+    def test_compose_risk_report_flags_dangerous_permissions(self):
+        report = self.app.compose_risk_report({
+            "services": {
+                "api": {
+                    "image": "example/api",
+                    "privileged": True,
+                    "network_mode": "host",
+                    "volumes": ["/var/run/docker.sock:/var/run/docker.sock"],
+                },
+                "worker": {
+                    "image": "example/worker",
+                    "cap_add": ["SYS_ADMIN"],
+                    "volumes": ["/etc/ssl:/certificates:ro"],
+                },
+            },
+        })
+        self.assertEqual(report["level"], "critical")
+        codes = {warning["code"] for warning in report["warnings"]}
+        self.assertTrue({
+            "privileged", "host-network", "docker-socket", "capabilities", "sensitive-bind",
+        } <= codes)
+
+    def test_compose_project_lifecycle_controls_the_complete_stack(self):
+        import yaml
+
+        self.app.COMPOSE_APP_DIR = Path(self.temp.name) / "compose-projects"
+        self.app.COMPOSE_APP_DATA_DIR = Path(self.temp.name) / "app-data"
+        project_dir = self.app.COMPOSE_APP_DIR / "sample"
+        project_dir.mkdir(parents=True)
+        managed_data = self.app.COMPOSE_APP_DATA_DIR / "sample"
+        external_data = Path(self.temp.name) / "external-data"
+        managed_data.mkdir(parents=True)
+        external_data.mkdir()
+        compose = {
+            "name": "homestart-sample",
+            "services": {
+                "web": {
+                    "image": "nginx:alpine",
+                    "labels": {"com.homestart.managed": "true", "com.homestart.template": "sample"},
+                    "volumes": [f"{managed_data}:/data", f"{external_data}:/external"],
+                },
+                "db": {
+                    "image": "redis:alpine",
+                    "labels": {"com.homestart.managed": "true", "com.homestart.template": "sample"},
+                },
+            },
+            "volumes": {"database": {}},
+        }
+        compose_path = project_dir / "compose.yaml"
+        compose_path.write_text(yaml.safe_dump(compose, sort_keys=False), encoding="utf-8")
+        commands = []
+
+        def docker(command, timeout=60):
+            commands.append(command)
+            return "ok"
+
+        manager = self.app.ComposeProjectManager(
+            self.app.COMPOSE_APP_DIR,
+            self.app.COMPOSE_APP_DATA_DIR,
+            docker,
+        )
+        manager.record_install(compose_path, "homestart-sample", "sample", "Sample", compose)
+        manager.action("homestart-sample", "stop")
+        manager.action("homestart-sample", "restart")
+        manager.action("homestart-sample", "update")
+        preserved = manager.action("homestart-sample", "uninstall", delete_data=False)
+        self.assertFalse(preserved["data_deleted"])
+        self.assertTrue(project_dir.is_dir())
+        self.assertTrue(managed_data.is_dir())
+        self.assertTrue(external_data.is_dir())
+        manager.action("homestart-sample", "start")
+        removed = manager.action("homestart-sample", "uninstall", delete_data=True)
+        self.assertTrue(removed["data_deleted"])
+        self.assertFalse(project_dir.exists())
+        self.assertFalse(managed_data.exists())
+        self.assertTrue(external_data.exists())
+        self.assertTrue(any(command[-1] == "stop" for command in commands))
+        self.assertTrue(any(command[-1] == "restart" for command in commands))
+        self.assertTrue(any(command[-1] == "pull" for command in commands))
+        self.assertTrue(any(command[-2:] == ["--remove-orphans", "--volumes"] for command in commands))
+
+    def test_managed_compose_services_are_grouped_as_one_app(self):
+        import yaml
+
+        self.app.COMPOSE_APP_DIR = Path(self.temp.name) / "grouped-projects"
+        self.app.COMPOSE_APP_DATA_DIR = Path(self.temp.name) / "grouped-data"
+        project_dir = self.app.COMPOSE_APP_DIR / "sample"
+        project_dir.mkdir(parents=True)
+        compose = {
+            "name": "homestart-sample",
+            "services": {
+                "web": {"image": "nginx:alpine", "labels": {"com.homestart.template": "sample"}},
+                "db": {"image": "redis:alpine", "labels": {"com.homestart.template": "sample"}},
+            },
+        }
+        compose_path = project_dir / "compose.yaml"
+        compose_path.write_text(yaml.safe_dump(compose), encoding="utf-8")
+        self.app.compose_project_manager().record_install(
+            compose_path, "homestart-sample", "sample", "Sample Stack", compose,
+        )
+        containers = [
+            {
+                "name": "sample-web", "docker_name": "sample-web", "docker_running": True,
+                "status": "Up", "image": "nginx:alpine", "url": "http://host:8080", "ports": ["8080"],
+                "compose_project": "homestart-sample", "compose_service": "web", "compose_managed": True,
+            },
+            {
+                "name": "sample-db", "docker_name": "sample-db", "docker_running": True,
+                "status": "Up", "image": "redis:alpine", "url": "", "ports": [],
+                "compose_project": "homestart-sample", "compose_service": "db", "compose_managed": True,
+            },
+        ]
+        apps = self.app.managed_compose_apps("host", containers)
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["name"], "Sample Stack")
+        self.assertEqual(len(apps[0]["compose_services"]), 2)
+        self.assertEqual(apps[0]["status"], "2/2 services running")
+
+    def test_app_action_routes_compose_operations_to_project_manager(self):
+        manager = mock.Mock()
+        manager.action.side_effect = [
+            {"ok": True, "action": "update"},
+            {"ok": True, "action": "uninstall", "data_deleted": True},
+        ]
+        with mock.patch.object(self.app, "compose_project_manager", return_value=manager), \
+                mock.patch.object(self.app, "load_config_file", return_value={"features": {"docker_actions": True}}), \
+                mock.patch.object(self.app, "app_uninstall_enabled", return_value=True):
+            updated = self.app.app_action({
+                "action": "update",
+                "compose_project": "homestart-sample",
+            })
+            removed = self.app.app_action({
+                "action": "uninstall",
+                "compose_project": "homestart-sample",
+                "delete_data": True,
+            })
+        self.assertEqual(updated["action"], "update")
+        self.assertTrue(removed["data_deleted"])
+        manager.action.assert_has_calls([
+            mock.call("homestart-sample", "update"),
+            mock.call("homestart-sample", "uninstall", delete_data=True),
+        ])
+
+    def update_fixture(self, root, version="test-2", valid=True):
+        package_root = Path(root) / "package"
+        (package_root / "homestart").mkdir(parents=True)
+        (package_root / "static").mkdir()
+        (package_root / "app.py").write_text(
+            "from homestart.server import main\n" if valid else "from missing_package import main\n",
+            encoding="utf-8",
+        )
+        (package_root / "homestart" / "__init__.py").write_text("", encoding="utf-8")
+        (package_root / "homestart" / "server.py").write_text(
+            "def main():\n    return True\n",
+            encoding="utf-8",
+        )
+        (package_root / "static" / "new.js").write_text("new", encoding="utf-8")
+        (package_root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+        (package_root / "package.json").write_text(json.dumps({
+            "name": "homestart", "version": version, "package_type": "update", "format": 1,
+        }), encoding="utf-8")
+        archive_path = Path(root) / "update.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            archive.add(package_root, arcname="homestart")
+        return archive_path.read_bytes()
+
+    def test_transactional_update_preserves_runtime_data_and_removes_stale_static(self):
+        from homestart.updates.package import TransactionalPackageUpdater
+
+        install = Path(self.temp.name) / "transaction-install"
+        backup = install / "data" / "backups"
+        static = install / "static"
+        static.mkdir(parents=True)
+        (install / "app.py").write_text("old app", encoding="utf-8")
+        (static / "old.js").write_text("old", encoding="utf-8")
+        (install / "config.json").write_text('{"keep": true}', encoding="utf-8")
+        (install / "data" / "history.db").parent.mkdir(parents=True, exist_ok=True)
+        (install / "data" / "history.db").write_bytes(b"history")
+        payload = self.update_fixture(self.temp.name)
+        result = TransactionalPackageUpdater(install, backup, static).apply_bytes(payload)
+        self.assertEqual(result["manifest"]["version"], "test-2")
+        self.assertIn("from homestart.server", (install / "app.py").read_text(encoding="utf-8"))
+        self.assertTrue((static / "new.js").is_file())
+        self.assertFalse((static / "old.js").exists())
+        self.assertEqual((install / "config.json").read_text(encoding="utf-8"), '{"keep": true}')
+        self.assertEqual((install / "data" / "history.db").read_bytes(), b"history")
+        self.assertTrue((Path(result["backup"]) / "transaction.json").is_file())
+
+    def test_failed_update_preflight_changes_nothing(self):
+        from homestart.updates.package import TransactionalPackageUpdater
+
+        install = Path(self.temp.name) / "failed-install"
+        static = install / "static"
+        static.mkdir(parents=True)
+        (install / "app.py").write_text("old app", encoding="utf-8")
+        payload = self.update_fixture(Path(self.temp.name) / "invalid", valid=False)
+        with self.assertRaisesRegex(ValueError, "preflight failed"):
+            TransactionalPackageUpdater(install, install / "data" / "backups", static).apply_bytes(payload)
+        self.assertEqual((install / "app.py").read_text(encoding="utf-8"), "old app")
+
+    def test_transaction_failure_rolls_back_already_replaced_files(self):
+        from homestart.updates.package import TransactionalPackageUpdater
+
+        install = Path(self.temp.name) / "rollback-install"
+        static = install / "static"
+        static.mkdir(parents=True)
+        (install / "app.py").write_text("old app", encoding="utf-8")
+        payload = self.update_fixture(Path(self.temp.name) / "rollback-payload")
+        updater = TransactionalPackageUpdater(install, install / "data" / "backups", static)
+        original_copy = updater._atomic_copy
+
+        def fail_on_static(source, target):
+            if target.name == "new.js" and "staged" in source.parts:
+                raise OSError("simulated disk failure")
+            return original_copy(source, target)
+
+        with mock.patch.object(updater, "_atomic_copy", side_effect=fail_on_static):
+            with self.assertRaisesRegex(OSError, "simulated disk failure"):
+                updater.apply_bytes(payload)
+        self.assertEqual((install / "app.py").read_text(encoding="utf-8"), "old app")
+        self.assertFalse((static / "new.js").exists())
+
+    def test_post_restart_verifier_restores_transaction_backup(self):
+        from scripts import verify_update
+
+        install = Path(self.temp.name) / "verified-install"
+        backup = Path(self.temp.name) / "verified-backup"
+        (install / "homestart").mkdir(parents=True)
+        (backup / "homestart").mkdir(parents=True)
+        (install / "app.py").write_text("broken", encoding="utf-8")
+        (install / "homestart" / "new.py").write_text("new", encoding="utf-8")
+        (backup / "app.py").write_text("working", encoding="utf-8")
+        (backup / "transaction.json").write_text(json.dumps({
+            "replaced": ["app.py"],
+            "created": ["homestart/new.py"],
+            "removed": [],
+        }), encoding="utf-8")
+        with mock.patch.object(verify_update.subprocess, "run") as run:
+            verify_update.rollback(install, backup)
+        self.assertEqual((install / "app.py").read_text(encoding="utf-8"), "working")
+        self.assertFalse((install / "homestart" / "new.py").exists())
+        self.assertTrue((backup / "rollback.json").is_file())
+        run.assert_called_once()
 
     def test_dockerhub_direct_links_are_parsed(self):
         self.assertEqual(
@@ -521,6 +805,116 @@ class HomeStartSmokeTests(unittest.TestCase):
             interface = self.app.network_interfaces_payload()["interfaces"][0]
         self.assertEqual(interface["label"], "Example Networks Fast Adapter")
         self.assertEqual(interface["speed_mbps"], 10000)
+
+    def test_networkmanager_configuration_is_detected_and_parsed(self):
+        address = {
+            "ifname": "eth0",
+            "link_type": "ether",
+            "operstate": "UP",
+            "address": "00:11:22:33:44:55",
+            "addr_info": [{"family": "inet", "local": "192.168.1.20", "prefixlen": 24}],
+        }
+        device = {
+            "device": "eth0",
+            "type": "ethernet",
+            "state": "connected",
+            "connection": "Wired connection 1",
+        }
+        with mock.patch.object(self.app, "run_json", return_value=[address]), \
+                mock.patch.object(self.app, "is_physical_network_interface", return_value=True), \
+                mock.patch.object(self.app, "monitorable_network_interfaces", return_value=[{"name": "eth0"}]), \
+                mock.patch.object(self.app, "default_routes", return_value={"eth0": {"gateway": "192.168.1.1"}}), \
+                mock.patch.object(self.app, "netplan_interface_config", return_value=(None, {})), \
+                mock.patch.object(self.app, "network_manager_devices", return_value={"eth0": device}), \
+                mock.patch.object(
+                    self.app,
+                    "network_manager_interface_config",
+                    return_value=("Wired connection 1", {
+                        "mode": "dhcp", "addresses": ["192.168.1.20/24"],
+                        "gateway": "192.168.1.1", "dns": ["192.168.1.1"],
+                    }),
+                ), \
+                mock.patch.object(self.app, "default_route_interfaces", return_value=["eth0"]):
+            payload = self.app.network_interfaces_payload()
+        interface = payload["interfaces"][0]
+        self.assertEqual(payload["renderer"], "networkmanager")
+        self.assertEqual(interface["managed_by"], "networkmanager")
+        self.assertEqual(interface["connection_name"], "Wired connection 1")
+        self.assertEqual(interface["mode"], "dhcp")
+        self.assertTrue(interface["editable"])
+
+    def test_networkmanager_update_uses_existing_profile_and_writes_backup(self):
+        self.app.BACKUP_DIR = Path(self.temp.name) / "backups"
+        device = {
+            "device": "eth0", "type": "ethernet",
+            "state": "connected", "connection": "Wired connection 1",
+        }
+        commands = []
+
+        def nmcli(arguments, timeout=12):
+            commands.append(arguments)
+            return ""
+
+        with mock.patch.object(self.app, "validate_interface_name"), \
+                mock.patch.object(self.app, "network_manager_devices", return_value={"eth0": device}), \
+                mock.patch.object(
+                    self.app,
+                    "network_manager_interface_config",
+                    return_value=("Wired connection 1", {
+                        "mode": "dhcp", "addresses": [], "gateway": "", "dns": [],
+                    }),
+                ), \
+                mock.patch.object(self.app, "nmcli_output", side_effect=nmcli):
+            result = self.app.update_network_manager_interface(
+                "eth0", "static", "192.168.1.20/24", "192.168.1.1", ["1.1.1.1"],
+            )
+        self.assertEqual(result["managed_by"], "networkmanager")
+        self.assertTrue(Path(result["backup"]).is_file())
+        self.assertIn(
+            ["connection", "modify", "Wired connection 1",
+             "ipv4.method", "manual", "ipv4.addresses", "192.168.1.20/24",
+             "ipv4.gateway", "192.168.1.1", "ipv4.dns", "1.1.1.1"],
+            commands,
+        )
+        self.assertIn(
+            ["connection", "up", "Wired connection 1", "ifname", "eth0"],
+            commands,
+        )
+
+    def test_network_update_prefers_netplan_and_falls_back_to_networkmanager(self):
+        with mock.patch.object(self.app, "validate_interface_name"), \
+                mock.patch.object(
+                    self.app, "netplan_interface_config",
+                    return_value=(Path("/etc/netplan/01-network.yaml"), {"dhcp4": True}),
+                ), \
+                mock.patch.object(
+                    self.app, "update_netplan_interface",
+                    return_value={"ok": True, "managed_by": "netplan"},
+                ) as netplan_update, \
+                mock.patch.object(self.app, "update_network_manager_interface") as nm_update:
+            result = self.app.update_network_interface("eth0", "dhcp", "", "", [])
+        self.assertEqual(result["managed_by"], "netplan")
+        netplan_update.assert_called_once()
+        nm_update.assert_not_called()
+
+        device = {"device": "eth0", "type": "ethernet", "state": "connected"}
+        with mock.patch.object(self.app, "validate_interface_name"), \
+                mock.patch.object(self.app, "netplan_interface_config", return_value=(None, {})), \
+                mock.patch.object(self.app, "network_manager_devices", return_value={"eth0": device}), \
+                mock.patch.object(
+                    self.app, "update_network_manager_interface",
+                    return_value={"ok": True, "managed_by": "networkmanager"},
+                ) as nm_update:
+            result = self.app.update_network_interface("eth0", "dhcp", "", "", [])
+        self.assertEqual(result["managed_by"], "networkmanager")
+        nm_update.assert_called_once()
+
+    def test_nmcli_terse_parser_preserves_escaped_connection_names(self):
+        rows = self.app.parse_nmcli_rows(
+            "eth0:ethernet:connected:Office\\: LAN\n",
+            ("device", "type", "state", "connection"),
+        )
+        self.assertEqual(rows[0]["connection"], "Office: LAN")
 
     def test_samba_config_parser_and_share_payload(self):
         parsed = self.app.parse_samba_config(
@@ -735,6 +1129,14 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("status.engine_label", script)
         self.assertIn('id="file-copy-speed"', html)
         self.assertIn('id="file-copy-cancel"', html)
+        self.assertIn('id="app-uninstall-dialog"', html)
+        self.assertIn('id="store-risk"', html)
+        self.assertIn('name="uninstall-data"', html)
+        self.assertIn("compose_project: app.compose_project", script)
+        self.assertIn("delete_data: Boolean(options.deleteData)", script)
+        self.assertIn('runAppAction(app, "update")', script)
+        self.assertIn("Managed by ${managerLabels", script)
+        self.assertIn("architecture_compatible === false", script)
 
 
 if __name__ == "__main__":
