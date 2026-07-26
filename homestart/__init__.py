@@ -1,3 +1,3 @@
 """HomeStart server package."""
 
-__version__ = "20260725-2700"
+__version__ = "20260726-2800"

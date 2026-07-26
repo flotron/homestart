@@ -757,14 +757,22 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(self.app.metrics_history("auto")["hours"], "auto")
         self.assertIsInstance(self.app.metrics_history("auto")["server_timestamp"], int)
 
-    def test_live_and_history_network_counters_are_independent(self):
-        self.app.NETWORK_LIVE_PREV = None
+    def test_live_network_reads_collector_cache_without_resampling_counters(self):
         self.app.NETWORK_HISTORY_PREV = None
-        self.app.network_payload("live")
-        self.assertIsNotNone(self.app.NETWORK_LIVE_PREV)
+        self.app.NETWORK_LATEST = {
+            "timestamp": 1234, "interface": "eth0",
+            "rx_bps": 123, "tx_bps": 456, "sample_seconds": 2,
+            "rx_label": "123 B/s", "tx_label": "456 B/s",
+        }
+        with mock.patch.object(self.app, "default_network_interface", return_value="eth0"), \
+                mock.patch.object(self.app.Path, "read_text") as read_text:
+            first = self.app.network_payload("live")
+            second = self.app.network_payload("live")
+        self.assertEqual(first["rx_bps"], 123)
+        self.assertEqual(first["tx_bps"], 456)
+        self.assertEqual(second["timestamp"], 1234)
         self.assertIsNone(self.app.NETWORK_HISTORY_PREV)
-        self.app.network_payload("history")
-        self.assertIsNotNone(self.app.NETWORK_HISTORY_PREV)
+        read_text.assert_not_called()
 
     def test_monitor_selection_falls_back_when_saved_interface_disappears(self):
         items = [
@@ -1058,6 +1066,8 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(len(history["network_points"]), 3)
         self.assertEqual(history["network_points"][-1]["rx_bps"], 7000)
         self.assertEqual(history["network_points"][-1]["rx_avg_bps"], 7000)
+        self.assertEqual(history["network_status"]["current_rx_bps"], 7000)
+        self.assertEqual(history["network_status"]["current_tx_bps"], 900)
         self.assertLessEqual(history["network_status"]["last_sample_age_seconds"], 1)
 
     def test_network_history_buckets_preserve_short_peaks(self):
@@ -1074,6 +1084,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(peak["rx_bps"], 875_000_000)
         self.assertLess(peak["rx_avg_bps"], peak["rx_bps"])
         self.assertGreater(peak["sample_count"], 1)
+        self.assertEqual(history["network_status"]["current_rx_bps"], 1_000)
 
     def test_container_network_ranking_accumulates_traffic_by_name(self):
         self.app.DB_PATH = Path(self.temp.name) / "container-network.db"

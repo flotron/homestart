@@ -456,12 +456,17 @@ function renderBandwidthHistory(points, hours, interfaceName, status = {}, bucke
   renderTimeAxis(bandwidthTimeAxis, start, end);
   bandwidthStats.replaceChildren(...[["rx_bps", "Download", "download"], ["tx_bps", "Upload", "upload"]].map(([key, label, className]) => {
     const stats = metricStats(points, key);
+    const currentKey = key === "rx_bps" ? "current_rx_bps" : "current_tx_bps";
+    const collectorCurrent = Number(status[currentKey]);
+    const current = status[currentKey] !== null && status[currentKey] !== undefined && Number.isFinite(collectorCurrent)
+      ? collectorCurrent
+      : stats?.current;
     const averageKey = key === "rx_bps" ? "rx_avg_bps" : "tx_avg_bps";
     const averages = points.map((item) => Number(item[averageKey])).filter(Number.isFinite);
     const trueAverage = averages.length ? averages.reduce((sum, value) => sum + value, 0) / averages.length : stats?.average;
     const node = document.createElement("article");
     node.className = `history-stat ${className}`;
-    node.innerHTML = `<span>${label}</span><strong>${formatRate(stats?.current)}</strong><small>avg ${formatRate(trueAverage)} · peak ${formatRate(stats?.maximum)}</small>`;
+    node.innerHTML = `<span>${label}</span><strong>${formatRate(current)}</strong><small>avg ${formatRate(trueAverage)} · peak ${formatRate(stats?.maximum)}</small>`;
     return node;
   }));
   const age = Number(status.last_sample_age_seconds);
@@ -481,8 +486,8 @@ async function loadLiveNetwork() {
     liveUpload.textContent = formatRate(data.tx_bps);
     const downloadTop = data.top_consumers?.download;
     const uploadTop = data.top_consumers?.upload;
-    liveDownloadTop.textContent = downloadTop ? `Top now: ${downloadTop.name} · ${formatRate(downloadTop.rx_bps)}` : "Top now: no Docker activity";
-    liveUploadTop.textContent = uploadTop ? `Top now: ${uploadTop.name} · ${formatRate(uploadTop.tx_bps)}` : "Top now: no Docker activity";
+    liveDownloadTop.textContent = downloadTop ? `Top now: ${downloadTop.name} · ${formatRate(downloadTop.rx_bps)}` : "Top now: no attributable Docker traffic";
+    liveUploadTop.textContent = uploadTop ? `Top now: ${uploadTop.name} · ${formatRate(uploadTop.tx_bps)}` : "Top now: no attributable Docker traffic";
     liveInterface.textContent = data.interface || "Default interface";
     liveUpdated.textContent = `Live · updated ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
   } catch (error) {

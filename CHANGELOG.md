@@ -4,6 +4,17 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260726-2800
+
+- Fixed inflated live network rates caused by concurrent API requests sampling
+  the same interface counters over extremely short intervals.
+- Network rates now come exclusively from the two-second background collector;
+  browser refreshes and multiple connected clients only read its cached sample.
+- Bandwidth summary cards now show the latest raw two-second sample as the
+  current value while retaining grouped averages and peaks for history.
+- Clarified that an empty live-consumer result means no attributable Docker
+  traffic, not that Docker has no network activity.
+
 ## 20260725-2700
 
 - Continued the progressive modularization without changing the `app.py`

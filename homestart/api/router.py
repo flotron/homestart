@@ -33,9 +33,9 @@ class ApiRouter:
         elif route == "/api/apps/icon":
             b.serve_custom_app_icon(handler, query.get("key", [""])[0])
         elif route == "/api/system":
-            handler.send_json(b.system_payload())
+            handler.send_json(b.system_payload(None))
         elif route == "/api/network/live":
-            handler.send_json({"ok": True, "timestamp": int(time.time()), **b.network_payload("live")})
+            handler.send_json({"ok": True, **b.latest_network_payload()})
         elif route == "/api/network/ranking":
             try:
                 handler.send_json(b.container_network_ranking(query.get("period", ["3600"])[0]))
