@@ -318,6 +318,16 @@ class MetricStore:
                 """,
                 (since, server_timestamp + 5),
             ).fetchone()
+            latest_network_row = connection.execute(
+                """
+                SELECT captured_at, rx_bps, tx_bps
+                FROM network_metrics
+                WHERE captured_at BETWEEN ? AND ?
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """,
+                (since, server_timestamp + 5),
+            ).fetchone()
             available_span = max(
                 0, (network_bounds[1] or 0) - (network_bounds[0] or 0),
             )
@@ -368,7 +378,7 @@ class MetricStore:
             for previous, current in zip(network_points, network_points[1:])
             if current["captured_at"] - previous["captured_at"] > gap_threshold
         ]
-        latest_sample = network_points[-1]["captured_at"] if network_points else None
+        latest_sample = latest_network_row["captured_at"] if latest_network_row else None
         return {
             "ok": True,
             "hours": "auto" if automatic else hours,
@@ -382,6 +392,13 @@ class MetricStore:
                 "stored_samples": int(network_bounds[2] or 0),
                 "first_timestamp": network_bounds[0],
                 "last_timestamp": network_bounds[1],
+                "current_timestamp": latest_sample,
+                "current_rx_bps": (
+                    latest_network_row["rx_bps"] if latest_network_row else None
+                ),
+                "current_tx_bps": (
+                    latest_network_row["tx_bps"] if latest_network_row else None
+                ),
                 "last_sample_age_seconds": (
                     max(0, server_timestamp - latest_sample)
                     if latest_sample else None

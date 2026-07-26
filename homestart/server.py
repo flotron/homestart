@@ -121,10 +121,19 @@ CPU_PREV = None
 CPU_DETAIL_PREV = None
 GPU_PREV = None
 METRIC_LAST_WRITE = 0
-NETWORK_LIVE_PREV = None
 INSTALL_JOBS = {}
 INSTALL_JOBS_LOCK = threading.Lock()
 NETWORK_HISTORY_PREV = None
+NETWORK_SAMPLE_LOCK = threading.Lock()
+NETWORK_LATEST = {
+    "timestamp": 0,
+    "interface": "",
+    "rx_bps": 0,
+    "tx_bps": 0,
+    "sample_seconds": 0,
+    "rx_label": "0 B/s",
+    "tx_label": "0 B/s",
+}
 NETWORK_INTERFACE_CACHE = {"at": 0, "items": []}
 CONTAINER_NETWORK_PREV = {}
 CONTAINER_NETWORK_TOP = {"download": None, "upload": None}
@@ -1498,7 +1507,7 @@ def summarize_gpus(gpus):
     }
 
 
-def system_payload(network_channel="live"):
+def system_payload(network_channel=None):
     gpus = nvidia_gpus_payload()
     if gpus:
         gpu = summarize_gpus(gpus)
@@ -1588,6 +1597,7 @@ def network_metrics_sampler():
         started = time.monotonic()
         try:
             network = network_payload("history")
+            publish_network_sample(network)
             record_network_metric({"timestamp": int(time.time()), **network})
             container_samples = update_container_network_top()
             record_container_network_metrics(container_samples)
@@ -1600,7 +1610,8 @@ def network_metrics_sampler():
 
 
 def overview_payload():
-    system = system_payload()
+    system = system_payload(None)
+    system["network"] = latest_network_payload()
     status = status_payload()
     alerts = []
     cpu = system.get("cpu", {}).get("percent")
@@ -1880,8 +1891,45 @@ def update_container_network_top():
     return samples
 
 
+def publish_network_sample(payload):
+    sample = {
+        "timestamp": int(payload.get("timestamp") or time.time()),
+        "interface": str(payload.get("interface") or ""),
+        "rx_bps": max(0, round(float(payload.get("rx_bps") or 0))),
+        "tx_bps": max(0, round(float(payload.get("tx_bps") or 0))),
+        "sample_seconds": max(0, float(payload.get("sample_seconds") or 0)),
+        "rx_label": str(payload.get("rx_label") or "0 B/s"),
+        "tx_label": str(payload.get("tx_label") or "0 B/s"),
+    }
+    with NETWORK_SAMPLE_LOCK:
+        NETWORK_LATEST.clear()
+        NETWORK_LATEST.update(sample)
+    return dict(sample)
+
+
+def latest_network_payload():
+    selected_interface = default_network_interface()
+    with NETWORK_SAMPLE_LOCK:
+        result = dict(NETWORK_LATEST)
+    if not result.get("timestamp") or result.get("interface") != selected_interface:
+        result = {
+            "timestamp": int(time.time()),
+            "interface": selected_interface,
+            "rx_bps": 0,
+            "tx_bps": 0,
+            "sample_seconds": 0,
+            "rx_label": "0 B/s",
+            "tx_label": "0 B/s",
+        }
+    with CONTAINER_NETWORK_LOCK:
+        result["top_consumers"] = dict(CONTAINER_NETWORK_TOP)
+    return result
+
+
 def network_payload(channel="live"):
-    global NETWORK_LIVE_PREV, NETWORK_HISTORY_PREV
+    global NETWORK_HISTORY_PREV
+    if channel == "live":
+        return latest_network_payload()
     received = transmitted = 0
     selected_interface = default_network_interface()
     try:
@@ -1895,19 +1943,18 @@ def network_payload(channel="live"):
             transmitted += int(fields[8])
     except (OSError, ValueError, IndexError):
         return {"interface": selected_interface, "rx_bps": 0, "tx_bps": 0, "rx_label": "0 B/s", "tx_label": "0 B/s"}
-    now = time.monotonic()
-    rx_bps = tx_bps = 0
-    sample_seconds = 0
-    previous = NETWORK_HISTORY_PREV if channel == "history" else NETWORK_LIVE_PREV
-    if previous and len(previous) >= 4 and previous[3] == selected_interface:
-        sample_seconds = max(.001, now - previous[0])
-        rx_bps = max(0, (received - previous[1]) / sample_seconds)
-        tx_bps = max(0, (transmitted - previous[2]) / sample_seconds)
-    if channel == "history":
+    with NETWORK_SAMPLE_LOCK:
+        now = time.monotonic()
+        rx_bps = tx_bps = 0
+        sample_seconds = 0
+        previous = NETWORK_HISTORY_PREV
+        if previous and len(previous) >= 4 and previous[3] == selected_interface:
+            sample_seconds = max(.001, now - previous[0])
+            rx_bps = max(0, (received - previous[1]) / sample_seconds)
+            tx_bps = max(0, (transmitted - previous[2]) / sample_seconds)
         NETWORK_HISTORY_PREV = (now, received, transmitted, selected_interface)
-    else:
-        NETWORK_LIVE_PREV = (now, received, transmitted, selected_interface)
     result = {
+        "timestamp": int(time.time()),
         "interface": selected_interface,
         "rx_bps": round(rx_bps),
         "tx_bps": round(tx_bps),
@@ -1915,9 +1962,6 @@ def network_payload(channel="live"):
         "rx_label": f"{format_bytes(rx_bps)}/s",
         "tx_label": f"{format_bytes(tx_bps)}/s",
     }
-    if channel == "live":
-        with CONTAINER_NETWORK_LOCK:
-            result["top_consumers"] = dict(CONTAINER_NETWORK_TOP)
     return result
 
 
