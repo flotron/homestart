@@ -295,6 +295,7 @@
                 </label>
               </div>
               <p id="store-install-note" class="form-note">Only install images you trust. HomeStart will pull the image and run it as a Docker container.</p>
+              <div id="store-risk" class="compose-risk" hidden></div>
               <div id="store-install-progress" class="install-progress" hidden>
                 <div class="install-progress-head"><strong id="store-install-stage">Preparing…</strong><span id="store-install-percent">0%</span></div>
                 <div class="install-progress-track"><span id="store-install-bar"></span></div>
@@ -304,6 +305,36 @@
               <div class="dialog-actions">
                 <button id="store-install-cancel" type="button">Cancel</button>
                 <button id="store-install-submit" type="submit">Install</button>
+              </div>
+            </form>
+          </dialog>
+
+          <dialog id="app-uninstall-dialog" class="store-dialog uninstall-dialog">
+            <form id="app-uninstall-form" method="dialog">
+              <div>
+                <p class="eyebrow">Remove application</p>
+                <h2 id="app-uninstall-title">Remove app</h2>
+                <p id="app-uninstall-description" class="form-note"></p>
+              </div>
+              <fieldset id="app-uninstall-options" class="uninstall-options">
+                <legend>Data handling</legend>
+                <label>
+                  <input type="radio" name="uninstall-data" value="keep" checked />
+                  <span><strong>Keep data and volumes</strong><small>The application can be started or reinstalled later.</small></span>
+                </label>
+                <label>
+                  <input type="radio" name="uninstall-data" value="delete" />
+                  <span><strong>Also delete managed data</strong><small>Deletes named volumes and only folders managed inside HomeStart app-data.</small></span>
+                </label>
+              </fieldset>
+              <label>
+                Type <strong id="app-uninstall-confirmation-label"></strong> to confirm
+                <input id="app-uninstall-confirmation" type="text" autocomplete="off" required />
+              </label>
+              <p id="app-uninstall-warning" class="form-note"></p>
+              <div class="dialog-actions">
+                <button id="app-uninstall-cancel" type="button">Cancel</button>
+                <button id="app-uninstall-submit" class="danger" type="submit">Remove application</button>
               </div>
             </form>
           </dialog>
@@ -474,7 +505,7 @@
             <div class="section-head">
               <div>
                 <h2>Network</h2>
-                <p>Detected physical network interfaces. Applying changes can disconnect this host.</p>
+                <p>Physical interfaces managed by Netplan or NetworkManager. Applying changes can disconnect this host.</p>
               </div>
               <button id="refresh-network" type="button">Refresh interfaces</button>
             </div>
@@ -570,6 +601,7 @@
           <a class="open" target="_blank" rel="noreferrer">Open</a>
           <button class="stop" type="button">Stop</button>
           <button class="restart" type="button">Restart</button>
+          <button class="update" type="button">Update</button>
           <button class="logs" type="button">Logs</button>
           <button class="uninstall" type="button">Uninstall</button>
         </div>

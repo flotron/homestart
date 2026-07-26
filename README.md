@@ -25,6 +25,10 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Professional overview with health state, local alerts, seven days of CPU, memory, and GPU history, physical disks, processes, and Docker resources.
 - Apps dashboard: Docker discovery, native/supported app cards, open/stop/restart/uninstall actions.
 - Docker support: detects published ports, including stopped containers.
+- Managed Docker Compose applications are grouped by project and support
+  start, stop, restart, image updates and stack-wide uninstall.
+- Compose uninstall can preserve volumes and app data or remove named volumes
+  plus HomeStart-managed data. External bind-mounted folders are never deleted.
 - Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste with progress, live speed, ETA and safe cancellation, recursive properties, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
 - Large copies prefer native GNU `cp` with automatic kernel optimizations and
@@ -43,10 +47,15 @@ and apply local or GitHub release updates without bundling private runtime data.
 - Docker logs and a declarative App Store backed by validated Docker Compose
   templates from the separate
   [HomeStart Apps catalog](https://github.com/flotron/homestart-apps).
+- App Store templates show informational warnings for privileged containers,
+  host namespaces, Docker socket/device access and sensitive host mounts.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
 - Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
-- Settings: network interface configuration through netplan, GitHub release update checks, and update uploads.
+- Settings: network interface configuration through Netplan or NetworkManager,
+  GitHub release update checks, and update uploads.
+- Runtime architecture awareness for `amd64`, `arm64` and `arm/v7`, with
+  declarative App Store compatibility metadata and Docker manifest preflight.
 - Supported apps:
   - Ookla Speedtest CLI wrapper with stored local history.
 - Safe packaging: installer/update archives exclude local runtime data.
@@ -86,6 +95,11 @@ Install dependencies:
 sudo apt-get update
 sudo apt-get install -y python3 python3-yaml iproute2 procps util-linux
 ```
+
+Network configuration is optional. HomeStart uses Netplan when the selected
+interface is declared there, otherwise it uses NetworkManager through `nmcli`
+when available. Unknown backends are shown read-only instead of being
+overwritten.
 
 Create local configuration:
 
@@ -185,8 +199,17 @@ entry point, while focused code lives under `homestart/`:
 - `api/router.py`: API dispatch and HTTP error mapping
 - `config.py`: configuration defaults and persistence
 - `files/copy.py`: copy jobs, native `cp`, progress and cancellation
+- `metrics/store.py`: SQLite metric retention, history and bandwidth rankings
+- `samba/manager.py`: share discovery, credentials and transactional Samba
+  configuration
 - `system/network.py`: network parsing and interface selection
+- `system/network_config.py`: NetworkManager parsing and architecture
+  normalization
 - `updates/github.py`: GitHub release discovery and downloads
+- `updates/package.py`: staged transactional updates and rollback metadata
+- `docker/projects.py`: Compose discovery, lifecycle and template risk analysis
+- `docker/store.py`: declarative catalog validation, input normalization,
+  Compose rendering and Docker Hub helpers
 - `server.py`: process lifecycle and domains awaiting extraction
 
 See [Architecture](docs/ARCHITECTURE.md) for the compatibility boundary and
@@ -217,6 +240,16 @@ catalog, keeps the last valid copy in `data/app-store-catalog.json`, and creates
 managed projects under `data/compose-apps/`. A catalog outage therefore does not
 remove already downloaded recommendations. Direct Docker Hub searches continue
 to use the single-container installer.
+
+Catalog entries can optionally declare `architectures` using `amd64`, `arm64`
+or `arm/v7`. Missing declarations are displayed as unknown rather than assumed
+compatible. Before installation, HomeStart also attempts to inspect the image
+manifest; Docker remains the final authority when a private registry or another
+registry limitation prevents inspection.
+
+The ARM and NetworkManager paths are compatibility groundwork. They are not a
+claim that HomeStart has been tested or officially certified on Raspberry Pi
+hardware.
 
 The official catalog URL can be changed through `app_store.catalog_url` in
 `config.json`, or with the `HOMESTART_APP_CATALOG_URL` environment variable.

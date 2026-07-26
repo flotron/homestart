@@ -13,10 +13,24 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   persistence.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
   supervision, progress, speed, ETA and cancellation.
+- `homestart/metrics/store.py` owns SQLite schemas, retention, metric history,
+  peak-preserving network buckets and per-app bandwidth rankings.
+- `homestart/samba/manager.py` owns Samba parsing, share credentials,
+  validation, transactional configuration writes and service reloads.
 - `homestart/system/network.py` contains side-effect-free parsers and network
   interface selection.
+- `homestart/system/network_config.py` contains NetworkManager terse-output
+  parsing, architecture normalization and portable configuration helpers.
+- `homestart/docker/projects.py` owns managed Compose project discovery,
+  lifecycle actions, protected data removal and template risk analysis.
+- `homestart/docker/store.py` owns declarative catalog validation, placeholder
+  expansion, installer input normalization, Compose rendering and pure Docker
+  Hub result helpers. Remote fetches and long-running install orchestration
+  remain in the server boundary for now.
 - `homestart/updates/github.py` handles GitHub release metadata and asset
-  downloads; package validation and installation remain in the server.
+  downloads.
+- `homestart/updates/package.py` validates, stages, preflights, atomically
+  applies and records rollback metadata for update packages.
 - `static/` contains the dependency-free browser application.
 - `data/homestart.db` stores local metric and Speedtest history.
 - `data/backups/`, `data/trash/`, `data/app-icons/`, `data/compose-apps/`, and
@@ -25,6 +39,12 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   `flotron/homestart-apps` catalog. HomeStart validates and caches the catalog,
   renders only its declared inputs, then runs the generated project through the
   host's Docker Compose plugin.
+- Network configuration is selected per interface. A Netplan declaration
+  remains authoritative; otherwise a managed NetworkManager device is changed
+  through `nmcli`. Unknown managers are never rewritten.
+- App templates may declare `amd64`, `arm64` and `arm/v7`. HomeStart combines
+  that declaration with a best-effort Docker manifest inspection. This is a
+  portability mechanism, not evidence that any particular ARM board was tested.
 - `scripts/build_package.sh` creates separate installer and update archives.
 - `.github/workflows/` validates every change and builds tagged releases.
 
@@ -50,3 +70,14 @@ This lets an updater from before the package split install the modular server
 through its existing `scripts/` allowlist. `app.py` uses that copy only when the
 canonical top-level package is unavailable; subsequent updates can install and
 use `homestart/` normally.
+
+Every release is tested through an update matrix against the immediately
+previous release and the last pre-modular release. Synthetic runtime fixtures
+represent configuration, SQLite history, trash metadata, icons and Compose app
+data. Their hashes must remain unchanged after migration.
+
+Before replacing installed files, the update package is extracted to a staging
+directory and its Python package is compiled and imported. A write failure
+restores already replaced files in-process. On systemd installations, a
+separate transient verifier checks the expected version and `/health` after
+restart and restores `transaction.json` automatically if startup fails.

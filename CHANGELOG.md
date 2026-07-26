@@ -4,6 +4,59 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2700
+
+- Continued the progressive modularization without changing the `app.py`
+  entry point, HTTP API paths or server-level compatibility function names.
+- Extracted SQLite metric schemas, retention, historical queries,
+  peak-preserving network buckets and bandwidth rankings into
+  `homestart/metrics/store.py`.
+- Extracted Samba parsing, users and credential management, share mutations,
+  transactional configuration writes, rollback and reload handling into
+  `homestart/samba/manager.py`.
+- Extracted declarative App Store validation, placeholders, installer input
+  normalization, Compose rendering and Docker Hub result helpers into
+  `homestart/docker/store.py`.
+- Reduced `homestart/server.py` to process lifecycle, host inspection and
+  cross-domain orchestration while preserving existing behavior.
+
+## 20260725-2600
+
+- Managed Docker Compose installations are now represented as one application
+  instead of unrelated container cards.
+- Added complete stack actions for start, stop, restart, image update and
+  removal through the original managed Compose project.
+- Compose uninstall now offers data preservation or deletion. Deletion removes
+  named volumes and only bind-mounted folders managed below
+  `data/app-data/`; external host paths are always preserved.
+- Applications removed with their data preserved remain visible and can be
+  started again without rebuilding their configuration.
+- Added informational template risk analysis for privileged mode, host
+  namespaces, Docker socket access, devices, capabilities, unconfined security
+  profiles, root execution and sensitive host mounts.
+- Updates are now extracted into staging, compiled and import-tested before any
+  installed file is replaced. File replacement is atomic and rolls back
+  immediately if a write fails.
+- Added a detached post-restart health verifier that restores the update backup
+  automatically if the new service or `/health` endpoint does not recover.
+- Added a release-gating update matrix covering clean installation, previous
+  release migration, pre-modular migration and preservation of realistic
+  synthetic runtime data.
+- Added a real two-container Docker Compose integration job that exercises the
+  complete HomeStart lifecycle.
+- Network settings now detect and configure interfaces managed by either
+  Netplan or NetworkManager. Interfaces with an unknown backend remain
+  available for monitoring in read-only mode.
+- Added host architecture detection for `amd64`, `arm64` and `arm/v7`.
+  Declarative app templates may advertise compatible architectures, and
+  explicitly incompatible templates cannot be installed.
+- Docker image installation now performs a best-effort manifest inspection and
+  rejects images known not to publish a Linux variant for the host architecture.
+- These changes prepare HomeStart for ARM Linux and Raspberry Pi OS-style
+  environments without claiming hardware that has not been tested.
+- Extracted Compose project management, risk analysis and transactional package
+  updates from `server.py` into dedicated domain modules.
+
 ## 20260725-2510
 
 - Fixed upgrades from pre-modular releases: their update allowlist did not yet
