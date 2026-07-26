@@ -4,6 +4,22 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260725-2700
+
+- Continued the progressive modularization without changing the `app.py`
+  entry point, HTTP API paths or server-level compatibility function names.
+- Extracted SQLite metric schemas, retention, historical queries,
+  peak-preserving network buckets and bandwidth rankings into
+  `homestart/metrics/store.py`.
+- Extracted Samba parsing, users and credential management, share mutations,
+  transactional configuration writes, rollback and reload handling into
+  `homestart/samba/manager.py`.
+- Extracted declarative App Store validation, placeholders, installer input
+  normalization, Compose rendering and Docker Hub result helpers into
+  `homestart/docker/store.py`.
+- Reduced `homestart/server.py` to process lifecycle, host inspection and
+  cross-domain orchestration while preserving existing behavior.
+
 ## 20260725-2600
 
 - Managed Docker Compose installations are now represented as one application

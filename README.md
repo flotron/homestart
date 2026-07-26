@@ -199,12 +199,17 @@ entry point, while focused code lives under `homestart/`:
 - `api/router.py`: API dispatch and HTTP error mapping
 - `config.py`: configuration defaults and persistence
 - `files/copy.py`: copy jobs, native `cp`, progress and cancellation
+- `metrics/store.py`: SQLite metric retention, history and bandwidth rankings
+- `samba/manager.py`: share discovery, credentials and transactional Samba
+  configuration
 - `system/network.py`: network parsing and interface selection
 - `system/network_config.py`: NetworkManager parsing and architecture
   normalization
 - `updates/github.py`: GitHub release discovery and downloads
 - `updates/package.py`: staged transactional updates and rollback metadata
 - `docker/projects.py`: Compose discovery, lifecycle and template risk analysis
+- `docker/store.py`: declarative catalog validation, input normalization,
+  Compose rendering and Docker Hub helpers
 - `server.py`: process lifecycle and domains awaiting extraction
 
 See [Architecture](docs/ARCHITECTURE.md) for the compatibility boundary and

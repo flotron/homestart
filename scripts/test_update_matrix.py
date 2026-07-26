@@ -14,6 +14,8 @@ from pathlib import Path
 
 
 REPOSITORY = "flotron/homestart"
+PROJECT_ROOT = Path(__file__).parents[1]
+LOCAL_DIST = PROJECT_ROOT / "dist"
 LEGACY_PREFIXES = {"static", "scripts", "docs"}
 LEGACY_FILES = {
     ".gitignore",
@@ -80,6 +82,10 @@ def run_import(install_dir):
 def release_archive(version, cache_dir):
     target = cache_dir / f"homestart-update-{version}.tar.gz"
     if target.is_file():
+        return target
+    local = LOCAL_DIST / target.name
+    if local.is_file():
+        target.write_bytes(local.read_bytes())
         return target
     url = (
         f"https://github.com/{REPOSITORY}/releases/download/"
@@ -194,7 +200,7 @@ def main():
     parser.add_argument(
         "--matrix",
         type=Path,
-        default=Path(__file__).parents[1] / "tests" / "update-matrix.json",
+        default=PROJECT_ROOT / "tests" / "update-matrix.json",
     )
     args = parser.parse_args()
     if not args.update.is_file():

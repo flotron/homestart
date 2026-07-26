@@ -5,7 +5,6 @@ import binascii
 import hashlib
 import mimetypes
 import os
-import pwd
 import re
 import shutil
 import socket
@@ -38,7 +37,32 @@ from .config import (
     save_config as save_config_data,
 )
 from .docker.projects import ComposeProjectManager, compose_risk_report
+from .docker.store import (
+    dockerhub_icon_slug as store_dockerhub_icon_slug,
+    dockerhub_page_url as store_dockerhub_page_url,
+    dockerhub_repository_from_url as parse_dockerhub_repository_url,
+    dockerhub_result_score as score_dockerhub_result,
+    install_values as validate_catalog_install_values,
+    normalize_image as validate_docker_image,
+    normalize_port as validate_container_port,
+    placeholders as catalog_placeholders,
+    render_compose as render_store_compose,
+    replace_placeholders as fill_catalog_placeholders,
+    safe_environment_assignment as validate_environment_assignment,
+    safe_volume_mapping as validate_volume_mapping,
+    validate_catalog as validate_declarative_catalog,
+)
 from .files.copy import CopyCancelled, CopyManager
+from .metrics.store import MetricStore
+from .samba.manager import (
+    SambaManager,
+    config_with_include as add_samba_include,
+    parse_config as parse_samba_config_data,
+    render_config as render_samba_config,
+    share_payload as build_samba_share_payload,
+    user_tokens as parse_samba_user_tokens,
+    validate_share_name as validate_samba_name,
+)
 from .system.network import (
     choose_monitor_interface as select_monitor_interface,
     endpoint_address as parse_endpoint_address,
@@ -113,6 +137,7 @@ INTERFACE_ADDRESS_CACHE = {"at": 0, "interface": "", "items": set()}
 FILE_COPY_JOBS = {}
 FILE_COPY_JOBS_LOCK = threading.Lock()
 COPY_MANAGER = None
+METRIC_STORE = None
 GITHUB_RELEASE_CLIENT = None
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
@@ -1503,63 +1528,14 @@ def system_payload(network_channel="live"):
 
 
 def metrics_db():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS system_metrics (
-          captured_at INTEGER PRIMARY KEY,
-          cpu REAL,
-          memory REAL,
-          gpu REAL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS network_metrics (
-          captured_at INTEGER PRIMARY KEY,
-          rx_bps REAL,
-          tx_bps REAL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS container_network_metrics (
-          captured_at INTEGER,
-          container_key TEXT,
-          name TEXT,
-          rx_bytes REAL,
-          tx_bytes REAL,
-          rx_bps REAL,
-          tx_bps REAL,
-          PRIMARY KEY (captured_at, container_key)
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS host_network_estimates (
-          captured_at INTEGER,
-          identity_key TEXT,
-          name TEXT,
-          kind TEXT,
-          confidence TEXT,
-          rx_bytes REAL,
-          tx_bytes REAL,
-          rx_bps REAL,
-          tx_bps REAL,
-          PRIMARY KEY (captured_at, identity_key)
-        )
-        """
-    )
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(system_metrics)")}
-    for name in ("rx_bps", "tx_bps", "temperature"):
-        if name not in columns:
-            connection.execute(f"ALTER TABLE system_metrics ADD COLUMN {name} REAL")
-    return connection
+    return metric_store().connect()
+
+
+def metric_store():
+    global METRIC_STORE
+    if METRIC_STORE is None or METRIC_STORE.db_path != Path(DB_PATH):
+        METRIC_STORE = MetricStore(DB_PATH)
+    return METRIC_STORE
 
 
 def record_system_metric(payload):
@@ -1568,276 +1544,29 @@ def record_system_metric(payload):
     if captured_at - METRIC_LAST_WRITE < 30:
         return
     METRIC_LAST_WRITE = captured_at
-    with metrics_db() as connection:
-        connection.execute(
-            "INSERT OR REPLACE INTO system_metrics (captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                captured_at,
-                payload.get("cpu", {}).get("percent"),
-                payload.get("memory", {}).get("percent"),
-                payload.get("gpu", {}).get("percent"),
-                payload.get("network", {}).get("rx_bps"),
-                payload.get("network", {}).get("tx_bps"),
-                payload.get("temperature", {}).get("celsius"),
-            ),
-        )
-        connection.execute("DELETE FROM system_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
+    metric_store().record_system(payload, captured_at)
 
 
 def record_network_metric(payload):
-    captured_at = int(payload.get("timestamp") or time.time())
-    with metrics_db() as connection:
-        connection.execute(
-            "INSERT OR REPLACE INTO network_metrics (captured_at, rx_bps, tx_bps) VALUES (?, ?, ?)",
-            (captured_at, payload.get("rx_bps"), payload.get("tx_bps")),
-        )
-        connection.execute("DELETE FROM network_metrics WHERE captured_at < ?", (captured_at - 7 * 86400,))
+    metric_store().record_network(payload)
 
 
 def record_container_network_metrics(samples, captured_at=None):
-    captured_at = int(captured_at or time.time())
-    if not samples:
-        return
-    rows = [
-        (
-            captured_at,
-            str(sample.get("key") or sample.get("name") or ""),
-            str(sample.get("name") or "Unknown container"),
-            max(0, float(sample.get("rx_bps") or 0) * float(sample.get("sample_seconds") or 2)),
-            max(0, float(sample.get("tx_bps") or 0) * float(sample.get("sample_seconds") or 2)),
-            max(0, float(sample.get("rx_bps") or 0)),
-            max(0, float(sample.get("tx_bps") or 0)),
-        )
-        for sample in samples
-        if sample.get("key") or sample.get("name")
-    ]
-    if not rows:
-        return
-    with metrics_db() as connection:
-        connection.executemany(
-            """
-            INSERT OR REPLACE INTO container_network_metrics
-              (captured_at, container_key, name, rx_bytes, tx_bytes, rx_bps, tx_bps)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        connection.execute(
-            "DELETE FROM container_network_metrics WHERE captured_at < ?",
-            (captured_at - 7 * 86400,),
-        )
+    return metric_store().record_container_network(samples, captured_at)
 
 
 def record_host_network_estimates(samples, network, container_samples, captured_at=None):
-    captured_at = int(captured_at or time.time())
-    sample_seconds = max(.001, float(network.get("sample_seconds") or 2))
-    rows = []
-    estimated_rx = estimated_tx = 0
-    for sample in samples:
-        rx_bytes = max(0, float(sample.get("rx_bytes") or 0))
-        tx_bytes = max(0, float(sample.get("tx_bytes") or 0))
-        estimated_rx += rx_bytes
-        estimated_tx += tx_bytes
-        rows.append((
-            captured_at,
-            str(sample.get("key") or sample.get("name") or ""),
-            str(sample.get("name") or "Unknown process"),
-            str(sample.get("kind") or "process"),
-            str(sample.get("confidence") or "medium"),
-            rx_bytes,
-            tx_bytes,
-            max(0, float(sample.get("rx_bps") or 0)),
-            max(0, float(sample.get("tx_bps") or 0)),
-        ))
-
-    measured_rx = sum(
-        max(0, float(item.get("rx_bps") or 0) * float(item.get("sample_seconds") or sample_seconds))
-        for item in container_samples
+    return metric_store().record_host_estimates(
+        samples, network, container_samples, captured_at,
     )
-    measured_tx = sum(
-        max(0, float(item.get("tx_bps") or 0) * float(item.get("sample_seconds") or sample_seconds))
-        for item in container_samples
-    )
-    host_rx = max(0, float(network.get("rx_bps") or 0) * sample_seconds)
-    host_tx = max(0, float(network.get("tx_bps") or 0) * sample_seconds)
-    unattributed_rx = max(0, host_rx - measured_rx - estimated_rx)
-    unattributed_tx = max(0, host_tx - measured_tx - estimated_tx)
-    if unattributed_rx or unattributed_tx:
-        rows.append((
-            captured_at,
-            "unattributed",
-            "Unattributed traffic",
-            "unattributed",
-            "low",
-            unattributed_rx,
-            unattributed_tx,
-            unattributed_rx / sample_seconds,
-            unattributed_tx / sample_seconds,
-        ))
-    if not rows:
-        return
-    with metrics_db() as connection:
-        connection.executemany(
-            """
-            INSERT OR REPLACE INTO host_network_estimates
-              (captured_at, identity_key, name, kind, confidence, rx_bytes, tx_bytes, rx_bps, tx_bps)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        connection.execute(
-            "DELETE FROM host_network_estimates WHERE captured_at < ?",
-            (captured_at - 7 * 86400,),
-        )
 
 
 def container_network_ranking(period=3600, limit=12):
-    try:
-        period = int(period)
-    except (TypeError, ValueError):
-        period = 3600
-    if period not in {60, 3600, 86400}:
-        raise ValueError("Ranking period must be 60, 3600, or 86400 seconds")
-    limit = max(1, min(50, int(limit or 12)))
-    since = int(time.time()) - period
-    with metrics_db() as connection:
-        rows = connection.execute(
-            """
-            SELECT name,
-                   SUM(rx_bytes) AS rx_bytes,
-                   SUM(tx_bytes) AS tx_bytes,
-                   AVG(rx_bps) AS rx_avg_bps,
-                   AVG(tx_bps) AS tx_avg_bps,
-                   MAX(rx_bps) AS rx_peak_bps,
-                   MAX(tx_bps) AS tx_peak_bps,
-                   COUNT(*) AS sample_count
-            FROM container_network_metrics
-            WHERE captured_at >= ?
-            GROUP BY name
-            HAVING (SUM(rx_bytes) + SUM(tx_bytes)) > 0
-            ORDER BY (SUM(rx_bytes) + SUM(tx_bytes)) DESC
-            LIMIT ?
-            """,
-            (since, limit),
-        ).fetchall()
-        estimated_rows = connection.execute(
-            """
-            SELECT identity_key,
-                   name,
-                   kind,
-                   confidence,
-                   SUM(rx_bytes) AS rx_bytes,
-                   SUM(tx_bytes) AS tx_bytes,
-                   AVG(rx_bps) AS rx_avg_bps,
-                   AVG(tx_bps) AS tx_avg_bps,
-                   MAX(rx_bps) AS rx_peak_bps,
-                   MAX(tx_bps) AS tx_peak_bps,
-                   COUNT(*) AS sample_count
-            FROM host_network_estimates
-            WHERE captured_at >= ?
-            GROUP BY identity_key, name, kind, confidence
-            HAVING (SUM(rx_bytes) + SUM(tx_bytes)) > 0
-            ORDER BY (SUM(rx_bytes) + SUM(tx_bytes)) DESC
-            LIMIT ?
-            """,
-            (since, limit),
-        ).fetchall()
-    items = []
-    for index, row in enumerate(rows, 1):
-        item = dict(row)
-        item["rank"] = index
-        item["total_bytes"] = float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
-        items.append(item)
-    estimated_items = []
-    for index, row in enumerate(estimated_rows, 1):
-        item = dict(row)
-        item["rank"] = index
-        item["total_bytes"] = float(item.get("rx_bytes") or 0) + float(item.get("tx_bytes") or 0)
-        estimated_items.append(item)
-    return {
-        "ok": True,
-        "period_seconds": period,
-        "generated_at": int(time.time()),
-        "items": items,
-        "estimated_items": estimated_items,
-        "scope": "docker_containers",
-        "estimated_scope": "host_tcp_processes",
-    }
+    return metric_store().network_ranking(period, limit)
 
 
 def metrics_history(hours=24):
-    automatic = str(hours).lower() == "auto"
-    try:
-        hours = 168 if automatic else max(1, min(168, int(hours)))
-    except (TypeError, ValueError):
-        hours = 24
-    server_timestamp = int(time.time())
-    since = server_timestamp - hours * 3600
-    with metrics_db() as connection:
-        rows = connection.execute(
-            "SELECT captured_at, cpu, memory, gpu, rx_bps, tx_bps, temperature FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
-            (since,),
-        ).fetchall()
-        network_bounds = connection.execute(
-            "SELECT MIN(captured_at), MAX(captured_at), COUNT(*) FROM network_metrics WHERE captured_at BETWEEN ? AND ?",
-            (since, server_timestamp + 5),
-        ).fetchone()
-        available_span = max(0, (network_bounds[1] or 0) - (network_bounds[0] or 0))
-        bucket_seconds = max(2, int((available_span + 1199) // 1200))
-        network_rows = connection.execute(
-            """
-            SELECT (captured_at / ?) * ? AS captured_at,
-                   MAX(rx_bps) AS rx_bps,
-                   MAX(tx_bps) AS tx_bps,
-                   AVG(rx_bps) AS rx_avg_bps,
-                   AVG(tx_bps) AS tx_avg_bps,
-                   COUNT(*) AS sample_count
-            FROM network_metrics
-            WHERE captured_at BETWEEN ? AND ?
-            GROUP BY captured_at / ?
-            ORDER BY captured_at
-            """,
-            (bucket_seconds, bucket_seconds, since, server_timestamp + 5, bucket_seconds),
-        ).fetchall()
-        if not network_rows:
-            network_rows = connection.execute(
-                "SELECT captured_at, rx_bps, tx_bps FROM system_metrics WHERE captured_at >= ? ORDER BY captured_at",
-                (since,),
-            ).fetchall()
-    network_points = []
-    for row in network_rows:
-        point = dict(row)
-        point.setdefault("rx_avg_bps", point.get("rx_bps"))
-        point.setdefault("tx_avg_bps", point.get("tx_bps"))
-        point.setdefault("sample_count", 1)
-        network_points.append(point)
-    gap_threshold = max(10, bucket_seconds * 3)
-    gaps = [
-        {"start": previous["captured_at"], "end": current["captured_at"],
-         "seconds": current["captured_at"] - previous["captured_at"]}
-        for previous, current in zip(network_points, network_points[1:])
-        if current["captured_at"] - previous["captured_at"] > gap_threshold
-    ]
-    latest_sample = network_points[-1]["captured_at"] if network_points else None
-    return {
-        "ok": True,
-        "hours": "auto" if automatic else hours,
-        "server_timestamp": server_timestamp,
-        "network_interface": default_network_interface(),
-        "points": [dict(row) for row in rows],
-        "network_points": network_points,
-        "network_sample_seconds": 2,
-        "network_bucket_seconds": bucket_seconds,
-        "network_status": {
-            "stored_samples": int(network_bounds[2] or 0),
-            "first_timestamp": network_bounds[0],
-            "last_timestamp": network_bounds[1],
-            "last_sample_age_seconds": max(0, server_timestamp - latest_sample) if latest_sample else None,
-            "gap_count": len(gaps),
-            "largest_gap_seconds": max((gap["seconds"] for gap in gaps), default=0),
-        },
-        "retention_days": 7,
-    }
+    return metric_store().history(hours, default_network_interface())
 
 
 def metrics_sampler():
@@ -3175,328 +2904,76 @@ def samba_manager_enabled():
     return load_config_file().get("features", {}).get("samba_manager", True)
 
 
+def samba_manager():
+    return SambaManager(
+        SAMBA_CONFIG_PATH,
+        SAMBA_MANAGED_PATH,
+        SAMBA_STATE_PATH,
+        samba_manager_enabled,
+        resolve_file_path,
+    )
+
+
 def ensure_samba_manager_enabled():
-    if not samba_manager_enabled():
-        raise PermissionError("Samba Share Manager is disabled")
+    return samba_manager().ensure_enabled()
 
 
 def parse_samba_config(content):
-    sections = {}
-    current = None
-    for raw_line in str(content or "").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        match = re.fullmatch(r"\[([^\]]+)\]", line)
-        if match:
-            current = match.group(1).strip()
-            sections[current] = {}
-            continue
-        if current and "=" in line:
-            key, value = line.split("=", 1)
-            sections[current][key.strip().lower()] = value.strip()
-    return sections
+    return parse_samba_config_data(content)
 
 
 def samba_user_tokens(value):
-    return [item for item in re.split(r"[\s,]+", str(value or "").strip()) if item]
+    return parse_samba_user_tokens(value)
 
 
 def samba_users():
-    try:
-        output = subprocess.check_output(
-            ["pdbedit", "-L"], text=True, timeout=8, stderr=subprocess.DEVNULL
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return []
-    users = []
-    for line in output.splitlines():
-        name, separator, description = line.partition(":")
-        if separator and name.strip():
-            users.append({"name": name.strip(), "description": description.rsplit(":", 1)[-1].strip()})
-    return sorted(users, key=lambda item: item["name"].lower())
+    return samba_manager().users()
 
 
-def samba_testparm(config_path=SAMBA_CONFIG_PATH):
-    try:
-        return subprocess.check_output(
-            ["testparm", "-s", str(config_path)],
-            text=True, timeout=10, stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError as error:
-        raise FileNotFoundError("Samba testparm is not installed") from error
-    except subprocess.CalledProcessError as error:
-        raise ValueError("Samba configuration validation failed") from error
+def samba_testparm(config_path=None):
+    return samba_manager().testparm(config_path)
 
 
 def samba_state():
-    state = load_json_file(SAMBA_STATE_PATH, {"shares": {}, "disabled": []})
-    state.setdefault("shares", {})
-    state.setdefault("disabled", [])
-    return state
+    return samba_manager().state()
 
 
 def samba_share_payload(name, values, state):
-    path = values.get("path", "")
-    valid_users = samba_user_tokens(values.get("valid users", ""))
-    write_users = samba_user_tokens(values.get("write list", ""))
-    read_users = samba_user_tokens(values.get("read list", ""))
-    return {
-        "name": name,
-        "path": path,
-        "enabled": str(values.get("available", "yes")).lower() not in {"no", "false", "0"},
-        "browseable": str(values.get("browseable", values.get("browsable", "yes"))).lower() not in {"no", "false", "0"},
-        "read_only": str(values.get("read only", "yes")).lower() not in {"no", "false", "0"},
-        "guest_ok": str(values.get("guest ok", "no")).lower() in {"yes", "true", "1"},
-        "valid_users": valid_users,
-        "write_users": write_users,
-        "read_users": read_users,
-        "force_user": values.get("force user", ""),
-        "managed": name in state["shares"],
-        "disabled_by_homestart": name in state["disabled"],
-    }
+    return build_samba_share_payload(name, values, state)
 
 
 def samba_shares_payload():
-    ensure_samba_manager_enabled()
-    if not SAMBA_CONFIG_PATH.exists():
-        return {
-            "ok": True, "available": False, "shares": [], "users": [],
-            "message": f"Samba configuration was not found at {SAMBA_CONFIG_PATH}",
-        }
-    try:
-        effective = parse_samba_config(samba_testparm())
-    except FileNotFoundError as error:
-        return {"ok": True, "available": False, "shares": [], "users": [], "message": str(error)}
-    state = samba_state()
-    ignored = {"global", "homes", "printers", "print$"}
-    shares = [
-        samba_share_payload(name, values, state)
-        for name, values in effective.items()
-        if name.lower() not in ignored and values.get("path")
-    ]
-    shares.sort(key=lambda item: item["name"].lower())
-    return {
-        "ok": True,
-        "available": True,
-        "shares": shares,
-        "users": samba_users(),
-        "passwords_readable": False,
-        "message": "Samba passwords are stored as non-reversible hashes and cannot be displayed.",
-    }
+    return samba_manager().shares_payload()
 
 
 def validate_samba_share_name(name):
-    clean = str(name or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}", clean):
-        raise ValueError("Share name contains unsupported characters")
-    if clean.lower() in {"global", "homes", "printers", "print$"}:
-        raise ValueError("This Samba share name is reserved")
-    return clean
+    return validate_samba_name(name)
 
 
 def render_homestart_samba_config(state):
-    lines = [
-        "# Managed by HomeStart. Runtime server data is not included in HomeStart releases.",
-        "",
-    ]
-    for name, share in sorted(state["shares"].items(), key=lambda item: item[0].lower()):
-        lines.extend([
-            f"[{name}]",
-            f"    path = {share['path']}",
-            f"    available = {'no' if name in state['disabled'] else 'yes'}",
-            f"    browseable = {'yes' if share.get('browseable', True) else 'no'}",
-            f"    read only = {'yes' if share.get('read_only', True) else 'no'}",
-            f"    guest ok = {'yes' if share.get('guest_ok', False) else 'no'}",
-        ])
-        users = share.get("valid_users") or []
-        if users:
-            lines.append(f"    valid users = {' '.join(users)}")
-        if share.get("force_user"):
-            lines.extend([
-                f"    force user = {share['force_user']}",
-                "    create mask = 0664",
-                "    directory mask = 0775",
-                "    force create mode = 0660",
-                "    force directory mode = 0770",
-            ])
-        lines.extend(["", ""])
-    for name in sorted(set(state["disabled"]), key=str.lower):
-        if name not in state["shares"]:
-            lines.extend([f"[{name}]", "    available = no", "", ""])
-    return "\n".join(lines).rstrip() + "\n"
+    return render_samba_config(state)
 
 
 def samba_config_with_include(content):
-    include_line = f"    include = {SAMBA_MANAGED_PATH}"
-    if re.search(rf"(?im)^\s*include\s*=\s*{re.escape(str(SAMBA_MANAGED_PATH))}\s*$", content):
-        return content
-    match = re.search(r"(?im)^\s*\[global\]\s*$", content)
-    if not match:
-        raise ValueError("Samba configuration does not contain a [global] section")
-    position = match.end()
-    return content[:position] + "\n" + include_line + content[position:]
+    return add_samba_include(content, SAMBA_MANAGED_PATH)
 
 
 def reload_samba():
-    commands = [
-        ["smbcontrol", "all", "reload-config"],
-        ["systemctl", "reload", "smbd"],
-        ["systemctl", "reload", "smb"],
-    ]
-    for command in commands:
-        try:
-            subprocess.check_output(command, text=True, timeout=15, stderr=subprocess.STDOUT)
-            return
-        except (FileNotFoundError, subprocess.SubprocessError):
-            continue
-    raise ValueError("The Samba configuration is valid, but Samba could not be reloaded")
+    return samba_manager().reload()
 
 
 def save_samba_state(new_state):
-    ensure_samba_manager_enabled()
-    original_main = SAMBA_CONFIG_PATH.read_text(encoding="utf-8")
-    original_managed = SAMBA_MANAGED_PATH.read_text(encoding="utf-8") if SAMBA_MANAGED_PATH.exists() else None
-    new_main = samba_config_with_include(original_main)
-    SAMBA_MANAGED_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        SAMBA_CONFIG_PATH.write_text(new_main, encoding="utf-8")
-        SAMBA_MANAGED_PATH.write_text(render_homestart_samba_config(new_state), encoding="utf-8")
-        samba_testparm()
-        reload_samba()
-        SAMBA_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = SAMBA_STATE_PATH.with_suffix(".tmp")
-        temporary.write_text(json.dumps(new_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(SAMBA_STATE_PATH)
-    except Exception:
-        SAMBA_CONFIG_PATH.write_text(original_main, encoding="utf-8")
-        if original_managed is None:
-            try:
-                SAMBA_MANAGED_PATH.unlink()
-            except FileNotFoundError:
-                pass
-        else:
-            SAMBA_MANAGED_PATH.write_text(original_managed, encoding="utf-8")
-        try:
-            reload_samba()
-        except (ValueError, OSError):
-            pass
-        raise
-    return samba_shares_payload()
+    return samba_manager().save_state(new_state)
 
 
 def samba_share_action(payload):
-    ensure_samba_manager_enabled()
-    action = str(payload.get("action") or "")
-    if action == "set_password":
-        username = str(payload.get("username") or "").strip()
-        password = str(payload.get("password") or "")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", username):
-            raise ValueError("Invalid Linux username")
-        if not 4 <= len(password) <= 128:
-            raise ValueError("Samba password must contain between 4 and 128 characters")
-        try:
-            subprocess.check_output(["id", "-u", username], text=True, timeout=5, stderr=subprocess.DEVNULL)
-        except (FileNotFoundError, subprocess.SubprocessError) as error:
-            raise ValueError("The user must already exist as a Linux account") from error
-        try:
-            subprocess.run(
-                ["smbpasswd", "-s", "-a", username],
-                input=f"{password}\n{password}\n",
-                text=True, capture_output=True, check=True, timeout=12,
-            )
-        except FileNotFoundError as error:
-            raise FileNotFoundError("smbpasswd is not installed") from error
-        except subprocess.CalledProcessError as error:
-            raise ValueError((error.stderr or "").strip() or "Could not update the Samba password") from error
-        return samba_shares_payload()
-    state = samba_state()
-    if action in {"create", "update"}:
-        name = validate_samba_share_name(payload.get("name"))
-        if action == "update" and name not in state["shares"]:
-            raise PermissionError("Only shares created by HomeStart can be edited")
-        target = resolve_file_path(payload.get("path", ""))
-        if target is None or not target.exists() or not target.is_dir():
-            raise NotADirectoryError("Select an existing folder inside the allowed File Browser roots")
-        current_names = {item["name"].lower() for item in samba_shares_payload().get("shares", [])}
-        if action == "create" and name.lower() in current_names:
-            raise FileExistsError("A Samba share with this name already exists")
-        requested_users = payload.get("valid_users") or []
-        if isinstance(requested_users, str):
-            requested_users = samba_user_tokens(requested_users)
-        known_users = {item["name"] for item in samba_users()}
-        unknown = [user for user in requested_users if not user.startswith("@") and user not in known_users]
-        if unknown:
-            raise ValueError(f"Unknown Samba user: {', '.join(unknown)}")
-        if not payload.get("guest_ok") and not requested_users:
-            raise ValueError("Choose at least one Samba user or enable guest access")
-        guest_ok = bool(payload.get("guest_ok", False))
-        read_only = bool(payload.get("read_only", True))
-        force_user = ""
-        ownership_before = None
-        if guest_ok and not read_only:
-            force_user = str(payload.get("force_user") or "").strip()
-            if not force_user:
-                for candidate in (target, *target.parents):
-                    try:
-                        owner = pwd.getpwuid(candidate.stat().st_uid)
-                    except (KeyError, OSError):
-                        continue
-                    if owner.pw_uid != 0:
-                        force_user = owner.pw_name
-                        break
-                if not force_user:
-                    raise ValueError("Could not find a non-root Linux owner; enter a Linux write user")
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}", force_user):
-                raise ValueError("Invalid Linux write user")
-            try:
-                uid = int(subprocess.check_output(
-                    ["id", "-u", force_user], text=True, timeout=5, stderr=subprocess.DEVNULL
-                ).strip())
-            except (FileNotFoundError, subprocess.SubprocessError, ValueError) as error:
-                raise ValueError("Guest write user must be an existing Linux account") from error
-            if uid == 0:
-                raise PermissionError("Guest shares cannot write as root; choose a non-root Linux user")
-            target_stat = target.stat()
-            if target_stat.st_uid != uid:
-                ownership_before = (target_stat.st_uid, target_stat.st_gid)
-                try:
-                    os.chown(target, uid, -1)
-                except OSError as error:
-                    raise PermissionError(f"Could not grant folder ownership to {force_user}") from error
-        state["shares"][name] = {
-            "path": str(target),
-            "browseable": bool(payload.get("browseable", True)),
-            "read_only": read_only,
-            "guest_ok": guest_ok,
-            "valid_users": requested_users,
-            "force_user": force_user,
-        }
-        state["disabled"] = [item for item in state["disabled"] if item != name]
-        try:
-            return save_samba_state(state)
-        except Exception:
-            if ownership_before:
-                try:
-                    os.chown(target, ownership_before[0], ownership_before[1])
-                except OSError:
-                    pass
-            raise
-    elif action in {"disable", "enable", "delete"}:
-        name = validate_samba_share_name(payload.get("name"))
-        if action == "disable":
-            if name not in state["disabled"]:
-                state["disabled"].append(name)
-        elif action == "enable":
-            state["disabled"] = [item for item in state["disabled"] if item != name]
-        elif name in state["shares"]:
-            del state["shares"][name]
-            state["disabled"] = [item for item in state["disabled"] if item != name]
-        else:
-            raise PermissionError("Existing Samba shares can be disabled but not deleted by HomeStart")
-    else:
-        raise ValueError("Invalid Samba share action")
-    return save_samba_state(state)
+    manager = samba_manager()
+    # Preserve the long-standing server-level seams used by integrations and tests.
+    manager.state = samba_state
+    manager.users = samba_users
+    manager.shares_payload = samba_shares_payload
+    manager.save_state = save_samba_state
+    return manager.action(payload)
 
 
 def trash_file_path(raw_path):
@@ -3994,133 +3471,12 @@ def curated_store_apps():
     ]
 
 
-STORE_PLACEHOLDER = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
-STORE_INPUT_TYPES = {"text", "port", "path", "select", "timezone"}
-STORE_RESERVED_VALUES = {"homestart_data", "server_timezone"}
-STORE_COMPOSE_KEYS = {"services", "volumes", "networks", "configs", "secrets"}
-
-
 def store_placeholders(value):
-    if isinstance(value, dict):
-        result = set()
-        for key, item in value.items():
-            result.update(store_placeholders(key))
-            result.update(store_placeholders(item))
-        return result
-    if isinstance(value, list):
-        result = set()
-        for item in value:
-            result.update(store_placeholders(item))
-        return result
-    return set(STORE_PLACEHOLDER.findall(value)) if isinstance(value, str) else set()
+    return catalog_placeholders(value)
 
 
 def validate_store_catalog(catalog):
-    if not isinstance(catalog, dict) or catalog.get("schema_version") != 1:
-        raise ValueError("Unsupported app catalog schema")
-    if not isinstance(catalog.get("apps"), list) or len(catalog["apps"]) > 500:
-        raise ValueError("Invalid app catalog list")
-    normalized = {
-        "schema_version": 1,
-        "catalog_version": str(catalog.get("catalog_version") or ""),
-        "name": str(catalog.get("name") or "HomeStart Apps")[:120],
-        "apps": [],
-    }
-    seen = set()
-    for source in catalog["apps"]:
-        if not isinstance(source, dict):
-            raise ValueError("Invalid app catalog entry")
-        app_id = str(source.get("id") or "")
-        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", app_id) or app_id in seen:
-            raise ValueError(f"Invalid or duplicate catalog app id: {app_id}")
-        seen.add(app_id)
-        inputs = source.get("inputs")
-        compose = source.get("compose")
-        if not isinstance(inputs, list) or len(inputs) > 32:
-            raise ValueError(f"{app_id}: invalid inputs")
-        if not isinstance(compose, dict) or set(compose) - STORE_COMPOSE_KEYS:
-            raise ValueError(f"{app_id}: unsupported Compose section")
-        services = compose.get("services")
-        if not isinstance(services, dict) or not services or len(services) > 16:
-            raise ValueError(f"{app_id}: Compose services are required")
-        input_ids = set()
-        clean_inputs = []
-        for item in inputs:
-            if not isinstance(item, dict):
-                raise ValueError(f"{app_id}: invalid input")
-            input_id = str(item.get("id") or "")
-            input_type = str(item.get("type") or "")
-            if not re.fullmatch(r"[a-z][a-z0-9_]*", input_id) or input_id in input_ids:
-                raise ValueError(f"{app_id}: invalid or duplicate input")
-            if input_type not in STORE_INPUT_TYPES or "default" not in item:
-                raise ValueError(f"{app_id}: unsupported input {input_id}")
-            label = str(item.get("label") or "").strip()
-            if not label or len(label) > 100:
-                raise ValueError(f"{app_id}: invalid label for {input_id}")
-            clean = {"id": input_id, "label": label, "type": input_type, "default": item["default"]}
-            if store_placeholders(item["default"]) - STORE_RESERVED_VALUES:
-                raise ValueError(f"{app_id}: input defaults may only use reserved placeholders")
-            if "help" in item:
-                clean["help"] = str(item["help"])[:240]
-            if "pattern" in item:
-                pattern = str(item["pattern"])
-                if len(pattern) > 160:
-                    raise ValueError(f"{app_id}: input pattern is too long")
-                try:
-                    re.compile(pattern)
-                except re.error as error:
-                    raise ValueError(f"{app_id}: invalid input pattern") from error
-                clean["pattern"] = pattern
-            if input_type == "select":
-                options = [str(value) for value in item.get("options", [])]
-                if not options or len(options) > 50:
-                    raise ValueError(f"{app_id}: select input needs options")
-                clean["options"] = options
-            input_ids.add(input_id)
-            clean_inputs.append(clean)
-        unknown = store_placeholders(compose) - input_ids - STORE_RESERVED_VALUES
-        if unknown:
-            raise ValueError(f"{app_id}: undeclared Compose placeholders")
-        for service_name, service in services.items():
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+", str(service_name)) or not isinstance(service, dict):
-                raise ValueError(f"{app_id}: invalid Compose service")
-            if not isinstance(service.get("image"), str) or not service["image"].strip() or "build" in service:
-                raise ValueError(f"{app_id}: every Compose service needs a fixed image")
-        architectures = source.get("architectures", [])
-        if architectures is None:
-            architectures = []
-        if not isinstance(architectures, list) or len(architectures) > len(SUPPORTED_ARCHITECTURES):
-            raise ValueError(f"{app_id}: invalid architectures")
-        clean_architectures = []
-        for value in architectures:
-            architecture = normalize_architecture(value)
-            if architecture not in SUPPORTED_ARCHITECTURES:
-                raise ValueError(f"{app_id}: unsupported architecture {value}")
-            if architecture not in clean_architectures:
-                clean_architectures.append(architecture)
-        clean_app = {
-            "id": app_id,
-            "name": str(source.get("name") or app_id)[:120],
-            "description": str(source.get("description") or "")[:500],
-            "category": str(source.get("category") or "Other")[:80],
-            "verified": bool(source.get("verified")),
-            "verification_label": str(source.get("verification_label") or "")[:100],
-            "icon_url": str(source.get("icon_url") or "")[:1000],
-            "homepage": str(source.get("homepage") or "")[:1000],
-            "page_url": str(source.get("page_url") or "")[:1000],
-            "link_label": str(source.get("link_label") or "Project page")[:40],
-            "architectures": clean_architectures,
-            "inputs": clean_inputs,
-            "compose": compose,
-        }
-        for url_field in ("icon_url", "homepage", "page_url"):
-            url = clean_app[url_field]
-            if url:
-                parsed = urlparse(url)
-                if parsed.scheme != "https" or not parsed.hostname:
-                    raise ValueError(f"{app_id}: {url_field} must use HTTPS")
-        normalized["apps"].append(clean_app)
-    return normalized
+    return validate_declarative_catalog(catalog)
 
 
 def store_catalog_url():
@@ -4187,16 +3543,7 @@ def load_store_catalog(refresh=False):
 
 
 def replace_store_placeholders(value, values):
-    if isinstance(value, dict):
-        return {
-            replace_store_placeholders(key, values): replace_store_placeholders(item, values)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [replace_store_placeholders(item, values) for item in value]
-    if not isinstance(value, str):
-        return value
-    return STORE_PLACEHOLDER.sub(lambda match: str(values[match.group(1)]), value)
+    return fill_catalog_placeholders(value, values)
 
 
 def catalog_defaults(app):
@@ -4311,10 +3658,7 @@ def store_catalog_app(template_id):
 
 
 def dockerhub_page_url(name, official=False):
-    clean = str(name or "").strip()
-    if official and "/" not in clean:
-        return f"https://hub.docker.com/_/{quote(clean)}"
-    return f"https://hub.docker.com/r/{quote(clean, safe='/')}"
+    return store_dockerhub_page_url(name, official)
 
 
 def dockerhub_verification(name, official=False):
@@ -4426,20 +3770,7 @@ def docker_app_store_enabled():
 
 
 def dockerhub_repository_from_url(value):
-    try:
-        parsed = urlparse(str(value or "").strip())
-    except ValueError:
-        return ""
-    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"hub.docker.com", "www.hub.docker.com"}:
-        return ""
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) >= 3 and parts[0] == "r":
-        repository = "/".join(parts[1:3])
-    elif len(parts) >= 2 and parts[0] == "_":
-        repository = parts[1]
-    else:
-        return ""
-    return repository if re.match(r"^[a-z0-9][a-z0-9_.-]*(/[a-z0-9][a-z0-9_.-]*)?$", repository, re.I) else ""
+    return parse_dockerhub_repository_url(value)
 
 
 def dockerhub_search(query, limit=12):
@@ -4532,78 +3863,15 @@ def dockerhub_search(query, limit=12):
 
 
 def dockerhub_icon_slug(image):
-    _, _, repo = str(image or "").rpartition("/")
-    repo = repo or str(image or "")
-    repo = repo.split(":", 1)[0].lower()
-    aliases = {
-        "home-assistant": "homeassistant",
-        "homeassistant": "homeassistant",
-        "postgres": "postgresql",
-        "postgresql": "postgresql",
-        "mariadb": "mariadb",
-        "mongo": "mongodb",
-        "mongodb": "mongodb",
-        "node": "nodedotjs",
-        "nextcloud": "nextcloud",
-        "jellyfin": "jellyfin",
-        "grafana": "grafana",
-        "prometheus": "prometheus",
-        "nginx": "nginx",
-        "redis": "redis",
-        "mysql": "mysql",
-        "debian": "debian",
-        "ubuntu": "ubuntu",
-        "alpine": "alpinelinux",
-        "portainer": "portainer",
-        "pihole": "pihole",
-        "vaultwarden": "vaultwarden",
-        "forgejo": "forgejo",
-        "gitea": "gitea",
-        "immich": "immich",
-        "plex": "plex",
-        "sonarr": "sonarr",
-        "radarr": "radarr",
-        "qbittorrent": "qbittorrent",
-    }
-    if repo in aliases:
-        return aliases[repo]
-    slug = re.sub(r"[^a-z0-9]+", "", repo)
-    return slug[:48]
+    return store_dockerhub_icon_slug(image)
 
 
 def dockerhub_result_score(name, description, tokens, compact_query, item):
-    normalized_name = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
-    normalized_description = re.sub(r"[^a-z0-9]+", "", str(description or "").lower())
-    score = 0
-    if compact_query and compact_query in normalized_name:
-        score += 1000
-    if compact_query and compact_query in normalized_description:
-        score += 120
-    for token in tokens:
-        if token in normalized_name:
-            score += 180
-        elif token in normalized_description:
-            score += 25
-    if item.get("is_official"):
-        score += 60
-    pulls = item.get("pull_count") or 0
-    stars = item.get("star_count") or 0
-    score += min(80, int(pulls).bit_length() * 4)
-    score += min(40, int(stars).bit_length() * 3)
-    return score
+    return score_dockerhub_result(name, description, tokens, compact_query, item)
 
 
 def normalize_docker_image(image):
-    image = str(image or "").strip()
-    if not image:
-        raise ValueError("Docker image is required")
-    if len(image) > 200:
-        raise ValueError("Docker image is too long")
-    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$", image):
-        raise ValueError("Docker image contains invalid characters")
-    if ".." in image or image.startswith(("-", "/")):
-        raise ValueError("Docker image is invalid")
-    return image
+    return validate_docker_image(image)
 
 
 def docker_manifest_architectures(image):
@@ -4673,47 +3941,15 @@ def verify_docker_image_architecture(image):
 
 
 def normalize_container_port(value):
-    port = str(value or "").strip()
-    if not port:
-        return ""
-    if not port.isdigit():
-        raise ValueError("Ports must be numeric")
-    number = int(port)
-    if number < 1 or number > 65535:
-        raise ValueError("Ports must be between 1 and 65535")
-    return str(number)
+    return validate_container_port(value)
 
 
 def safe_env_assignment(value):
-    value = str(value or "").strip()
-    if not value:
-        return ""
-    if "\x00" in value or "\n" in value or "=" not in value:
-        raise ValueError("Environment variables must use KEY=value")
-    key, raw = value.split("=", 1)
-    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-        raise ValueError(f"Invalid environment variable name: {key}")
-    if len(raw) > 2048:
-        raise ValueError(f"Environment variable {key} is too long")
-    return f"{key}={raw}"
+    return validate_environment_assignment(value)
 
 
 def safe_volume_mapping(value):
-    value = str(value or "").strip()
-    if not value:
-        return ""
-    if "\x00" in value or "\n" in value:
-        raise ValueError("Volume mappings must be one per line")
-    parts = value.split(":")
-    if len(parts) not in {2, 3}:
-        raise ValueError("Volumes must use /host/path:/container/path[:ro]")
-    host_path, container_path = parts[0], parts[1]
-    mode = parts[2] if len(parts) == 3 else ""
-    if not host_path.startswith("/") or not container_path.startswith("/"):
-        raise ValueError("Volume paths must be absolute")
-    if mode and mode not in {"ro", "rw"}:
-        raise ValueError("Volume mode must be ro or rw")
-    return value
+    return validate_volume_mapping(value)
 
 
 def update_install_job(job_id, **values):
@@ -4752,72 +3988,19 @@ def docker_pull_with_progress(image, job_id):
 
 
 def catalog_install_values(app, supplied):
-    if supplied is None:
-        supplied = {}
-    if not isinstance(supplied, dict):
-        raise ValueError("Invalid app settings")
-    declared = {item["id"] for item in app["inputs"]}
-    if set(supplied) - declared:
-        raise ValueError("Unknown app setting")
     reserved = {
         "homestart_data": str(COMPOSE_APP_DATA_DIR),
         "server_timezone": system_timezone(),
     }
-    values = {}
-    for item in app["inputs"]:
-        input_id = item["id"]
-        default = replace_store_placeholders(item["default"], reserved)
-        value = supplied.get(input_id, default)
-        value = str(value).strip()
-        if not value or len(value) > 2048 or "\x00" in value or "\n" in value:
-            raise ValueError(f"{item['label']} is invalid")
-        input_type = item["type"]
-        if input_type == "port":
-            value = str(normalize_container_port(value))
-        elif input_type == "path":
-            if not value.startswith("/"):
-                raise ValueError(f"{item['label']} must be an absolute path")
-            value = os.path.normpath(value)
-        elif input_type == "timezone":
-            try:
-                ZoneInfo(value)
-            except ZoneInfoNotFoundError as error:
-                raise ValueError(f"{item['label']} is not a valid time zone") from error
-        elif input_type == "select" and value not in item.get("options", []):
-            raise ValueError(f"{item['label']} is not one of the allowed values")
-        pattern = item.get("pattern")
-        if pattern and not re.fullmatch(pattern, value):
-            raise ValueError(f"{item['label']} has an invalid format")
-        values[input_id] = value
-    return {**reserved, **values}
+    return validate_catalog_install_values(app, supplied, reserved)
 
 
 def render_catalog_compose(app, supplied):
-    values = catalog_install_values(app, supplied)
-    compose = replace_store_placeholders(app["compose"], values)
-    remaining = store_placeholders(compose)
-    if remaining:
-        raise ValueError("The app template contains unresolved values")
-    for service_name, service in compose["services"].items():
-        labels = service.get("labels")
-        if labels is None:
-            labels = {}
-        elif isinstance(labels, list):
-            converted = {}
-            for label in labels:
-                key, separator, value = str(label).partition("=")
-                if separator:
-                    converted[key] = value
-            labels = converted
-        elif not isinstance(labels, dict):
-            raise ValueError(f"{app['id']}: invalid labels for {service_name}")
-        labels.update({
-            "com.homestart.managed": "true",
-            "com.homestart.template": app["id"],
-        })
-        service["labels"] = labels
-    compose["name"] = ""
-    return compose, values
+    reserved = {
+        "homestart_data": str(COMPOSE_APP_DATA_DIR),
+        "server_timezone": system_timezone(),
+    }
+    return render_store_compose(app, supplied, reserved)
 
 
 def compose_project_name(app_id, instance):

@@ -13,12 +13,20 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   persistence.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
   supervision, progress, speed, ETA and cancellation.
+- `homestart/metrics/store.py` owns SQLite schemas, retention, metric history,
+  peak-preserving network buckets and per-app bandwidth rankings.
+- `homestart/samba/manager.py` owns Samba parsing, share credentials,
+  validation, transactional configuration writes and service reloads.
 - `homestart/system/network.py` contains side-effect-free parsers and network
   interface selection.
 - `homestart/system/network_config.py` contains NetworkManager terse-output
   parsing, architecture normalization and portable configuration helpers.
 - `homestart/docker/projects.py` owns managed Compose project discovery,
   lifecycle actions, protected data removal and template risk analysis.
+- `homestart/docker/store.py` owns declarative catalog validation, placeholder
+  expansion, installer input normalization, Compose rendering and pure Docker
+  Hub result helpers. Remote fetches and long-running install orchestration
+  remain in the server boundary for now.
 - `homestart/updates/github.py` handles GitHub release metadata and asset
   downloads.
 - `homestart/updates/package.py` validates, stages, preflights, atomically
