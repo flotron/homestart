@@ -59,8 +59,8 @@ and apply local or GitHub release updates without bundling private runtime data.
 - App Store templates show informational warnings for privileged containers,
   host namespaces, Docker socket/device access and sensitive host mounts.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
-- Instantaneous top CPU process/container attribution and optional SMART disk
-  health alerts through `smartctl`.
+- Instantaneous top CPU process/container attribution and optional daily SMART
+  disk health alerts through `smartctl`, without waking standby HDDs.
 - Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through Netplan or NetworkManager,

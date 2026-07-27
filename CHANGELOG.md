@@ -4,8 +4,11 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
-## 20260727-3030-test2
+## 20260727-3030
 
+- Changed the background SMART health refresh from every five minutes to every
+  24 hours. HomeStart still checks once when the service starts and keeps the
+  standby-safe behavior that does not wake sleeping HDDs.
 - Added an installable Progressive Web App manifest for desktop, Android and
   iOS home-screen use, including normal and maskable HomeStart app icons.
 - Added the new HomeStart logo to the dashboard, sign-in screen, browser tab,

@@ -59,7 +59,7 @@ def smartctl_reports_standby(payload, returncode=0):
 class SmartHealthMonitor:
     """Background SMART collector whose readers only consume cached results."""
 
-    def __init__(self, ttl_seconds=300, workers=2, clock=None, wall_clock=None):
+    def __init__(self, ttl_seconds=24 * 60 * 60, workers=2, clock=None, wall_clock=None):
         self.ttl_seconds = max(1, int(ttl_seconds))
         self.workers = max(1, min(4, int(workers)))
         self.clock = clock or time.monotonic

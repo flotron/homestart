@@ -128,6 +128,7 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
         from homestart.system.disks import SmartHealthMonitor
 
         monitor = SmartHealthMonitor()
+        self.assertEqual(monitor.ttl_seconds, 24 * 60 * 60)
         completed = mock.Mock(
             stdout=json.dumps({
                 "power_mode": "STANDBY",
