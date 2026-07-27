@@ -37,11 +37,17 @@ and apply local or GitHub release updates without bundling private runtime data.
   IANA region, editable from Settings.
 - Interactive history charts: hover or touch to inspect the exact server time
   and CPU, memory, GPU, download and upload values for a sample.
+- History snapshots are gzip-compressed and refreshed periodically while the
+  two-second live collector advances the network chart locally. Open dashboard
+  tabs therefore do not repeatedly transfer the complete seven-day history.
 - Per-container network accounting and rankings for the last minute, hour or
-  day, with download, upload, total traffic and average throughput.
+  day, with stable container identities, download, upload, total traffic and
+  average throughput calculated over the interval actually observed.
 - Separate estimated host-traffic rankings use active TCP socket ownership to
   identify native Linux processes and host-network containers, show a visible
   confidence level, and keep unassignable traffic in an Unattributed row.
+  HomeStart's own HTTP output is accounted directly and shown separately with
+  high confidence.
 - Network history uses a percentile-based visual scale so isolated multi-gigabit
   peaks remain inspectable without flattening the latest normal traffic.
 - Docker logs and a declarative App Store backed by validated Docker Compose

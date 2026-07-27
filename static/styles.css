@@ -193,6 +193,7 @@ body {
 .estimate-label,.confidence-badge { display:inline-flex; align-items:center; border:1px solid rgb(245 158 11 / .35); border-radius:999px; color:#fbbf24; background:rgb(245 158 11 / .09); font-size:10px; font-weight:700; line-height:1; text-transform:uppercase; white-space:nowrap; }
 .estimate-label { padding:7px 9px; }
 .confidence-badge { padding:4px 6px; }
+.confidence-badge.high { border-color:rgb(52 211 153 / .35); color:#6ee7b7; background:rgb(52 211 153 / .09); }
 .confidence-badge.low { border-color:rgb(248 113 113 / .35); color:#fda4af; background:rgb(248 113 113 / .09); }
 .bandwidth-ranking-row.estimated .rank { color:#fbbf24; }
 .monitor-interface-control { display:grid; min-width:min(100%,360px); gap:5px; color:var(--muted); font-size:12px; }

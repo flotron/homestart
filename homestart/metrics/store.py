@@ -228,19 +228,38 @@ class MetricStore:
         generated_at = int(now or time.time())
         since = generated_at - period
         with self.connect() as connection:
+            container_bounds = connection.execute(
+                """
+                SELECT MIN(captured_at), MAX(captured_at), COUNT(*)
+                FROM container_network_metrics
+                WHERE captured_at >= ?
+                """,
+                (since,),
+            ).fetchone()
+            host_bounds = connection.execute(
+                """
+                SELECT MIN(captured_at), MAX(captured_at), COUNT(*)
+                FROM host_network_estimates
+                WHERE captured_at >= ?
+                """,
+                (since,),
+            ).fetchone()
             rows = connection.execute(
                 """
-                SELECT name,
+                SELECT container_key,
+                       name,
                        SUM(rx_bytes) AS rx_bytes,
                        SUM(tx_bytes) AS tx_bytes,
                        AVG(rx_bps) AS rx_avg_bps,
                        AVG(tx_bps) AS tx_avg_bps,
                        MAX(rx_bps) AS rx_peak_bps,
                        MAX(tx_bps) AS tx_peak_bps,
-                       COUNT(*) AS sample_count
+                       COUNT(*) AS sample_count,
+                       MIN(captured_at) AS first_captured_at,
+                       MAX(captured_at) AS last_captured_at
                 FROM container_network_metrics
                 WHERE captured_at >= ?
-                GROUP BY name
+                GROUP BY container_key, name
                 HAVING (SUM(rx_bytes) + SUM(tx_bytes)) > 0
                 ORDER BY (SUM(rx_bytes) + SUM(tx_bytes)) DESC
                 LIMIT ?
@@ -259,7 +278,9 @@ class MetricStore:
                        AVG(tx_bps) AS tx_avg_bps,
                        MAX(rx_bps) AS rx_peak_bps,
                        MAX(tx_bps) AS tx_peak_bps,
-                       COUNT(*) AS sample_count
+                       COUNT(*) AS sample_count,
+                       MIN(captured_at) AS first_captured_at,
+                       MAX(captured_at) AS last_captured_at
                 FROM host_network_estimates
                 WHERE captured_at >= ?
                 GROUP BY identity_key, name, kind, confidence
@@ -270,7 +291,12 @@ class MetricStore:
                 (since, limit),
             ).fetchall()
 
-        def ranked(values):
+        def observed_seconds(bounds):
+            if not bounds or not bounds[2]:
+                return 0
+            return min(period, max(2, int(bounds[1]) - int(bounds[0]) + 2))
+
+        def ranked(values, coverage_seconds):
             items = []
             for index, row in enumerate(values, 1):
                 item = dict(row)
@@ -279,15 +305,23 @@ class MetricStore:
                     float(item.get("rx_bytes") or 0)
                     + float(item.get("tx_bytes") or 0)
                 )
+                item["observed_seconds"] = max(1, coverage_seconds)
+                item["average_bps"] = (
+                    item["total_bytes"] / item["observed_seconds"]
+                )
                 items.append(item)
             return items
 
+        docker_coverage = observed_seconds(container_bounds)
+        host_coverage = observed_seconds(host_bounds)
         return {
             "ok": True,
             "period_seconds": period,
             "generated_at": generated_at,
-            "items": ranked(rows),
-            "estimated_items": ranked(estimated_rows),
+            "docker_observed_seconds": docker_coverage,
+            "host_observed_seconds": host_coverage,
+            "items": ranked(rows, docker_coverage),
+            "estimated_items": ranked(estimated_rows, host_coverage),
             "scope": "docker_containers",
             "estimated_scope": "host_tcp_processes",
         }

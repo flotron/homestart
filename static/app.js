@@ -23,6 +23,16 @@ const state = {
   processSort: { key: "cpu_percent", direction: "desc" },
   serverTimezone: "UTC",
   serverClockOffsetMs: 0,
+  history: {
+    loaded: false,
+    loadedAt: 0,
+    range: "24",
+    points: [],
+    networkPoints: [],
+    networkInterface: "",
+    networkStatus: {},
+    networkBucketSeconds: 2,
+  },
   storeResults: [],
   selectedStoreApp: null,
   selectedUninstallApp: null,
@@ -189,6 +199,8 @@ const bandwidthRankingNote = document.querySelector("#bandwidth-ranking-note");
 const hostBandwidthRankingList = document.querySelector("#host-bandwidth-ranking-list");
 const hostBandwidthRankingNote = document.querySelector("#host-bandwidth-ranking-note");
 let liveNetworkLoading = false;
+let historyLoading = false;
+let historyAbortController = null;
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
 const logsContent = document.querySelector("#logs-content");
@@ -307,9 +319,9 @@ function attachChartTooltip(node, points, startTime, endTime, kind) {
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${top}px`;
   };
-  node.addEventListener("pointermove", show);
-  node.addEventListener("pointerdown", show);
-  node.addEventListener("pointerleave", () => { tooltip.hidden = true; });
+  node.onpointermove = show;
+  node.onpointerdown = show;
+  node.onpointerleave = () => { tooltip.hidden = true; };
 }
 
 function chartPath(points, key, width, height, startTime, endTime, verticalMax) {
@@ -462,8 +474,13 @@ function renderBandwidthHistory(points, hours, interfaceName, status = {}, bucke
       ? collectorCurrent
       : stats?.current;
     const averageKey = key === "rx_bps" ? "rx_avg_bps" : "tx_avg_bps";
-    const averages = points.map((item) => Number(item[averageKey])).filter(Number.isFinite);
-    const trueAverage = averages.length ? averages.reduce((sum, value) => sum + value, 0) / averages.length : stats?.average;
+    const averages = points
+      .map((item) => ({ value: Number(item[averageKey]), weight: Math.max(1, Number(item.sample_count) || 1) }))
+      .filter((item) => Number.isFinite(item.value));
+    const averageWeight = averages.reduce((sum, item) => sum + item.weight, 0);
+    const trueAverage = averageWeight
+      ? averages.reduce((sum, item) => sum + item.value * item.weight, 0) / averageWeight
+      : stats?.average;
     const node = document.createElement("article");
     node.className = `history-stat ${className}`;
     node.innerHTML = `<span>${label}</span><strong>${formatRate(current)}</strong><small>avg ${formatRate(trueAverage)} · peak ${formatRate(stats?.maximum)}</small>`;
@@ -475,8 +492,69 @@ function renderBandwidthHistory(points, hours, interfaceName, status = {}, bucke
   bandwidthMeta.textContent = `${points.length} displayed points · 2-second samples grouped into ${bucketSeconds}s blocks · each point preserves the block peak · ${freshness} · ${gaps ? `${gaps} data gap${gaps === 1 ? "" : "s"} detected` : "no data gaps"} · scale 0–${formatRate(verticalMax)}`;
 }
 
+function renderCachedHistory() {
+  const history = state.history;
+  if (!history.loaded) return;
+  renderHistory(history.points, history.range);
+  renderBandwidthHistory(
+    history.networkPoints,
+    history.range,
+    history.networkInterface,
+    history.networkStatus,
+    history.networkBucketSeconds,
+  );
+}
+
+function appendLiveNetworkHistory(data) {
+  const history = state.history;
+  if (!history.loaded || !data.timestamp) return;
+  const point = {
+    captured_at: Number(data.timestamp),
+    rx_bps: Number(data.rx_bps) || 0,
+    tx_bps: Number(data.tx_bps) || 0,
+    rx_avg_bps: Number(data.rx_bps) || 0,
+    tx_avg_bps: Number(data.tx_bps) || 0,
+    sample_count: 1,
+  };
+  const last = history.networkPoints.at(-1);
+  if (last && Number(last.captured_at) === point.captured_at) {
+    history.networkPoints[history.networkPoints.length - 1] = point;
+  } else if (!last || Number(last.captured_at) < point.captured_at) {
+    history.networkPoints.push(point);
+  }
+  const retainedSeconds = history.range === "auto" ? 7 * 86400 : Math.max(1, Number(history.range) || 24) * 3600;
+  const oldest = point.captured_at - retainedSeconds;
+  while (history.networkPoints.length && Number(history.networkPoints[0].captured_at) < oldest) {
+    history.networkPoints.shift();
+  }
+  history.networkStatus = {
+    ...history.networkStatus,
+    current_timestamp: point.captured_at,
+    current_rx_bps: point.rx_bps,
+    current_tx_bps: point.tx_bps,
+    last_timestamp: point.captured_at,
+    last_sample_age_seconds: 0,
+  };
+  history.networkInterface = data.interface || history.networkInterface;
+  renderBandwidthHistory(
+    history.networkPoints,
+    history.range,
+    history.networkInterface,
+    history.networkStatus,
+    history.networkBucketSeconds,
+  );
+}
+
+function currentTopConsumer(data, direction) {
+  const rateKey = direction === "download" ? "rx_bps" : "tx_bps";
+  return [
+    data.top_consumers?.[direction],
+    data.top_host_consumers?.[direction],
+  ].filter(Boolean).sort((left, right) => Number(right[rateKey] || 0) - Number(left[rateKey] || 0))[0] || null;
+}
+
 async function loadLiveNetwork() {
-  if (liveNetworkLoading || document.hidden) return;
+  if (liveNetworkLoading || document.hidden || state.view !== "status") return;
   liveNetworkLoading = true;
   try {
     const response = await fetch(`/api/network/live?time=${Date.now()}`, { cache: "no-store" });
@@ -484,12 +562,13 @@ async function loadLiveNetwork() {
     if (!response.ok || !data.ok) throw new Error(data.error || "Live network unavailable");
     liveDownload.textContent = formatRate(data.rx_bps);
     liveUpload.textContent = formatRate(data.tx_bps);
-    const downloadTop = data.top_consumers?.download;
-    const uploadTop = data.top_consumers?.upload;
-    liveDownloadTop.textContent = downloadTop ? `Top now: ${downloadTop.name} · ${formatRate(downloadTop.rx_bps)}` : "Top now: no attributable Docker traffic";
-    liveUploadTop.textContent = uploadTop ? `Top now: ${uploadTop.name} · ${formatRate(uploadTop.tx_bps)}` : "Top now: no attributable Docker traffic";
+    const downloadTop = currentTopConsumer(data, "download");
+    const uploadTop = currentTopConsumer(data, "upload");
+    liveDownloadTop.textContent = downloadTop ? `Top now: ${downloadTop.name} · ${formatRate(downloadTop.rx_bps)}` : "Top now: no attributable app traffic";
+    liveUploadTop.textContent = uploadTop ? `Top now: ${uploadTop.name} · ${formatRate(uploadTop.tx_bps)}` : "Top now: no attributable app traffic";
     liveInterface.textContent = data.interface || "Default interface";
     liveUpdated.textContent = `Live · updated ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
+    appendLiveNetworkHistory(data);
   } catch (error) {
     liveUpdated.textContent = error.message;
   } finally {
@@ -501,8 +580,12 @@ function bandwidthRankingRows(items, period, estimated = false) {
   const kindLabels = {
     host_container: "Host-network container",
     process: "Linux process",
+    service: "HomeStart service",
     unattributed: "Not attributed",
   };
+  const observedLabel = (seconds) => seconds < 60
+    ? `${Math.max(1, Math.round(seconds))} sec observed`
+    : `${Math.max(1, Math.round(seconds / 60))} min observed`;
   return items.map((item) => {
     const row = document.createElement("article");
     row.className = `bandwidth-ranking-row${estimated ? " estimated" : ""}`;
@@ -515,18 +598,19 @@ function bandwidthRankingRows(items, period, estimated = false) {
     `;
     row.querySelector(".rank").textContent = `#${item.rank}`;
     row.querySelector(".app-name b").textContent = item.name || (estimated ? "Unknown process" : "Unknown container");
-    const average = `avg ${formatRate((Number(item.total_bytes) || 0) / Math.max(1, period))}`;
+    const observedSeconds = Math.max(1, Number(item.observed_seconds) || period);
+    const average = `avg ${formatRate(Number(item.average_bps) || (Number(item.total_bytes) || 0) / observedSeconds)}`;
     const metadata = row.querySelector(".app-name small");
     if (estimated) {
       const kind = document.createElement("span");
-      kind.textContent = `${average} · ${kindLabels[item.kind] || "Host traffic"}`;
+      kind.textContent = `${average} · ${kindLabels[item.kind] || "Host traffic"} · ${observedLabel(observedSeconds)}`;
       const confidence = document.createElement("span");
-      const level = ["medium", "low"].includes(item.confidence) ? item.confidence : "low";
+      const level = ["high", "medium", "low"].includes(item.confidence) ? item.confidence : "low";
       confidence.className = `confidence-badge ${level}`;
       confidence.textContent = `${level} confidence`;
       metadata.append(kind, confidence);
     } else {
-      metadata.textContent = `${average} · measured`;
+      metadata.textContent = `${average} · measured · ${observedLabel(observedSeconds)}`;
     }
     const values = row.querySelectorAll("[data-label]");
     values[0].textContent = formatFileSize(item.rx_bytes);
@@ -552,7 +636,7 @@ async function loadBandwidthRanking() {
     const estimatedItems = data.estimated_items || [];
     if (hostBandwidthRankingList) {
       if (!estimatedItems.length) {
-        hostBandwidthRankingList.innerHTML = '<p class="form-note">No host TCP traffic has been observed for this period yet.</p>';
+        hostBandwidthRankingList.innerHTML = '<p class="form-note">No attributable host application traffic has been observed for this period yet.</p>';
       } else {
         hostBandwidthRankingList.replaceChildren(...bandwidthRankingRows(estimatedItems, period, true));
       }
@@ -560,7 +644,7 @@ async function loadBandwidthRanking() {
     const updated = new Date(data.generated_at * 1000).toLocaleTimeString();
     bandwidthRankingNote.textContent = `Directly measured Docker traffic accumulated during the selected period · updated ${updated}.`;
     if (hostBandwidthRankingNote) {
-      hostBandwidthRankingNote.textContent = `Estimated from active TCP socket counters · updated ${updated} · UDP, very short connections, kernel traffic and measurement differences appear as Unattributed traffic.`;
+      hostBandwidthRankingNote.textContent = `HomeStart HTTP output is measured directly; other host apps are estimated from active TCP sockets · updated ${updated} · UDP, very short connections, kernel traffic and measurement differences appear as Unattributed traffic.`;
     }
   } catch (error) {
     bandwidthRankingList.innerHTML = `<p class="form-note">${escapeHtml(error.message)}</p>`;
@@ -568,18 +652,50 @@ async function loadBandwidthRanking() {
   }
 }
 
-async function loadHistory() {
-  const response = await fetch(`/api/metrics/history?hours=${historyRange?.value || 24}`, { cache: "no-store" });
-  const data = await response.json();
-  if (data.server_timestamp) state.serverClockOffsetMs = data.server_timestamp * 1000 - Date.now();
-  renderHistory(data.points || [], data.hours || historyRange?.value || 24);
-  renderBandwidthHistory(
-    data.network_points || data.points || [],
-    data.hours || historyRange?.value || 24,
-    data.network_interface || "",
-    data.network_status || {},
-    data.network_bucket_seconds || data.network_sample_seconds || 2,
-  );
+async function loadHistory(force = false) {
+  if (document.hidden || state.view !== "status") return;
+  const requestedRange = historyRange?.value || 24;
+  if (
+    !force
+    && state.history.loaded
+    && String(state.history.range) === String(requestedRange)
+    && Date.now() - state.history.loadedAt < 55000
+  ) {
+    renderCachedHistory();
+    return;
+  }
+  if (historyLoading && !force) return;
+  if (force && historyAbortController) historyAbortController.abort();
+  historyAbortController = new AbortController();
+  const controller = historyAbortController;
+  historyLoading = true;
+  try {
+    const response = await fetch(`/api/metrics/history?hours=${requestedRange}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "History unavailable");
+    if (data.server_timestamp) state.serverClockOffsetMs = data.server_timestamp * 1000 - Date.now();
+    state.history = {
+      loaded: true,
+      loadedAt: Date.now(),
+      range: data.hours || requestedRange,
+      points: data.points || [],
+      networkPoints: data.network_points || data.points || [],
+      networkInterface: data.network_interface || "",
+      networkStatus: data.network_status || {},
+      networkBucketSeconds: data.network_bucket_seconds || data.network_sample_seconds || 2,
+    };
+    renderCachedHistory();
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+  } finally {
+    if (historyAbortController === controller) {
+      historyAbortController = null;
+      historyLoading = false;
+    }
+  }
 }
 
 async function loadOverview() {
@@ -2219,7 +2335,7 @@ async function changeMonitorInterface() {
     if (!response.ok || !result.ok) throw new Error(result.error || "Could not change monitored interface");
     await loadNetworkSettings();
     await loadLiveNetwork();
-    await loadHistory();
+    await loadHistory(true);
   } catch (error) {
     monitorInterfaceDetail.textContent = error.message;
   } finally {
@@ -2663,7 +2779,14 @@ function setView(view) {
   });
 
   if (view === "apps") load().catch(console.error);
-  if (view === "status") loadStatus().catch(console.error);
+  if (view === "status") {
+    loadStatus().catch(console.error);
+    loadSystem().catch(console.error);
+    loadOverview().catch(console.error);
+    loadHistory().catch(console.error);
+    loadLiveNetwork().catch(console.error);
+    loadBandwidthRanking().catch(console.error);
+  }
   if (view === "files") {
     loadFiles(state.filePath).catch(console.error);
     loadTrash().catch(console.error);
@@ -2796,7 +2919,7 @@ load().catch((error) => {
 loadSystem().catch(console.error);
 loadStatus().catch(console.error);
 loadOverview().catch(console.error);
-loadHistory().catch(console.error);
+loadHistory(true).catch(console.error);
 loadLiveNetwork().catch(console.error);
 loadBandwidthRanking().catch(console.error);
 loadNetworkSettings().catch(console.error);
@@ -2808,10 +2931,10 @@ setInterval(() => loadStatus().catch(console.error), 15000);
 setInterval(() => loadOverview().catch(console.error), 30000);
 setInterval(() => loadResources().catch(console.error), 2500);
 setInterval(() => loadLiveNetwork().catch(console.error), 2000);
-setInterval(() => loadHistory().catch(console.error), 2000);
+setInterval(() => loadHistory().catch(console.error), 60000);
 setInterval(() => loadBandwidthRanking().catch(console.error), 10000);
 setInterval(updatePermanentClock, 1000);
-historyRange?.addEventListener("change", () => loadHistory().catch(console.error));
+historyRange?.addEventListener("change", () => loadHistory(true).catch(console.error));
 bandwidthRankingPeriod?.addEventListener("change", () => loadBandwidthRanking().catch(console.error));
 if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));
 if (sambaShareForm) sambaShareForm.addEventListener("submit", createSambaShare);
