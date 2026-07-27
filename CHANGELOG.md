@@ -4,6 +4,23 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260727-2900
+
+- Eliminated repeated multi-megabyte history transfers: each dashboard loads a
+  gzip-compressed snapshot periodically and advances the network chart locally
+  from the existing two-second live samples.
+- Added request overlap protection and stopped background history downloads
+  while the Overview is not visible.
+- HomeStart now directly accounts for the compressed HTTP bytes it sends and
+  can identify itself as the current or historical top host consumer instead
+  of leaving short dashboard responses as Unattributed traffic.
+- Docker ranking identities now use stable container names, keeping similarly
+  named Compose services such as different `db` containers separate.
+- Ranking averages now use the interval actually observed and display its
+  duration instead of dividing partial data by the entire selected period.
+- Improved history averages by weighting grouped network blocks by their real
+  sample counts.
+
 ## 20260726-2800
 
 - Fixed inflated live network rates caused by concurrent API requests sampling

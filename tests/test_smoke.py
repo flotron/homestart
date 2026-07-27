@@ -774,6 +774,58 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIsNone(self.app.NETWORK_HISTORY_PREV)
         read_text.assert_not_called()
 
+    def test_large_json_responses_are_compact_and_gzip_compressed(self):
+        payload = {"points": [{"captured_at": index, "tx_bps": 12345} for index in range(500)]}
+        body, encoding = self.app.json_response_body(payload, "br, gzip")
+        self.assertEqual(encoding, "gzip")
+        decoded = __import__("gzip").decompress(body)
+        self.assertEqual(json.loads(decoded), payload)
+        plain, plain_encoding = self.app.json_response_body({"ok": True}, "gzip")
+        self.assertEqual(plain_encoding, "")
+        self.assertEqual(plain, b'{"ok":true}')
+
+    def test_http_egress_is_measured_directly_and_excludes_loopback(self):
+        self.app.HTTP_EGRESS_BYTES = {}
+        self.app.record_http_egress(2000, "192.168.0.11", "192.168.0.32")
+        self.app.record_http_egress(500, "127.0.0.1", "127.0.0.1")
+        self.app.record_http_egress(900, "10.0.0.11", "10.0.0.32")
+        with mock.patch.object(
+            self.app, "interface_ip_addresses",
+            return_value={"192.168.0.32"},
+        ):
+            sample = self.app.consume_http_egress("eth0", 2)
+        self.assertEqual(sample["name"], "HomeStart dashboard")
+        self.assertEqual(sample["kind"], "service")
+        self.assertEqual(sample["confidence"], "high")
+        self.assertEqual(sample["tx_bytes"], 2000)
+        self.assertEqual(sample["tx_bps"], 1000)
+        self.assertIsNone(self.app.consume_http_egress("", 2))
+
+    def test_live_payload_compares_direct_host_consumers_with_docker(self):
+        self.app.NETWORK_LATEST = {
+            "timestamp": 1234, "interface": "eth0",
+            "rx_bps": 10, "tx_bps": 2000, "sample_seconds": 2,
+            "rx_label": "10 B/s", "tx_label": "2 KB/s",
+        }
+        self.app.publish_host_network_top([
+            {"key": "service:homestart", "name": "HomeStart dashboard",
+             "kind": "service", "confidence": "high", "rx_bps": 0, "tx_bps": 1800},
+        ])
+        with mock.patch.object(self.app, "default_network_interface", return_value="eth0"):
+            payload = self.app.latest_network_payload()
+        self.assertEqual(
+            payload["top_host_consumers"]["upload"]["name"],
+            "HomeStart dashboard",
+        )
+
+    def test_counting_writer_records_the_bytes_actually_written(self):
+        destination = io.BytesIO()
+        counts = []
+        writer = self.app.CountingWriter(destination, counts.append)
+        self.assertEqual(writer.write(b"compressed response"), 19)
+        self.assertEqual(counts, [19])
+        self.assertEqual(destination.getvalue(), b"compressed response")
+
     def test_monitor_selection_falls_back_when_saved_interface_disappears(self):
         items = [
             {"name": "enp2s0", "carrier": False, "state": "down"},
@@ -1101,6 +1153,69 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(ranking["items"][0]["rx_bytes"], 6000)
         self.assertEqual(ranking["items"][0]["tx_bytes"], 3000)
         self.assertEqual(ranking["items"][0]["total_bytes"], 9000)
+        self.assertEqual(ranking["items"][0]["observed_seconds"], 3)
+        self.assertEqual(ranking["items"][0]["average_bps"], 3000)
+
+    def test_container_ranking_keeps_identical_service_names_separate(self):
+        self.app.DB_PATH = Path(self.temp.name) / "separate-container-network.db"
+        now = int(__import__("time").time())
+        self.app.record_container_network_metrics([
+            {"key": "container:librenms_db", "name": "librenms_db", "rx_bps": 1000, "tx_bps": 0, "sample_seconds": 2},
+            {"key": "container:kasm_db", "name": "kasm_db", "rx_bps": 2000, "tx_bps": 0, "sample_seconds": 2},
+        ], now)
+        ranking = self.app.container_network_ranking(60)
+        self.assertEqual(
+            {item["name"] for item in ranking["items"]},
+            {"librenms_db", "kasm_db"},
+        )
+        self.assertEqual(len({item["container_key"] for item in ranking["items"]}), 2)
+
+    def test_ranking_average_uses_the_available_collector_window(self):
+        self.app.DB_PATH = Path(self.temp.name) / "ranking-window.db"
+        now = int(__import__("time").time())
+        self.app.record_container_network_metrics([
+            {"key": "container:alpha", "name": "alpha", "rx_bps": 1000, "tx_bps": 0, "sample_seconds": 2},
+        ], now - 1200)
+        self.app.record_container_network_metrics([
+            {"key": "container:alpha", "name": "alpha", "rx_bps": 0, "tx_bps": 0, "sample_seconds": 2},
+        ], now)
+        ranking = self.app.container_network_ranking(3600)
+        alpha = ranking["items"][0]
+        self.assertEqual(ranking["docker_observed_seconds"], 1202)
+        self.assertEqual(alpha["observed_seconds"], 1202)
+        self.assertAlmostEqual(alpha["average_bps"], 2000 / 1202)
+
+    def test_container_targets_use_stable_container_names_not_compose_service(self):
+        self.app.CONTAINER_NETWORK_TARGETS = []
+        self.app.CONTAINER_NETWORK_TARGETS_AT = 0
+        details = [
+            {
+                "Id": "a" * 64,
+                "Name": "/librenms_db",
+                "State": {"Pid": 101},
+                "HostConfig": {"NetworkMode": "project_default"},
+                "NetworkSettings": {"SandboxKey": "/var/run/netns/one"},
+                "Config": {"Labels": {"com.docker.compose.service": "db"}},
+            },
+            {
+                "Id": "b" * 64,
+                "Name": "/kasm_db",
+                "State": {"Pid": 102},
+                "HostConfig": {"NetworkMode": "project_default"},
+                "NetworkSettings": {"SandboxKey": "/var/run/netns/two"},
+                "Config": {"Labels": {"com.docker.compose.service": "db"}},
+            },
+        ]
+        with mock.patch.object(
+            self.app, "run_docker_command",
+            side_effect=["a\\nb", json.dumps(details)],
+        ):
+            targets = self.app.container_network_targets()
+        self.assertEqual([item["name"] for item in targets], ["librenms_db", "kasm_db"])
+        self.assertEqual(
+            [item["identity_key"] for item in targets],
+            ["container:librenms_db", "container:kasm_db"],
+        )
 
     def test_host_network_ranking_separates_estimated_and_unattributed_traffic(self):
         self.app.DB_PATH = Path(self.temp.name) / "host-network.db"
@@ -1136,6 +1251,10 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn('action: "copy_start"', script)
         self.assertIn("/api/file/properties", script)
         self.assertIn("/api/network/ranking", script)
+        self.assertIn("appendLiveNetworkHistory(data)", script)
+        self.assertIn("setInterval(() => loadHistory().catch(console.error), 60000)", script)
+        self.assertIn("data.top_host_consumers?.[direction]", script)
+        self.assertNotIn("setInterval(() => loadHistory().catch(console.error), 2000)", script)
         self.assertIn('data-file-context-action="properties"', html)
         self.assertIn('id="bandwidth-ranking-period"', html)
         self.assertIn('id="host-bandwidth-ranking-list"', html)

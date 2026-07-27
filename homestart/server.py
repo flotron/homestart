@@ -2,6 +2,7 @@
 import json
 import base64
 import binascii
+import gzip
 import hashlib
 import mimetypes
 import os
@@ -141,6 +142,10 @@ CONTAINER_NETWORK_TARGETS = []
 CONTAINER_NETWORK_TARGETS_AT = 0
 CONTAINER_NETWORK_LOCK = threading.Lock()
 HOST_TCP_PREV = {}
+HOST_NETWORK_TOP = {"download": None, "upload": None}
+HOST_NETWORK_LOCK = threading.Lock()
+HTTP_EGRESS_BYTES = {}
+HTTP_EGRESS_LOCK = threading.Lock()
 DOCKER_IDENTITY_CACHE = {"at": 0, "items": {}}
 INTERFACE_ADDRESS_CACHE = {"at": 0, "interface": "", "items": set()}
 FILE_COPY_JOBS = {}
@@ -1570,6 +1575,61 @@ def record_host_network_estimates(samples, network, container_samples, captured_
     )
 
 
+def record_http_egress(size, client_address="", local_address=""):
+    global HTTP_EGRESS_BYTES
+    if str(client_address or "") in {"127.0.0.1", "::1"}:
+        return
+    try:
+        size = max(0, int(size or 0))
+    except (TypeError, ValueError):
+        return
+    if not size:
+        return
+    local_address = str(local_address or "")
+    with HTTP_EGRESS_LOCK:
+        HTTP_EGRESS_BYTES[local_address] = (
+            HTTP_EGRESS_BYTES.get(local_address, 0) + size
+        )
+
+
+def consume_http_egress(interface="", sample_seconds=2):
+    global HTTP_EGRESS_BYTES
+    with HTTP_EGRESS_LOCK:
+        totals = HTTP_EGRESS_BYTES
+        HTTP_EGRESS_BYTES = {}
+    addresses = interface_ip_addresses(interface) if interface else set()
+    transmitted = sum(
+        size for address, size in totals.items()
+        if not addresses or address in addresses
+    )
+    if not transmitted:
+        return None
+    sample_seconds = max(.001, float(sample_seconds or 2))
+    return {
+        "key": "service:homestart",
+        "name": "HomeStart dashboard",
+        "kind": "service",
+        "confidence": "high",
+        "sample_seconds": sample_seconds,
+        "rx_bytes": 0,
+        "tx_bytes": transmitted,
+        "rx_bps": 0,
+        "tx_bps": transmitted / sample_seconds,
+    }
+
+
+def publish_host_network_top(samples):
+    download = max(samples, key=lambda item: item.get("rx_bps", 0), default=None)
+    upload = max(samples, key=lambda item: item.get("tx_bps", 0), default=None)
+    if download and not download.get("rx_bps"):
+        download = None
+    if upload and not upload.get("tx_bps"):
+        upload = None
+    with HOST_NETWORK_LOCK:
+        HOST_NETWORK_TOP["download"] = dict(download) if download else None
+        HOST_NETWORK_TOP["upload"] = dict(upload) if upload else None
+
+
 def container_network_ranking(period=3600, limit=12):
     return metric_store().network_ranking(period, limit)
 
@@ -1602,6 +1662,13 @@ def network_metrics_sampler():
             container_samples = update_container_network_top()
             record_container_network_metrics(container_samples)
             host_samples = update_host_network_estimates(network.get("interface", ""))
+            http_sample = consume_http_egress(
+                network.get("interface", ""),
+                network.get("sample_seconds", 2),
+            )
+            if http_sample:
+                host_samples.append(http_sample)
+            publish_host_network_top(host_samples)
             record_host_network_estimates(host_samples, network, container_samples)
         except Exception as error:
             print(f"HomeStart network sampler: {error}", flush=True)
@@ -1799,6 +1866,8 @@ def update_host_network_estimates(interface):
         if not rx_bytes and not tx_bytes:
             continue
         pid = connection["pid"]
+        if pid == os.getpid():
+            continue
         identity = pid_identities.setdefault(
             pid,
             host_process_identity(pid, connection.get("process", ""), identities),
@@ -1846,8 +1915,18 @@ def container_network_targets():
                     continue
                 seen_namespaces.add(namespace)
                 labels = (item.get("Config") or {}).get("Labels") or {}
-                name = (labels.get("com.docker.compose.service") or str(item.get("Name") or "").lstrip("/") or item.get("Id", "")[:12])
-                targets.append({"key": namespace, "pid": pid, "name": name})
+                container_name = (
+                    str(item.get("Name") or "").lstrip("/")
+                    or item.get("Id", "")[:12]
+                )
+                targets.append({
+                    "key": namespace,
+                    "identity_key": f"container:{container_name}",
+                    "pid": pid,
+                    "name": container_name,
+                    "compose_project": labels.get("com.docker.compose.project", ""),
+                    "compose_service": labels.get("com.docker.compose.service", ""),
+                })
     except (ValueError, OSError, json.JSONDecodeError, subprocess.SubprocessError):
         targets = []
     CONTAINER_NETWORK_TARGETS = targets
@@ -1872,7 +1951,7 @@ def update_container_network_top():
             continue
         elapsed = max(.001, now - previous[0])
         samples.append({
-            "key": target["key"],
+            "key": target.get("identity_key") or target["key"],
             "name": target["name"],
             "kind": "container",
             "sample_seconds": elapsed,
@@ -1923,6 +2002,8 @@ def latest_network_payload():
         }
     with CONTAINER_NETWORK_LOCK:
         result["top_consumers"] = dict(CONTAINER_NETWORK_TOP)
+    with HOST_NETWORK_LOCK:
+        result["top_host_consumers"] = dict(HOST_NETWORK_TOP)
     return result
 
 
@@ -4848,7 +4929,43 @@ def apply_github_update():
 API_ROUTER = ApiRouter(sys.modules[__name__])
 
 
+def json_response_body(payload, accept_encoding=""):
+    body = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    if len(body) >= 1024 and "gzip" in str(accept_encoding or "").lower():
+        compressed = gzip.compress(body, compresslevel=5)
+        if len(compressed) < len(body):
+            return compressed, "gzip"
+    return body, ""
+
+
+class CountingWriter:
+    def __init__(self, writer, callback):
+        self.writer = writer
+        self.callback = callback
+
+    def write(self, data):
+        written = self.writer.write(data)
+        self.callback(len(data) if written is None else written)
+        return written
+
+    def __getattr__(self, name):
+        return getattr(self.writer, name)
+
+
 class HomeStartHandler(SimpleHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        client_address = self.client_address[0] if self.client_address else ""
+        local_address = self.connection.getsockname()[0]
+        self.wfile = CountingWriter(
+            self.wfile,
+            lambda size: record_http_egress(
+                size, client_address, local_address,
+            ),
+        )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
@@ -4870,9 +4987,14 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def send_json(self, payload, status=HTTPStatus.OK):
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body, content_encoding = json_response_body(
+            payload, self.headers.get("Accept-Encoding", ""),
+        )
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if content_encoding:
+            self.send_header("Content-Encoding", content_encoding)
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
