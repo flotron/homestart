@@ -12,6 +12,8 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 - `homestart/auth/manager.py` owns local users, one-time initial setup, scrypt
   password verification, opaque persistent sessions and CSRF tokens. These
   users gate the web UI but intentionally do not map to Linux or Samba users.
+- `homestart/auth/security.py` owns bounded progressive sign-in throttling,
+  trusted proxy/CIDR validation and reverse-proxy request interpretation.
 - `homestart/config.py` owns defaults, recursive config merging and JSON
   persistence.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
@@ -24,6 +26,10 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   interface selection.
 - `homestart/system/network_config.py` contains NetworkManager terse-output
   parsing, architecture normalization and portable configuration helpers.
+- `homestart/system/disks.py` performs cached, optional SMART overall-health
+  checks without treating unsupported devices as failed.
+- `homestart/system/processes.py` attributes short-interval procfs CPU deltas
+  to the current top host process or container.
 - `homestart/docker/projects.py` owns managed Compose project discovery,
   lifecycle actions, protected data removal and template risk analysis.
 - `homestart/docker/store.py` owns declarative catalog validation, placeholder

@@ -36,6 +36,10 @@ DEFAULT_CONFIG = {
     },
     "appearance": {"theme": "dark", "accent": "#38bdf8", "density": "comfortable"},
     "alerts": {"cpu_percent": 90, "memory_percent": 90, "disk_percent": 90, "temperature_c": 85},
+    "security": {
+        "cookie_secure": "auto",
+        "trusted_proxies": [],
+    },
     "network": {"monitor_interface": "auto"},
     "time": {"timezone": "UTC"},
     "trash": {"retention_days": 0},

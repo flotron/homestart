@@ -56,6 +56,8 @@ and apply local or GitHub release updates without bundling private runtime data.
 - App Store templates show informational warnings for privileged containers,
   host namespaces, Docker socket/device access and sensitive host mounts.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
+- Instantaneous top CPU process/container attribution and optional SMART disk
+  health alerts through `smartctl`.
 - Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through Netplan or NetworkManager,
@@ -85,10 +87,22 @@ is an access gate; it does not replace Linux or Samba identities and does not
 reduce existing File Browser, Docker, Samba, network or update functionality.
 Additional users and password changes are managed from `Settings > Users`.
 
+Failed sign-ins are progressively throttled by account and client without a
+permanent lockout. The delay begins after five failures and expires after a
+quiet period.
+
 The built-in login protects access but plain HTTP does not encrypt credentials
 or session cookies on the network. HomeStart is still intended for a trusted
 LAN. Use HTTPS through a suitable reverse proxy before exposing it across an
 untrusted network or the public internet.
+
+Reverse-proxy cookie handling is configured in `Settings > Users`. The default
+Automatic policy keeps direct HTTP access working and adds the `Secure`
+attribute for direct HTTPS. To recognize HTTPS terminated by a reverse proxy,
+add only that proxy's IP address or CIDR network to **Trusted proxies**.
+HomeStart ignores `Forwarded`, `X-Forwarded-Proto` and
+`X-Forwarded-For` from every other source. **Always secure** is intended for
+HTTPS-only deployments and prevents login through direct HTTP.
 
 If a password is lost, reset it locally and close all existing sessions with:
 
@@ -120,8 +134,13 @@ Install dependencies:
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y python3 python3-yaml iproute2 procps util-linux
+sudo apt-get install -y python3 python3-yaml iproute2 procps util-linux smartmontools
 ```
+
+`smartmontools` is optional at runtime but required for SMART health alerts.
+Existing installations upgraded from an earlier HomeStart release can add it
+with `sudo apt-get install smartmontools`; unsupported disks are simply left
+without a SMART result.
 
 Network configuration is optional. HomeStart uses Netplan when the selected
 interface is declared there, otherwise it uses NetworkManager through `nmcli`
@@ -235,6 +254,8 @@ entry point, while focused code lives under `homestart/`:
 - `api/router.py`: API dispatch and HTTP error mapping
 - `auth/manager.py`: first-time setup, scrypt password hashes, users and
   persistent opaque sessions
+- `auth/security.py`: progressive login throttling, trusted proxy validation
+  and forwarded-client parsing
 - `config.py`: configuration defaults and persistence
 - `files/copy.py`: copy jobs, native `cp`, progress and cancellation
 - `metrics/store.py`: SQLite metric retention, history and bandwidth rankings
@@ -243,6 +264,8 @@ entry point, while focused code lives under `homestart/`:
 - `system/network.py`: network parsing and interface selection
 - `system/network_config.py`: NetworkManager parsing and architecture
   normalization
+- `system/disks.py`: cached best-effort SMART health checks
+- `system/processes.py`: instantaneous procfs CPU attribution
 - `updates/github.py`: GitHub release discovery and downloads
 - `updates/package.py`: staged transactional updates and rollback metadata
 - `docker/projects.py`: Compose discovery, lifecycle and template risk analysis

@@ -270,7 +270,13 @@ class AuthManager:
                 ),
                 None,
             )
-        if user is None or not self._password_matches(password, user.get("password", "")):
+        comparison_hash = (
+            user.get("password", "")
+            if user is not None
+            else users[0].get("password", "") if users else ""
+        )
+        password_matches = self._password_matches(password, comparison_hash)
+        if user is None or not password_matches:
             return None
         return self._public_user(user)
 

@@ -12,6 +12,69 @@ from unittest import mock
 from pathlib import Path
 
 
+class HomeStartSecurityHelperTests(unittest.TestCase):
+    def test_progressive_login_rate_limit_resets_and_expires(self):
+        from homestart.auth.security import LoginRateLimiter
+
+        now = [100.0]
+        limiter = LoginRateLimiter(clock=lambda: now[0], window_seconds=900)
+        for _ in range(4):
+            self.assertEqual(limiter.record_failure("192.168.1.20", "owner"), 0)
+        self.assertEqual(limiter.record_failure("192.168.1.20", "owner"), 2)
+        self.assertEqual(limiter.retry_after("192.168.1.21", "OWNER"), 2)
+        now[0] += 2
+        self.assertEqual(limiter.retry_after("192.168.1.20", "owner"), 0)
+        limiter.record_success("192.168.1.20", "owner")
+        self.assertEqual(limiter.retry_after("192.168.1.20", "owner"), 0)
+        limiter.record_failure("192.168.1.20", "other")
+        now[0] += 901
+        self.assertEqual(limiter.retry_after("192.168.1.20", "other"), 0)
+
+    def test_forwarded_headers_require_an_explicit_trusted_proxy(self):
+        from homestart.auth.security import (
+            effective_client_ip,
+            forwarded_https,
+            normalize_trusted_proxies,
+            trusted_proxy_networks,
+        )
+
+        networks = trusted_proxy_networks(
+            normalize_trusted_proxies(["127.0.0.1", "172.18.0.0/16"])
+        )
+        headers = {
+            "X-Forwarded-For": "198.51.100.7, 172.18.0.8",
+            "X-Forwarded-Proto": "https",
+        }
+        self.assertEqual(effective_client_ip("127.0.0.1", headers, networks), "198.51.100.7")
+        self.assertEqual(effective_client_ip("192.168.1.9", headers, networks), "192.168.1.9")
+        self.assertTrue(forwarded_https(headers))
+        with self.assertRaises(ValueError):
+            normalize_trusted_proxies(["not-a-network"])
+
+    def test_smart_health_and_instant_process_cpu_are_portable(self):
+        from homestart.system.disks import parse_smartctl_health
+        from homestart.system.processes import ProcessCpuTracker
+
+        self.assertTrue(parse_smartctl_health({"smart_status": {"passed": True}})["healthy"])
+        self.assertFalse(parse_smartctl_health({"smart_status": {"passed": False}})["healthy"])
+        self.assertFalse(parse_smartctl_health({}, 8)["healthy"])
+
+        snapshots = iter([
+            (100, {123: 10}),
+            (200, {123: 30, 456: 80}),
+        ])
+        now = iter([10, 12])
+        tracker = ProcessCpuTracker(
+            snapshot=lambda: next(snapshots),
+            clock=lambda: next(now),
+        )
+        self.assertIsNone(tracker.top(lambda pid: {"name": str(pid)}))
+        top = tracker.top(lambda pid: {"name": "worker", "kind": "host_container"})
+        self.assertEqual(top["pid"], 123)
+        self.assertEqual(top["percent"], 20)
+        self.assertEqual(top["kind"], "host_container")
+
+
 class HomeStartSmokeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -101,6 +164,9 @@ class HomeStartSmokeTests(unittest.TestCase):
             "homestart/samba/manager.py",
             "homestart/system/network.py",
             "homestart/system/network_config.py",
+            "homestart/system/disks.py",
+            "homestart/system/processes.py",
+            "homestart/auth/security.py",
             "homestart/updates/github.py",
         ):
             self.assertTrue((root / relative_path).is_file(), relative_path)
@@ -1164,6 +1230,30 @@ class HomeStartSmokeTests(unittest.TestCase):
             alert = next(item for item in self.app.overview_payload()["alerts"] if item["id"] == "stopped-containers")
         self.assertIn("stopped-app", alert["detail"])
 
+    def test_failed_smart_health_becomes_a_local_alert(self):
+        system = {
+            "cpu": {"percent": 1}, "memory": {"percent": 2},
+            "temperature": {"celsius": 40}, "network": {},
+        }
+        status = {
+            "containers": [],
+            "services": [],
+            "disks": [{
+                "device": "/dev/sda",
+                "model": "Test drive",
+                "percent": 10,
+                "smart": {"healthy": False, "status": "failing"},
+            }],
+        }
+        with mock.patch.object(self.app, "system_payload", return_value=system), \
+                mock.patch.object(self.app, "status_payload", return_value=status):
+            alert = next(
+                item for item in self.app.overview_payload()["alerts"]
+                if item["id"] == "smart-/dev/sda"
+            )
+        self.assertEqual(alert["level"], "critical")
+        self.assertIn("Test drive", alert["detail"])
+
     def test_network_history_is_stored_separately_at_fine_resolution(self):
         self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
         now = int(__import__("time").time())
@@ -1339,6 +1429,19 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("border-color: var(--accent)", styles)
         self.assertIn("sudo cat /opt/homestart/data/setup-token", login)
 
+    def test_overview_orders_resources_before_network_and_exposes_security_controls(self):
+        root = Path(__file__).parents[1]
+        html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        script = (root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertLess(
+            html.index('id="resources-panel"'),
+            html.index("Network bandwidth"),
+        )
+        self.assertIn('id="cpu-top"', html)
+        self.assertIn("data.cpu?.top", script)
+        self.assertIn('id="security-proxy-form"', html)
+        self.assertIn('name="trusted_proxies"', html)
+
 
 class HomeStartAuthenticationHttpTests(unittest.TestCase):
     def setUp(self):
@@ -1383,6 +1486,7 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
             "status": response.status,
             "location": response.getheader("Location"),
             "set_cookie": response.getheader("Set-Cookie"),
+            "retry_after": response.getheader("Retry-After"),
         }
         connection.close()
         return metadata, result
@@ -1416,6 +1520,7 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
         self.assertIn("HttpOnly", response["set_cookie"])
         self.assertIn("SameSite=Lax", response["set_cookie"])
         self.assertIn("Max-Age=", response["set_cookie"])
+        self.assertNotIn("Secure", response["set_cookie"])
 
         response, users = self.request(
             "GET", "/api/auth/users", headers={"Cookie": cookie}
@@ -1449,6 +1554,82 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
         self.assertEqual(first["status"], 401)
         self.assertEqual(second["status"], 401)
         self.assertEqual(log_message.call_count, 1)
+
+    def test_login_throttles_progressively_without_permanent_lockout(self):
+        setup_token = self.app.AUTH_MANAGER.ensure_setup_token()
+        self.request("POST", "/api/auth/setup", {
+            "setup_token": setup_token,
+            "username": "owner",
+            "password": "123456",
+        })
+        for _ in range(4):
+            response, denied = self.request("POST", "/api/auth/login", {
+                "username": "owner",
+                "password": "wrong-password",
+            })
+            self.assertEqual(response["status"], 401)
+            self.assertEqual(denied["error"], "Invalid username or password")
+        response, denied = self.request("POST", "/api/auth/login", {
+            "username": "owner",
+            "password": "wrong-password",
+        })
+        self.assertEqual(response["status"], 401)
+        self.assertEqual(denied["retry_after"], 2)
+        self.assertEqual(response["retry_after"], "2")
+        response, blocked = self.request("POST", "/api/auth/login", {
+            "username": "owner",
+            "password": "123456",
+        })
+        self.assertEqual(response["status"], 429)
+        self.assertIn("Try again", blocked["error"])
+
+    def test_trusted_https_proxy_enables_secure_session_cookie(self):
+        self.config.write_text(json.dumps({
+            "security": {
+                "cookie_secure": "auto",
+                "trusted_proxies": ["127.0.0.1/32"],
+            },
+        }), encoding="utf-8")
+        setup_token = self.app.AUTH_MANAGER.ensure_setup_token()
+        response, created = self.request(
+            "POST",
+            "/api/auth/setup",
+            {
+                "setup_token": setup_token,
+                "username": "owner",
+                "password": "123456",
+            },
+            {
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-For": "192.168.1.50",
+            },
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertIn("Secure", response["set_cookie"])
+        cookie = response["set_cookie"].split(";", 1)[0]
+        response, security = self.request(
+            "GET",
+            "/api/auth/security",
+            headers={
+                "Cookie": cookie,
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-For": "192.168.1.50",
+            },
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(security["request"]["effective_client_ip"], "192.168.1.50")
+        self.assertTrue(security["request"]["cookie_will_be_secure"])
+        response, invalid = self.request(
+            "POST",
+            "/api/auth/security",
+            {"cookie_secure": "auto", "trusted_proxies": ["invalid-network"]},
+            {
+                "Cookie": cookie,
+                "X-CSRF-Token": created["csrf_token"],
+            },
+        )
+        self.assertEqual(response["status"], 400)
+        self.assertIn("Invalid trusted proxy", invalid["error"])
 
 
 if __name__ == "__main__":

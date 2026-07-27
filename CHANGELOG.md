@@ -4,6 +4,28 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260727-3010
+
+- Added progressive login throttling by account and client address. Delays
+  begin after repeated failures, are capped at 60 seconds, expire after a
+  quiet period and never permanently lock an account.
+- Login now returns `Retry-After` and shows a countdown before another attempt.
+- Added configurable session-cookie security under `Settings > Users` with
+  Automatic, Always secure and Never secure policies.
+- Added explicit trusted proxy IP/CIDR configuration. Forwarded HTTPS and
+  client-address headers are ignored unless the immediate peer is trusted.
+- Kept Automatic mode and an empty proxy list as safe upgrade defaults, so
+  existing direct HTTP installations remain accessible.
+- Added an instantaneous `Top now` CPU consumer to the Overview CPU card,
+  identifying a native process or Docker container from procfs and cgroups.
+- Moved System resources above Network bandwidth so host performance details
+  remain grouped with CPU, memory and GPU monitoring.
+- Added cached SMART overall-health checks for physical disks. Confirmed
+  failures appear in Local alerts and may be ignored like other alerts;
+  missing tools and unsupported devices do not create false health warnings.
+- Clean Debian/Ubuntu installs now include `smartmontools`; upgraded systems
+  can add it separately to enable SMART checks.
+
 ## 20260727-3000
 
 - Improved registration and login contrast with solid input backgrounds,
