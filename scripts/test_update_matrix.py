@@ -228,6 +228,11 @@ def main():
         premodular = release_archive(matrix["premodular"], cache)
         upgrade_scenario("previous-to-current", previous, args.update, root)
         upgrade_scenario("premodular-to-current", premodular, args.update, root)
+        for index, version in enumerate(matrix.get("additional", []), start=1):
+            additional = release_archive(str(version), cache)
+            upgrade_scenario(
+                f"additional-{index}-to-current", additional, args.update, root
+            )
 
 
 if __name__ == "__main__":

@@ -19,6 +19,10 @@
           <button class="nav-item" type="button" data-view="files"><strong>File Browser</strong><small>Storage and sharing</small></button>
           <button class="nav-item" type="button" data-view="settings"><strong>Settings</strong><small>System configuration</small></button>
         </nav>
+        <div class="session-card">
+          <div><small>Signed in as</small><strong id="session-username">User</strong></div>
+          <button id="session-logout" type="button">Sign out</button>
+        </div>
         <div class="sidebar-clock" aria-live="off">
           <strong id="permanent-clock">--:--:--</strong>
           <span id="permanent-date">Loading date…</span>
@@ -474,6 +478,7 @@
           <div class="settings-workspace">
             <nav class="settings-section-menu" aria-label="Settings sections">
               <button class="active" type="button" data-settings-target="settings-general"><strong>General</strong><small>Appearance, alerts and time</small></button>
+              <button type="button" data-settings-target="settings-security"><strong>Users</strong><small>Sign-in and passwords</small></button>
               <button type="button" data-settings-target="settings-backups"><strong>Backups</strong><small>Download local data</small></button>
               <button type="button" data-settings-target="settings-network"><strong>Network</strong><small>Interfaces and IPv4</small></button>
               <button type="button" data-settings-target="settings-updates"><strong>Updates</strong><small>Online and manual packages</small></button>
@@ -494,6 +499,32 @@
               <label>Temperature alert (°C)<input id="setting-temperature-alert" type="number" min="1" max="150" /></label>
               <button type="submit">Save settings</button>
             </form>
+          </section>
+
+          <section class="settings-panel" id="settings-security">
+            <div class="section-head"><div><h2>Users and sign-in</h2><p>Every HomeStart user has full access to this server.</p></div></div>
+            <div class="security-layout">
+              <div class="security-block">
+                <h3>HomeStart users</h3>
+                <div id="security-users" class="security-users"><p class="form-note">Loading users…</p></div>
+              </div>
+              <form id="security-create-user" class="security-block security-form">
+                <h3>Add user</h3>
+                <label>Username<input name="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="off" required /></label>
+                <label>Password<input name="password" type="password" minlength="6" autocomplete="new-password" required /><small>At least 6 characters. A longer passphrase is recommended.</small></label>
+                <label>Repeat password<input name="confirmation" type="password" minlength="6" autocomplete="new-password" required /></label>
+                <button type="submit">Add user</button>
+              </form>
+              <form id="security-change-password" class="security-block security-form">
+                <h3>Change my password</h3>
+                <label>Current password<input name="current_password" type="password" autocomplete="current-password" required /></label>
+                <label>New password<input name="new_password" type="password" minlength="6" autocomplete="new-password" required /></label>
+                <label>Repeat new password<input name="confirmation" type="password" minlength="6" autocomplete="new-password" required /></label>
+                <button type="submit">Change password</button>
+              </form>
+            </div>
+            <p id="security-status" class="form-note" aria-live="polite"></p>
+            <p class="form-note">Lost access? On the server run <code>sudo python3 /opt/homestart/app.py auth reset-password USERNAME</code>.</p>
           </section>
 
           <section class="settings-panel" id="settings-backups">
@@ -630,6 +661,8 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
 
+    <script src="/auth-client.js"></script>
+    <script src="/security.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

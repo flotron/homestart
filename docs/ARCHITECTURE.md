@@ -9,6 +9,9 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 - `homestart/api/router.py` dispatches JSON API requests and converts domain
   errors into HTTP responses. The HTTP handler itself remains a small adapter
   around Python's standard-library server.
+- `homestart/auth/manager.py` owns local users, one-time initial setup, scrypt
+  password verification, opaque persistent sessions and CSRF tokens. These
+  users gate the web UI but intentionally do not map to Linux or Samba users.
 - `homestart/config.py` owns defaults, recursive config merging and JSON
   persistence.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
@@ -33,6 +36,9 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   applies and records rollback metadata for update packages.
 - `static/` contains the dependency-free browser application.
 - `data/homestart.db` stores local metric and Speedtest history.
+- `data/auth-users.json` stores salted password hashes with mode `0600`.
+  `data/auth-sessions.db` stores only hashes of opaque session tokens and is
+  intentionally excluded from backups.
 - `data/backups/`, `data/trash/`, `data/app-icons/`, `data/compose-apps/`, and
   `data/app-data/` contain local runtime data and are never included in releases.
 - Recommended applications come from the versioned
