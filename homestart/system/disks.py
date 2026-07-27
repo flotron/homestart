@@ -1,5 +1,6 @@
 """Portable, best-effort disk health inspection."""
 
+import concurrent.futures
 import json
 import shutil
 import subprocess
@@ -38,14 +39,36 @@ def parse_smartctl_health(payload, returncode=0):
     }
 
 
+def smartctl_reports_standby(payload, returncode=0):
+    """Recognize the explicit ``-n standby,3`` early-exit result."""
+    payload = payload if isinstance(payload, dict) else {}
+    power_mode = str(payload.get("power_mode") or "").strip().lower()
+    if power_mode in {"sleep", "standby"}:
+        return True
+    messages = (payload.get("smartctl") or {}).get("messages") or []
+    text = " ".join(
+        str(item.get("string") or "")
+        for item in messages
+        if isinstance(item, dict)
+    ).lower()
+    return int(returncode or 0) == 3 and (
+        "standby" in text or "sleep" in text
+    )
+
+
 class SmartHealthMonitor:
-    def __init__(self, ttl_seconds=300, clock=None):
-        self.ttl_seconds = int(ttl_seconds)
+    """Background SMART collector whose readers only consume cached results."""
+
+    def __init__(self, ttl_seconds=300, workers=2, clock=None, wall_clock=None):
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self.workers = max(1, min(4, int(workers)))
         self.clock = clock or time.monotonic
+        self.wall_clock = wall_clock or time.time
         self.cache = {}
         self.lock = threading.Lock()
+        self.collection_lock = threading.Lock()
 
-    def _read(self, device):
+    def _read(self, device, transport=""):
         command = shutil.which("smartctl")
         if not command:
             return {
@@ -54,8 +77,15 @@ class SmartHealthMonitor:
                 "detail": "smartctl is not installed",
             }
         try:
+            arguments = [command]
+            if (
+                str(transport or "").strip().lower() != "nvme"
+                and not str(device).startswith("/dev/nvme")
+            ):
+                arguments.extend(["-n", "standby,3"])
+            arguments.extend(["-H", "-j", device])
             result = subprocess.run(
-                [command, "-H", "-j", device],
+                arguments,
                 capture_output=True,
                 text=True,
                 timeout=8,
@@ -71,11 +101,121 @@ class SmartHealthMonitor:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
             payload = {}
+        if smartctl_reports_standby(payload, result.returncode):
+            return {
+                "status": "standby",
+                "healthy": None,
+                "detail": "Drive is in standby; SMART was not checked",
+                "smartctl_exit_code": int(result.returncode),
+            }
         health = parse_smartctl_health(payload, result.returncode)
         health["smartctl_exit_code"] = int(result.returncode)
         return health
 
-    def inspect(self, disks):
+    @staticmethod
+    def _previous_assessment(cached):
+        health = dict((cached or {}).get("health") or {})
+        if health.get("status") in {"healthy", "failing"}:
+            return {
+                "last_status": health.get("status"),
+                "last_healthy": health.get("healthy"),
+                "last_detail": health.get("detail", ""),
+                "last_checked_at": health.get("checked_at", 0),
+            }
+        return {
+            key: health.get(key)
+            for key in (
+                "last_status",
+                "last_healthy",
+                "last_detail",
+                "last_checked_at",
+            )
+            if key in health
+        }
+
+    def _record(self, device, health, checked_monotonic, checked_at):
+        with self.lock:
+            previous = self.cache.get(device)
+        health = dict(health)
+        previous_assessment = self._previous_assessment(previous)
+        if health.get("status") in {"healthy", "failing"}:
+            health.update({
+                "last_status": health.get("status"),
+                "last_healthy": health.get("healthy"),
+                "last_detail": health.get("detail", ""),
+                "last_checked_at": int(checked_at),
+            })
+        else:
+            health.update(previous_assessment)
+        health["checked_at"] = int(checked_at)
+        with self.lock:
+            self.cache[device] = {
+                "checked_monotonic": checked_monotonic,
+                "health": health,
+            }
+
+    def collect(self, disks, force=False):
+        """Refresh due devices. Intended to run only from a background thread."""
+        if not self.collection_lock.acquire(blocking=False):
+            return False
+        try:
+            now = self.clock()
+            device_metadata = {
+                str(disk.get("device") or "").strip(): {
+                    "transport": str(disk.get("transport") or "").strip(),
+                }
+                for disk in disks
+                if str(disk.get("device") or "").startswith("/dev/")
+            }
+            devices = list(device_metadata)
+            with self.lock:
+                due = [
+                    device
+                    for device in devices
+                    if force
+                    or device not in self.cache
+                    or now - self.cache[device]["checked_monotonic"] >= self.ttl_seconds
+                ]
+            if due:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(self.workers, len(due)),
+                    thread_name_prefix="homestart-smart",
+                ) as executor:
+                    futures = {
+                        executor.submit(
+                            self._read,
+                            device,
+                            device_metadata[device]["transport"],
+                        ): device
+                        for device in due
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        device = futures[future]
+                        try:
+                            health = future.result()
+                        except Exception:
+                            health = {
+                                "status": "unknown",
+                                "healthy": None,
+                                "detail": "SMART health could not be read",
+                            }
+                        self._record(
+                            device,
+                            health,
+                            self.clock(),
+                            self.wall_clock(),
+                        )
+            active = set(devices)
+            with self.lock:
+                for device in list(self.cache):
+                    if device not in active:
+                        self.cache.pop(device, None)
+            return True
+        finally:
+            self.collection_lock.release()
+
+    def snapshot(self, disks):
+        """Return immediately with cached data; never invokes ``smartctl``."""
         now = self.clock()
         results = {}
         for disk in disks:
@@ -84,12 +224,18 @@ class SmartHealthMonitor:
                 continue
             with self.lock:
                 cached = self.cache.get(device)
-            if cached and now - cached["checked_at"] < self.ttl_seconds:
-                results[device] = dict(cached["health"])
+            if not cached:
+                results[device] = {
+                    "status": "checking",
+                    "healthy": None,
+                    "detail": "Waiting for the background SMART check",
+                    "checked_at": 0,
+                    "stale": False,
+                }
                 continue
-            health = self._read(device)
-            with self.lock:
-                self.cache[device] = {"checked_at": now, "health": dict(health)}
+            health = dict(cached["health"])
+            age = max(0, now - cached["checked_monotonic"])
+            health["age_seconds"] = round(age)
+            health["stale"] = age > self.ttl_seconds * 2
             results[device] = health
         return results
-

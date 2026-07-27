@@ -1,9 +1,9 @@
-"""Local users and opaque server-side sessions.
+"""Single-owner account and opaque server-side sessions.
 
 HomeStart deliberately keeps authentication separate from Linux and Samba
-accounts. Every authenticated HomeStart user has the same dashboard
-capabilities; the host service continues to perform operations with its
-existing privileges.
+accounts. The owner retains the same complete dashboard capabilities as the
+service had before authentication was introduced. Accounts created by the
+short-lived multi-user release remain usable until the owner removes them.
 """
 
 import hashlib
@@ -227,27 +227,35 @@ class AuthManager:
                 for item in self._read_users()["users"]
             ]
 
-    def create_user(self, username, password):
+    def account_state(self, current_user_id=""):
         with self.lock:
-            payload = self._read_users()
-            user = self._new_user(username, password)
-            if any(
-                item.get("username_key", str(item.get("username", "")).casefold())
-                == user["username_key"]
-                for item in payload["users"]
-            ):
-                raise ValueError("That username already exists")
-            payload["users"].append(user)
-            self._write_users(payload)
-            return self._public_user(user)
+            users = [
+                self._public_user(item)
+                for item in self._read_users()["users"]
+            ]
+        owner = users[0] if users else None
+        return {
+            "owner": owner,
+            "legacy_users": users[1:],
+            "current_user_id": str(current_user_id or ""),
+            "current_is_owner": bool(
+                owner and owner["id"] == str(current_user_id or "")
+            ),
+        }
+
+    def create_user(self, username, password):
+        raise ValueError("HomeStart supports one owner account")
 
     def delete_user(self, user_id, current_user_id=""):
         with self.lock:
             payload = self._read_users()
             if len(payload["users"]) <= 1:
-                raise ValueError("The last HomeStart user cannot be deleted")
-            if str(user_id or "") == str(current_user_id or ""):
-                raise ValueError("You cannot delete the account currently in use")
+                raise ValueError("There are no legacy accounts to remove")
+            owner_id = str(payload["users"][0].get("id", ""))
+            if owner_id != str(current_user_id or ""):
+                raise ValueError("Only the owner account can remove legacy accounts")
+            if str(user_id or "") == owner_id:
+                raise ValueError("The owner account cannot be deleted")
             remaining = [
                 item for item in payload["users"]
                 if str(item.get("id", "")) != str(user_id or "")

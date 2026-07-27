@@ -52,12 +52,62 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
             normalize_trusted_proxies(["not-a-network"])
 
     def test_smart_health_and_instant_process_cpu_are_portable(self):
-        from homestart.system.disks import parse_smartctl_health
+        from homestart.system.disks import (
+            SmartHealthMonitor,
+            parse_smartctl_health,
+            smartctl_reports_standby,
+        )
         from homestart.system.processes import ProcessCpuTracker
 
         self.assertTrue(parse_smartctl_health({"smart_status": {"passed": True}})["healthy"])
         self.assertFalse(parse_smartctl_health({"smart_status": {"passed": False}})["healthy"])
         self.assertFalse(parse_smartctl_health({}, 8)["healthy"])
+        standby_payload = {
+            "power_mode": "STANDBY",
+            "smartctl": {
+                "messages": [{"string": "Device is in STANDBY mode, exit(3)"}],
+            },
+        }
+        self.assertTrue(smartctl_reports_standby(standby_payload, 3))
+
+        now = [100.0]
+        monitor = SmartHealthMonitor(
+            ttl_seconds=300,
+            workers=2,
+            clock=lambda: now[0],
+            wall_clock=lambda: 1000 + now[0],
+        )
+        disks = [{"device": "/dev/sda"}]
+        with mock.patch.object(
+            monitor,
+            "_read",
+            side_effect=AssertionError("snapshot invoked smartctl"),
+        ):
+            self.assertEqual(monitor.snapshot(disks)["/dev/sda"]["status"], "checking")
+        with mock.patch.object(
+            monitor,
+            "_read",
+            return_value={
+                "status": "healthy",
+                "healthy": True,
+                "detail": "SMART health assessment passed",
+            },
+        ):
+            self.assertTrue(monitor.collect(disks))
+        now[0] += 301
+        with mock.patch.object(
+            monitor,
+            "_read",
+            return_value={
+                "status": "standby",
+                "healthy": None,
+                "detail": "Drive is in standby; SMART was not checked",
+            },
+        ):
+            self.assertTrue(monitor.collect(disks))
+        cached = monitor.snapshot(disks)["/dev/sda"]
+        self.assertEqual(cached["status"], "standby")
+        self.assertTrue(cached["last_healthy"])
 
         snapshots = iter([
             (100, {123: 10}),
@@ -73,6 +123,88 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
         self.assertEqual(top["pid"], 123)
         self.assertEqual(top["percent"], 20)
         self.assertEqual(top["kind"], "host_container")
+
+    def test_smartctl_check_does_not_wake_standby_disks(self):
+        from homestart.system.disks import SmartHealthMonitor
+
+        monitor = SmartHealthMonitor()
+        completed = mock.Mock(
+            stdout=json.dumps({
+                "power_mode": "STANDBY",
+                "smartctl": {
+                    "messages": [{"string": "Device is in STANDBY mode, exit(3)"}],
+                },
+            }),
+            returncode=3,
+        )
+        with mock.patch(
+            "homestart.system.disks.shutil.which",
+            return_value="/usr/sbin/smartctl",
+        ), mock.patch(
+            "homestart.system.disks.subprocess.run",
+            return_value=completed,
+        ) as run:
+            health = monitor._read("/dev/sda")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/sbin/smartctl",
+                "-n",
+                "standby,3",
+                "-H",
+                "-j",
+                "/dev/sda",
+            ],
+        )
+        self.assertEqual(health["status"], "standby")
+        self.assertIsNone(health["healthy"])
+
+        nvme_result = mock.Mock(
+            stdout=json.dumps({
+                "nvme_smart_health_information_log": {"critical_warning": 0},
+            }),
+            returncode=0,
+        )
+        with mock.patch(
+            "homestart.system.disks.shutil.which",
+            return_value="/usr/sbin/smartctl",
+        ), mock.patch(
+            "homestart.system.disks.subprocess.run",
+            return_value=nvme_result,
+        ) as run:
+            health = monitor._read("/dev/nvme0n1", "nvme")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/sbin/smartctl", "-H", "-j", "/dev/nvme0n1"],
+        )
+        self.assertTrue(health["healthy"])
+
+    def test_smart_collection_has_bounded_parallelism(self):
+        from homestart.system.disks import SmartHealthMonitor
+
+        monitor = SmartHealthMonitor(workers=2)
+        active = 0
+        maximum = 0
+        lock = threading.Lock()
+
+        def read(_device, _transport=""):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            __import__("time").sleep(0.02)
+            with lock:
+                active -= 1
+            return {
+                "status": "healthy",
+                "healthy": True,
+                "detail": "SMART health assessment passed",
+            }
+
+        disks = [{"device": f"/dev/sd{letter}"} for letter in "abcdef"]
+        with mock.patch.object(monitor, "_read", side_effect=read):
+            monitor.collect(disks, force=True)
+        self.assertEqual(maximum, 2)
 
 
 class HomeStartSmokeTests(unittest.TestCase):
@@ -112,15 +244,25 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(manager.users_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(manager.sessions_path.stat().st_mode & 0o777, 0o600)
 
-    def test_auth_user_management_does_not_map_linux_or_samba_accounts(self):
+    def test_auth_is_single_owner_and_preserves_legacy_accounts(self):
         manager = self.app.AUTH_MANAGER
         owner = manager.create_initial_user(
             manager.ensure_setup_token(), "owner", "123456"
         )
-        other = manager.create_user("family", "abcdef")
-        self.assertEqual(len(manager.list_users()), 2)
+        with self.assertRaisesRegex(ValueError, "one owner"):
+            manager.create_user("family", "abcdef")
+        payload = manager._read_users()
+        other = manager._new_user("family", "abcdef")
+        payload["users"].append(other)
+        manager._write_users(payload)
+        state = manager.account_state(owner["id"])
+        self.assertTrue(state["current_is_owner"])
+        self.assertEqual(state["owner"]["username"], "owner")
+        self.assertEqual(state["legacy_users"][0]["username"], "family")
         with self.assertRaises(ValueError):
             manager.delete_user(owner["id"], owner["id"])
+        with self.assertRaisesRegex(ValueError, "Only the owner"):
+            manager.delete_user(owner["id"], other["id"])
         manager.delete_user(other["id"], owner["id"])
         self.assertEqual([item["username"] for item in manager.list_users()], ["owner"])
 
@@ -1254,6 +1396,31 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(alert["level"], "critical")
         self.assertIn("Test drive", alert["detail"])
 
+    def test_status_reads_smart_cache_without_collecting(self):
+        disks = [{"device": "/dev/sda", "model": "Test drive"}]
+        cached = {
+            "/dev/sda": {
+                "status": "standby",
+                "healthy": None,
+                "last_healthy": True,
+            },
+        }
+        with mock.patch.object(self.app, "disk_payload", return_value=disks), \
+                mock.patch.object(
+                    self.app.SMART_HEALTH_MONITOR,
+                    "snapshot",
+                    return_value=cached,
+                ) as snapshot, \
+                mock.patch.object(
+                    self.app.SMART_HEALTH_MONITOR,
+                    "collect",
+                    side_effect=AssertionError("HTTP path collected SMART"),
+                ), \
+                mock.patch.object(self.app, "docker_apps", return_value=[]):
+            status = self.app.status_payload()
+        snapshot.assert_called_once_with(disks)
+        self.assertEqual(status["disks"][0]["smart"]["status"], "standby")
+
     def test_network_history_is_stored_separately_at_fine_resolution(self):
         self.app.DB_PATH = Path(self.temp.name) / "network-metrics.db"
         now = int(__import__("time").time())
@@ -1441,6 +1608,9 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("data.cpu?.top", script)
         self.assertIn('id="security-proxy-form"', html)
         self.assertIn('name="trusted_proxies"', html)
+        self.assertIn('id="security-owner"', html)
+        self.assertIn('id="security-legacy-block"', html)
+        self.assertNotIn('id="security-create-user"', html)
 
 
 class HomeStartAuthenticationHttpTests(unittest.TestCase):
@@ -1526,7 +1696,9 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
             "GET", "/api/auth/users", headers={"Cookie": cookie}
         )
         self.assertEqual(response["status"], 200)
-        self.assertEqual(users["users"][0]["username"], "owner")
+        self.assertEqual(users["owner"]["username"], "owner")
+        self.assertEqual(users["legacy_users"], [])
+        self.assertTrue(users["current_is_owner"])
 
         response, rejected = self.request(
             "POST",
@@ -1537,14 +1709,32 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
         self.assertEqual(response["status"], 403)
         self.assertIn("request token", rejected["error"])
 
-        response, added = self.request(
+        response, rejected = self.request(
             "POST",
             "/api/auth/users",
             {"action": "create", "username": "family", "password": "abcdef"},
             {"Cookie": cookie, "X-CSRF-Token": created["csrf_token"]},
         )
+        self.assertEqual(response["status"], 400)
+        self.assertIn("one owner", rejected["error"])
+
+        payload = self.app.AUTH_MANAGER._read_users()
+        legacy = self.app.AUTH_MANAGER._new_user("family", "abcdef")
+        payload["users"].append(legacy)
+        self.app.AUTH_MANAGER._write_users(payload)
+        response, users = self.request(
+            "GET", "/api/auth/users", headers={"Cookie": cookie}
+        )
         self.assertEqual(response["status"], 200)
-        self.assertEqual(added["user"]["username"], "family")
+        self.assertEqual(users["legacy_users"][0]["username"], "family")
+        response, removed = self.request(
+            "POST",
+            "/api/auth/users",
+            {"action": "delete", "user_id": legacy["id"]},
+            {"Cookie": cookie, "X-CSRF-Token": created["csrf_token"]},
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertTrue(removed["ok"])
 
     def test_repeated_unauthorized_polling_is_logged_at_most_once_per_client(self):
         self.app.AUTH_UNAUTHORIZED_LOG_AT.clear()

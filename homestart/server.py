@@ -1706,6 +1706,18 @@ def network_metrics_sampler():
         time.sleep(max(.25, 2 - elapsed))
 
 
+def smart_health_sampler():
+    """Refresh SMART cache without ever blocking an HTTP request."""
+    while True:
+        started = time.monotonic()
+        try:
+            SMART_HEALTH_MONITOR.collect(disk_payload())
+        except Exception as error:
+            print(f"HomeStart SMART collector: {error}", flush=True)
+        elapsed = time.monotonic() - started
+        time.sleep(max(1, SMART_HEALTH_MONITOR.ttl_seconds - elapsed))
+
+
 def overview_payload():
     system = system_payload(None)
     system["network"] = latest_network_payload()
@@ -1725,7 +1737,12 @@ def overview_payload():
         if disk.get("percent", 0) >= float(thresholds.get("disk_percent", 90)):
             alerts.append({"id": f"disk-{disk['device']}", "level": "critical", "title": "Disk almost full", "detail": f"{disk['device']} is at {disk['percent']:.0f}%"})
         smart = disk.get("smart") or {}
-        if smart.get("healthy") is False:
+        effective_healthy = (
+            smart.get("last_healthy")
+            if smart.get("status") == "standby"
+            else smart.get("healthy")
+        )
+        if effective_healthy is False:
             disk_name = " · ".join(
                 value for value in (disk.get("model", ""), disk.get("device", ""))
                 if value
@@ -3428,7 +3445,7 @@ def status_payload():
     host = local_ip()
     services = load_config_file().get("services", [])
     disks = disk_payload()
-    smart = SMART_HEALTH_MONITOR.inspect(disks)
+    smart = SMART_HEALTH_MONITOR.snapshot(disks)
     for disk in disks:
         disk["smart"] = smart.get(disk.get("device", ""), {
             "status": "unknown",
@@ -5121,9 +5138,16 @@ def auth_logout(handler):
 
 def auth_users_payload(handler):
     session = handler.require_auth_session()
+    state = auth_manager().account_state(session["user"]["id"])
     return {
         "ok": True,
-        "users": auth_manager().list_users(),
+        **state,
+        # Retained for clients from the brief multi-user release. New clients
+        # use owner and legacy_users.
+        "users": [
+            item for item in [state["owner"], *state["legacy_users"]]
+            if item
+        ],
         "current_user_id": session["user"]["id"],
     }
 
@@ -5174,10 +5198,7 @@ def auth_users_action(handler, payload):
     session = handler.require_auth_session()
     action = str(payload.get("action", "")).strip()
     if action == "create":
-        user = auth_manager().create_user(
-            payload.get("username", ""), payload.get("password", "")
-        )
-        handler.send_json({"ok": True, "user": user})
+        raise ValueError("HomeStart supports one owner account")
     elif action == "delete":
         auth_manager().delete_user(
             payload.get("user_id", ""), session["user"]["id"]
@@ -5422,12 +5443,13 @@ def main():
         print("HomeStart initial setup is required.", flush=True)
         print(f"Setup code: {setup_token}", flush=True)
         print(
-            "Open the dashboard and enter this code to create the first user.",
+            "Open the dashboard and enter this code to create the owner account.",
             flush=True,
         )
         print("", flush=True)
     threading.Thread(target=metrics_sampler, name="homestart-metrics", daemon=True).start()
     threading.Thread(target=network_metrics_sampler, name="homestart-network-metrics", daemon=True).start()
+    threading.Thread(target=smart_health_sampler, name="homestart-smart-health", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), HomeStartHandler)
     print(f"HomeStart listening on 0.0.0.0:{port}", flush=True)
     server.serve_forever()

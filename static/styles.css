@@ -222,10 +222,6 @@
   background: var(--panel-strong);
 }
 
-.security-block:first-child {
-  grid-row: span 2;
-}
-
 .security-block h3 {
   margin: 0 0 14px;
 }
@@ -253,6 +249,10 @@
 }
 
 .security-proxy-form {
+  grid-column: 1 / -1;
+}
+
+#security-legacy-block {
   grid-column: 1 / -1;
 }
 
@@ -309,10 +309,6 @@
 
   .security-layout {
     grid-template-columns: 1fr;
-  }
-
-  .security-block:first-child {
-    grid-row: auto;
   }
 
   .security-proxy-grid {

@@ -31,8 +31,8 @@
         <form id="setup-form" class="auth-form" hidden>
           <div>
             <p class="eyebrow">First-time setup</p>
-            <h2>Create the first user</h2>
-            <p>This account will have full access to HomeStart, including files, Samba, Docker and server settings.</p>
+            <h2>Create the owner account</h2>
+            <p>This single account will have full access to HomeStart, including files, Samba, Docker and server settings.</p>
           </div>
           <label>Setup code<input id="setup-token" autocomplete="one-time-code" spellcheck="false" required /></label>
           <p class="form-note setup-help">Find it on a default installation with:<br /><code>sudo cat /opt/homestart/data/setup-token</code><br />It is also printed as “Setup code” in the HomeStart service journal.</p>
@@ -41,7 +41,7 @@
           <label>Repeat password<input id="setup-password-confirm" type="password" minlength="6" autocomplete="new-password" required /></label>
           <label class="auth-remember"><input id="setup-remember" type="checkbox" checked /> Remember this device for 30 days</label>
           <p id="setup-error" class="auth-error" role="alert" hidden></p>
-          <button type="submit">Create user and continue</button>
+          <button type="submit">Create owner and continue</button>
         </form>
       </section>
     </main>

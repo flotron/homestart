@@ -70,22 +70,27 @@ and apply local or GitHub release updates without bundling private runtime data.
 
 ## Security Model
 
-HomeStart requires a local account. On the first start it creates a one-time
+HomeStart requires one local owner account. On the first start it creates a one-time
 setup code and prints it in the service journal:
 
 ```sh
 sudo journalctl -u homestart.service -n 30 --no-pager
 ```
 
-Enter that code in the browser to create the first user. Passwords must contain
+Enter that code in the browser to create the owner. Passwords must contain
 at least six characters; longer passphrases are recommended. Passwords are
 stored as salted `scrypt` hashes and web sessions use random opaque tokens
 stored server-side. “Remember this device” keeps a session for up to 30 days.
 
-All HomeStart users currently have the same full dashboard access. This login
-is an access gate; it does not replace Linux or Samba identities and does not
-reduce existing File Browser, Docker, Samba, network or update functionality.
-Additional users and password changes are managed from `Settings > Users`.
+The owner has full dashboard access. This login is an access gate; it does not
+replace Linux or Samba identities and does not reduce existing File Browser,
+Docker, Samba, network or update functionality. Password and session security
+are managed from `Settings > Account`.
+
+Releases 3000 and 3010 briefly allowed additional equal-privilege accounts.
+Upgrades preserve those accounts so nobody is locked out. They appear as
+legacy accounts and the primary owner may remove them, but HomeStart no longer
+creates additional accounts.
 
 Failed sign-ins are progressively throttled by account and client without a
 permanent lockout. The delay begins after five failures and expires after a
@@ -96,7 +101,7 @@ or session cookies on the network. HomeStart is still intended for a trusted
 LAN. Use HTTPS through a suitable reverse proxy before exposing it across an
 untrusted network or the public internet.
 
-Reverse-proxy cookie handling is configured in `Settings > Users`. The default
+Reverse-proxy cookie handling is configured in `Settings > Account`. The default
 Automatic policy keeps direct HTTP access working and adds the `Secure`
 attribute for direct HTTPS. To recognize HTTPS terminated by a reverse proxy,
 add only that proxy's IP address or CIDR network to **Trusted proxies**.
@@ -140,7 +145,9 @@ sudo apt-get install -y python3 python3-yaml iproute2 procps util-linux smartmon
 `smartmontools` is optional at runtime but required for SMART health alerts.
 Existing installations upgraded from an earlier HomeStart release can add it
 with `sudo apt-get install smartmontools`; unsupported disks are simply left
-without a SMART result.
+without a SMART result. HomeStart checks SMART in the background with
+`smartctl -n standby,3`, so a supported HDD that is already sleeping remains
+in standby. Overview reads the resulting cache and never waits for `smartctl`.
 
 Network configuration is optional. HomeStart uses Netplan when the selected
 interface is declared there, otherwise it uses NetworkManager through `nmcli`
@@ -191,7 +198,7 @@ The installer asks for:
 It creates and starts `homestart.service`.
 
 On a clean install or the first update that enables authentication, retrieve
-the one-time setup code from the journal and create the first account.
+the one-time setup code from the journal and create the owner account.
 
 Useful service commands:
 
@@ -229,10 +236,10 @@ Updates preserve:
 - local Speedtest history
 - custom app icons
 - local backups and runtime files
-- HomeStart users
+- HomeStart owner and any preserved legacy accounts
 
 Authentication sessions and the one-time setup code are not included in manual
-backups. Restoring users closes existing sessions.
+backups. Restoring the account database closes existing sessions.
 
 The updater validates package metadata and rejects installer archives.
 
@@ -252,8 +259,8 @@ command or introducing a web framework. Root `app.py` remains the compatible
 entry point, while focused code lives under `homestart/`:
 
 - `api/router.py`: API dispatch and HTTP error mapping
-- `auth/manager.py`: first-time setup, scrypt password hashes, users and
-  persistent opaque sessions
+- `auth/manager.py`: first-time owner setup, scrypt password hashes, legacy
+  account migration and persistent opaque sessions
 - `auth/security.py`: progressive login throttling, trusted proxy validation
   and forwarded-client parsing
 - `config.py`: configuration defaults and persistence
@@ -264,7 +271,7 @@ entry point, while focused code lives under `homestart/`:
 - `system/network.py`: network parsing and interface selection
 - `system/network_config.py`: NetworkManager parsing and architecture
   normalization
-- `system/disks.py`: cached best-effort SMART health checks
+- `system/disks.py`: standby-safe background SMART health collection and cache
 - `system/processes.py`: instantaneous procfs CPU attribution
 - `updates/github.py`: GitHub release discovery and downloads
 - `updates/package.py`: staged transactional updates and rollback metadata
