@@ -5151,7 +5151,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             now = time.monotonic()
             with AUTH_UNAUTHORIZED_LOG_LOCK:
                 previous = AUTH_UNAUTHORIZED_LOG_AT.get(address, 0)
-                if now - previous < 300:
+                if previous and now - previous < 300:
                     return
                 AUTH_UNAUTHORIZED_LOG_AT[address] = now
         super().log_request(code, size)
