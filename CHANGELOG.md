@@ -4,6 +4,25 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260727-3020
+
+- SMART checks now use `smartctl -n standby,3`, allowing sleeping HDDs to
+  remain in standby instead of being spun up by HomeStart.
+- Moved all SMART subprocesses to a five-minute background collector with at
+  most two concurrent checks. Overview and Local alerts now read cache only
+  and never wait for a physical drive or controller timeout.
+- Added explicit Checking, Standby, Unavailable and Unknown disk states.
+  Standby disks retain their last valid health assessment and its timestamp;
+  a previously failed assessment remains alertable without waking the disk.
+- Prevented duplicate SMART collections when multiple browser requests arrive
+  around the same cache-refresh boundary.
+- Simplified authentication to one full-access owner account. Settings now
+  presents Account and security, password changes, persistent sessions and
+  reverse-proxy controls without offering additional account creation.
+- Accounts created by 3000/3010 remain usable after updating. They are shown
+  only as legacy accounts, and the primary owner can remove them without any
+  automatic deletion or lockout during migration.
+
 ## 20260727-3010
 
 - Added progressive login throttling by account and client address. Delays

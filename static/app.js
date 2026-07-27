@@ -1381,6 +1381,20 @@ function statusClass(value) {
   return value === "active" || value?.startsWith("Up") ? "good" : "warn";
 }
 
+function smartDiskLabel(smart = {}) {
+  if (smart.status === "healthy") return "SMART passed";
+  if (smart.status === "failing") return "SMART warning";
+  if (smart.status === "standby") {
+    if (smart.last_healthy === true) return "SMART standby · last check passed";
+    if (smart.last_healthy === false) return "SMART standby · last check warning";
+    return "SMART standby · not checked";
+  }
+  if (smart.status === "checking") return "SMART checking…";
+  if (smart.status === "unavailable") return "SMART unavailable";
+  if (smart.status === "unknown") return "SMART status unknown";
+  return "";
+}
+
 function renderDisk(disk) {
   const node = document.createElement("article");
   node.className = "row-card";
@@ -1398,7 +1412,7 @@ function renderDisk(disk) {
     disk.transport ? disk.transport.toUpperCase() : "",
     disk.filesystems?.length ? disk.filesystems.join(", ") : "",
     mounts,
-    disk.smart?.healthy === true ? "SMART passed" : disk.smart?.healthy === false ? "SMART warning" : "",
+    smartDiskLabel(disk.smart),
   ].filter(Boolean).join(" · ");
 
   node.querySelector("strong").textContent = title || disk.device;
