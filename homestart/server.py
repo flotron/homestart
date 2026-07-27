@@ -4,11 +4,13 @@ import base64
 import binascii
 import gzip
 import hashlib
+import getpass
 import mimetypes
 import os
 import re
 import shutil
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +24,7 @@ import uuid
 import zipfile
 import yaml
 from concurrent.futures import ThreadPoolExecutor
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +32,7 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from .api.router import ApiRouter
+from .auth import AuthManager
 from .config import (
     CURATED_APPS,
     DEFAULT_CONFIG,
@@ -153,11 +157,15 @@ FILE_COPY_JOBS_LOCK = threading.Lock()
 COPY_MANAGER = None
 METRIC_STORE = None
 GITHUB_RELEASE_CLIENT = None
+AUTH_MANAGER = None
+AUTH_UNAUTHORIZED_LOG_AT = {}
+AUTH_UNAUTHORIZED_LOG_LOCK = threading.Lock()
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 DOCKER_ARCHITECTURE_CACHE = {}
 STORE_CATALOG_LOCK = threading.Lock()
 ICON_CACHE = {}
+AUTH_COOKIE_NAME = "homestart_session"
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
     "open speed test": "openspeedtest",
@@ -3437,6 +3445,9 @@ def create_backup(destination=None):
             archive.add(CONFIG_PATH, arcname="config.json")
         if DB_PATH.exists():
             archive.add(DB_PATH, arcname="data/homestart.db")
+        users_path = auth_manager().users_path
+        if users_path.exists():
+            archive.add(users_path, arcname="data/auth-users.json")
         if APP_ICON_DIR.exists():
             archive.add(APP_ICON_DIR, arcname="data/app-icons")
         if APP_ICON_INDEX.exists():
@@ -3506,6 +3517,14 @@ def restore_backup(name):
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             shutil.copy2(database, DB_PATH)
             restored.append("data/homestart.db")
+        users = target / "data/auth-users.json"
+        if users.exists():
+            manager = auth_manager()
+            shutil.copy2(users, manager.users_path)
+            manager.users_path.chmod(0o600)
+            manager.setup_token_path.unlink(missing_ok=True)
+            manager.revoke_all_sessions()
+            restored.append("data/auth-users.json")
         icons = target / "data/app-icons"
         if icons.exists():
             if APP_ICON_DIR.exists():
@@ -4926,6 +4945,152 @@ def apply_github_update():
     return result
 
 
+def auth_manager():
+    global AUTH_MANAGER
+    if AUTH_MANAGER is None:
+        AUTH_MANAGER = AuthManager(DATA_DIR)
+    return AUTH_MANAGER
+
+
+def request_cookie(handler, name):
+    cookie = SimpleCookie()
+    try:
+        cookie.load(handler.headers.get("Cookie", ""))
+    except Exception:
+        return ""
+    item = cookie.get(name)
+    return item.value if item is not None else ""
+
+
+def auth_cookie(handler, token, remember=True):
+    parts = [
+        f"{AUTH_COOKIE_NAME}={token}",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if remember:
+        parts.append(f"Max-Age={30 * 24 * 60 * 60}")
+    if handler.request_is_https():
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def cleared_auth_cookie(handler):
+    parts = [
+        f"{AUTH_COOKIE_NAME}=",
+        "Path=/",
+        "HttpOnly",
+        "SameSite=Lax",
+        "Max-Age=0",
+    ]
+    if handler.request_is_https():
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def auth_status(handler):
+    manager = auth_manager()
+    session = handler.current_auth_session()
+    return {
+        "ok": True,
+        "setup_required": not manager.has_users(),
+        "authenticated": session is not None,
+        "user": session["user"] if session else None,
+        "csrf_token": session["csrf_token"] if session else "",
+        "expires_at": session["expires_at"] if session else 0,
+    }
+
+
+def auth_setup(handler, payload):
+    manager = auth_manager()
+    user = manager.create_initial_user(
+        payload.get("setup_token", ""),
+        payload.get("username", ""),
+        payload.get("password", ""),
+    )
+    session = manager.create_session(user["id"], remember=bool(payload.get("remember", True)))
+    handler.send_json(
+        {
+            "ok": True,
+            "user": user,
+            "csrf_token": session["csrf_token"],
+            "expires_at": session["expires_at"],
+        },
+        headers={"Set-Cookie": auth_cookie(handler, session["token"], session["remember"])},
+    )
+
+
+def auth_login(handler, payload):
+    manager = auth_manager()
+    if not manager.has_users():
+        raise ValueError("Initial setup is required")
+    user = manager.authenticate(payload.get("username", ""), payload.get("password", ""))
+    if user is None:
+        raise ValueError("Invalid username or password")
+    session = manager.create_session(user["id"], remember=bool(payload.get("remember", True)))
+    handler.send_json(
+        {
+            "ok": True,
+            "user": user,
+            "csrf_token": session["csrf_token"],
+            "expires_at": session["expires_at"],
+        },
+        headers={"Set-Cookie": auth_cookie(handler, session["token"], session["remember"])},
+    )
+
+
+def auth_logout(handler):
+    token = request_cookie(handler, AUTH_COOKIE_NAME)
+    auth_manager().revoke_session(token)
+    handler.send_json(
+        {"ok": True},
+        headers={"Set-Cookie": cleared_auth_cookie(handler)},
+    )
+
+
+def auth_users_payload(handler):
+    session = handler.require_auth_session()
+    return {
+        "ok": True,
+        "users": auth_manager().list_users(),
+        "current_user_id": session["user"]["id"],
+    }
+
+
+def auth_users_action(handler, payload):
+    session = handler.require_auth_session()
+    action = str(payload.get("action", "")).strip()
+    if action == "create":
+        user = auth_manager().create_user(
+            payload.get("username", ""), payload.get("password", "")
+        )
+        handler.send_json({"ok": True, "user": user})
+    elif action == "delete":
+        auth_manager().delete_user(
+            payload.get("user_id", ""), session["user"]["id"]
+        )
+        handler.send_json({"ok": True})
+    else:
+        raise ValueError("Unknown user action")
+
+
+def auth_change_password(handler, payload):
+    session = handler.require_auth_session()
+    auth_manager().change_password(
+        session["user"]["id"],
+        payload.get("current_password", ""),
+        payload.get("new_password", ""),
+    )
+    handler.send_json(
+        {
+            "ok": True,
+            "message": "Password changed. Sign in again on this device.",
+        },
+        headers={"Set-Cookie": cleared_auth_cookie(handler)},
+    )
+
+
 API_ROUTER = ApiRouter(sys.modules[__name__])
 
 
@@ -4955,6 +5120,20 @@ class CountingWriter:
 
 
 class HomeStartHandler(SimpleHTTPRequestHandler):
+    PUBLIC_GET_PATHS = {
+        "/health",
+        "/api/auth/status",
+        "/login",
+        "/login.html",
+        "/login.js",
+        "/styles.css",
+        "/favicon.ico",
+    }
+    PUBLIC_POST_PATHS = {
+        "/api/auth/setup",
+        "/api/auth/login",
+    }
+
     def setup(self):
         super().setup()
         client_address = self.client_address[0] if self.client_address else ""
@@ -4966,18 +5145,94 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             ),
         )
 
+    def log_request(self, code="-", size="-"):
+        if str(code) == str(HTTPStatus.UNAUTHORIZED) and urlparse(self.path).path.startswith("/api/"):
+            address = self.client_address[0] if self.client_address else "unknown"
+            now = time.monotonic()
+            with AUTH_UNAUTHORIZED_LOG_LOCK:
+                previous = AUTH_UNAUTHORIZED_LOG_AT.get(address, 0)
+                if previous and now - previous < 300:
+                    return
+                AUTH_UNAUTHORIZED_LOG_AT[address] = now
+        super().log_request(code, size)
+
     def __init__(self, *args, **kwargs):
+        self._auth_session_loaded = False
+        self._auth_session = None
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
+    def request_is_https(self):
+        return isinstance(self.connection, ssl.SSLSocket)
+
+    def current_auth_session(self):
+        if not self._auth_session_loaded:
+            token = request_cookie(self, AUTH_COOKIE_NAME)
+            self._auth_session = auth_manager().session(token)
+            self._auth_session_loaded = True
+        return self._auth_session
+
+    def require_auth_session(self):
+        session = self.current_auth_session()
+        if session is None:
+            raise PermissionError("Authentication required")
+        return session
+
+    def redirect(self, location):
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def reject_unauthenticated(self):
+        route = urlparse(self.path).path
+        if route.startswith("/api/"):
+            self.send_json(
+                {"ok": False, "error": "Authentication required"},
+                HTTPStatus.UNAUTHORIZED,
+            )
+        else:
+            self.redirect("/login.html")
+
     def do_GET(self):
+        route = urlparse(self.path).path
+        if route in {"/login", "/login.html"}:
+            if self.current_auth_session() is not None:
+                self.redirect("/")
+                return
+            self.path = "/login.html"
+            super().do_GET()
+            return
+        if route not in self.PUBLIC_GET_PATHS and self.current_auth_session() is None:
+            self.reject_unauthenticated()
+            return
         if not API_ROUTER.get(self):
             super().do_GET()
 
     def do_HEAD(self):
+        route = urlparse(self.path).path
+        if route in {"/login", "/login.html"}:
+            self.path = "/login.html"
+        elif route not in self.PUBLIC_GET_PATHS and self.current_auth_session() is None:
+            self.reject_unauthenticated()
+            return
         if not API_ROUTER.head(self):
             super().do_HEAD()
 
     def do_POST(self):
+        route = urlparse(self.path).path
+        if route not in self.PUBLIC_POST_PATHS:
+            session = self.current_auth_session()
+            if session is None:
+                self.reject_unauthenticated()
+                return
+            if not auth_manager().csrf_matches(
+                session, self.headers.get("X-CSRF-Token", "")
+            ):
+                self.send_json(
+                    {"ok": False, "error": "Invalid or missing request token"},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
         API_ROUTER.post(self)
 
     def end_headers(self):
@@ -4986,12 +5241,14 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         self.skip_default_cache = False
         super().end_headers()
 
-    def send_json(self, payload, status=HTTPStatus.OK):
+    def send_json(self, payload, status=HTTPStatus.OK, headers=None):
         body, content_encoding = json_response_body(
             payload, self.headers.get("Accept-Encoding", ""),
         )
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         if content_encoding:
             self.send_header("Content-Encoding", content_encoding)
             self.send_header("Vary", "Accept-Encoding")
@@ -5002,7 +5259,28 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 
 
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1:3] == ["auth", "reset-password"]:
+        if len(sys.argv) != 4:
+            raise SystemExit("Usage: app.py auth reset-password USERNAME")
+        first = getpass.getpass("New HomeStart password: ")
+        second = getpass.getpass("Repeat password: ")
+        if first != second:
+            raise SystemExit("Passwords do not match")
+        user = auth_manager().reset_password(sys.argv[3], first)
+        print(f"Password reset for {user['username']}. Existing sessions were closed.")
+        return
+
     port = int(os.environ.get("PORT", "80"))
+    setup_token = auth_manager().ensure_setup_token()
+    if setup_token:
+        print("", flush=True)
+        print("HomeStart initial setup is required.", flush=True)
+        print(f"Setup code: {setup_token}", flush=True)
+        print(
+            "Open the dashboard and enter this code to create the first user.",
+            flush=True,
+        )
+        print("", flush=True)
     threading.Thread(target=metrics_sampler, name="homestart-metrics", daemon=True).start()
     threading.Thread(target=network_metrics_sampler, name="homestart-network-metrics", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), HomeStartHandler)

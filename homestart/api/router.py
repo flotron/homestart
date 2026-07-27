@@ -23,7 +23,11 @@ class ApiRouter:
         parsed = urlparse(handler.path)
         route = parsed.path
         query = parse_qs(parsed.query)
-        if route == "/api/apps":
+        if route == "/api/auth/status":
+            handler.send_json(b.auth_status(handler))
+        elif route == "/api/auth/users":
+            handler.send_json(b.auth_users_payload(handler))
+        elif route == "/api/apps":
             handler.send_json(b.app_payload())
         elif route in {"/speedtest", "/speedtest/"}:
             handler.path = "/speedtest.html"
@@ -144,7 +148,17 @@ class ApiRouter:
         b = self.backend
         route = urlparse(handler.path).path
         try:
-            if route == "/api/settings/general":
+            if route == "/api/auth/setup":
+                b.auth_setup(handler, self.json_body(handler))
+            elif route == "/api/auth/login":
+                b.auth_login(handler, self.json_body(handler))
+            elif route == "/api/auth/logout":
+                b.auth_logout(handler)
+            elif route == "/api/auth/users":
+                b.auth_users_action(handler, self.json_body(handler))
+            elif route == "/api/auth/password":
+                b.auth_change_password(handler, self.json_body(handler))
+            elif route == "/api/settings/general":
                 handler.send_json(b.update_settings(self.json_body(handler)))
             elif route == "/api/backups/restore":
                 payload = self.json_body(handler)

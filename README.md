@@ -68,12 +68,33 @@ and apply local or GitHub release updates without bundling private runtime data.
 
 ## Security Model
 
-HomeStart is intended for trusted LAN use. Do not expose it directly to the
-public internet without adding authentication, TLS, and a reverse proxy.
+HomeStart requires a local account. On the first start it creates a one-time
+setup code and prints it in the service journal:
 
-Actions such as Docker stop/restart, app uninstall, file operations, network
-changes, and update installation can affect the host. Use conservative
-`config.json` settings for shared or less trusted environments.
+```sh
+sudo journalctl -u homestart.service -n 30 --no-pager
+```
+
+Enter that code in the browser to create the first user. Passwords must contain
+at least six characters; longer passphrases are recommended. Passwords are
+stored as salted `scrypt` hashes and web sessions use random opaque tokens
+stored server-side. “Remember this device” keeps a session for up to 30 days.
+
+All HomeStart users currently have the same full dashboard access. This login
+is an access gate; it does not replace Linux or Samba identities and does not
+reduce existing File Browser, Docker, Samba, network or update functionality.
+Additional users and password changes are managed from `Settings > Users`.
+
+The built-in login protects access but plain HTTP does not encrypt credentials
+or session cookies on the network. HomeStart is still intended for a trusted
+LAN. Use HTTPS through a suitable reverse proxy before exposing it across an
+untrusted network or the public internet.
+
+If a password is lost, reset it locally and close all existing sessions with:
+
+```sh
+sudo python3 /opt/homestart/app.py auth reset-password USERNAME
+```
 
 Local runtime data is intentionally not part of releases:
 
@@ -119,6 +140,8 @@ Run manually:
 PORT=8080 python3 app.py
 ```
 
+The terminal prints the one-time setup code needed by the registration page.
+
 Open:
 
 ```text
@@ -147,6 +170,9 @@ The installer asks for:
 - dashboard port, default `80`
 
 It creates and starts `homestart.service`.
+
+On a clean install or the first update that enables authentication, retrieve
+the one-time setup code from the journal and create the first account.
 
 Useful service commands:
 
@@ -184,6 +210,10 @@ Updates preserve:
 - local Speedtest history
 - custom app icons
 - local backups and runtime files
+- HomeStart users
+
+Authentication sessions and the one-time setup code are not included in manual
+backups. Restoring users closes existing sessions.
 
 The updater validates package metadata and rejects installer archives.
 
@@ -203,6 +233,8 @@ command or introducing a web framework. Root `app.py` remains the compatible
 entry point, while focused code lives under `homestart/`:
 
 - `api/router.py`: API dispatch and HTTP error mapping
+- `auth/manager.py`: first-time setup, scrypt password hashes, users and
+  persistent opaque sessions
 - `config.py`: configuration defaults and persistence
 - `files/copy.py`: copy jobs, native `cp`, progress and cancellation
 - `metrics/store.py`: SQLite metric retention, history and bandwidth rankings

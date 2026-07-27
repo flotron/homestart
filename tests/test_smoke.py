@@ -1,10 +1,12 @@
 import importlib
+import http.client
 import json
 import os
 import signal
 import tempfile
 import io
 import tarfile
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -17,6 +19,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.config.write_text(json.dumps({"dashboard": {"title": "TestStart"}}), encoding="utf-8")
         os.environ["HOMESTART_CONFIG"] = str(self.config)
         self.app = importlib.reload(importlib.import_module("homestart.server"))
+        self.app.AUTH_MANAGER = self.app.AuthManager(Path(self.temp.name) / "auth-data")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -27,6 +30,60 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(config["dashboard"]["title"], "TestStart")
         self.assertIn("features", config)
         self.assertIn("updates", config)
+
+    def test_auth_initial_setup_password_and_persistent_session(self):
+        manager = self.app.AUTH_MANAGER
+        setup_token = manager.ensure_setup_token()
+        self.assertGreaterEqual(len(setup_token), 24)
+        with self.assertRaises(ValueError):
+            manager.create_initial_user(setup_token, "owner", "12345")
+        user = manager.create_initial_user(setup_token, "owner", "123456")
+        self.assertFalse(manager.setup_token_path.exists())
+        self.assertIsNone(manager.authenticate("owner", "wrong"))
+        self.assertEqual(manager.authenticate("OWNER", "123456")["id"], user["id"])
+        session = manager.create_session(user["id"], remember=True)
+        restored = manager.session(session["token"])
+        self.assertEqual(restored["user"]["username"], "owner")
+        self.assertTrue(manager.csrf_matches(restored, session["csrf_token"]))
+        self.assertFalse(manager.csrf_matches(restored, "wrong"))
+        self.assertEqual(manager.users_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(manager.sessions_path.stat().st_mode & 0o777, 0o600)
+
+    def test_auth_user_management_does_not_map_linux_or_samba_accounts(self):
+        manager = self.app.AUTH_MANAGER
+        owner = manager.create_initial_user(
+            manager.ensure_setup_token(), "owner", "123456"
+        )
+        other = manager.create_user("family", "abcdef")
+        self.assertEqual(len(manager.list_users()), 2)
+        with self.assertRaises(ValueError):
+            manager.delete_user(owner["id"], owner["id"])
+        manager.delete_user(other["id"], owner["id"])
+        self.assertEqual([item["username"] for item in manager.list_users()], ["owner"])
+
+    def test_password_change_revokes_existing_sessions(self):
+        manager = self.app.AUTH_MANAGER
+        user = manager.create_initial_user(
+            manager.ensure_setup_token(), "owner", "123456"
+        )
+        session = manager.create_session(user["id"], remember=True)
+        manager.change_password(user["id"], "123456", "abcdef")
+        self.assertIsNone(manager.session(session["token"]))
+        self.assertIsNone(manager.authenticate("owner", "123456"))
+        self.assertIsNotNone(manager.authenticate("owner", "abcdef"))
+
+    def test_backup_preserves_users_but_omits_sessions_and_setup_code(self):
+        manager = self.app.AUTH_MANAGER
+        manager.create_initial_user(
+            manager.ensure_setup_token(), "owner", "123456"
+        )
+        destination = Path(self.temp.name) / "backup.tar.gz"
+        self.app.create_backup(destination)
+        with tarfile.open(destination, "r:gz") as archive:
+            names = set(archive.getnames())
+        self.assertIn("data/auth-users.json", names)
+        self.assertNotIn("data/auth-sessions.db", names)
+        self.assertNotIn("data/setup-token", names)
 
     def test_modular_entry_point_and_update_paths_are_compatible(self):
         root = Path(__file__).parents[1]
@@ -1271,6 +1328,127 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn('runAppAction(app, "update")', script)
         self.assertIn("Managed by ${managerLabels", script)
         self.assertIn("architecture_compatible === false", script)
+
+    def test_auth_forms_are_distinct_and_inputs_have_visible_boundaries(self):
+        root = Path(__file__).parents[1]
+        styles = (root / "static" / "styles.css").read_text(encoding="utf-8-sig")
+        login = (root / "static" / "login.html").read_text(encoding="utf-8")
+        self.assertIn("[hidden]", styles)
+        self.assertIn("display: none !important", styles)
+        self.assertIn('.auth-form input:not([type="checkbox"])', styles)
+        self.assertIn("border-color: var(--accent)", styles)
+        self.assertIn("sudo cat /opt/homestart/data/setup-token", login)
+
+
+class HomeStartAuthenticationHttpTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.config = root / "config.json"
+        self.config.write_text("{}", encoding="utf-8")
+        os.environ["HOMESTART_CONFIG"] = str(self.config)
+        self.app = importlib.reload(importlib.import_module("homestart.server"))
+        self.app.AUTH_MANAGER = self.app.AuthManager(root / "data")
+        self.app.STATIC_DIR = Path(__file__).parents[1] / "static"
+        self.server = self.app.ThreadingHTTPServer(
+            ("127.0.0.1", 0), self.app.HomeStartHandler
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp.cleanup()
+        os.environ.pop("HOMESTART_CONFIG", None)
+
+    def request(self, method, path, payload=None, headers=None):
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=5
+        )
+        body = None if payload is None else json.dumps(payload)
+        request_headers = dict(headers or {})
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        connection.request(method, path, body=body, headers=request_headers)
+        response = connection.getresponse()
+        content = response.read()
+        result = (
+            json.loads(content.decode("utf-8"))
+            if content and response.getheader("Content-Type", "").startswith("application/json")
+            else content
+        )
+        metadata = {
+            "status": response.status,
+            "location": response.getheader("Location"),
+            "set_cookie": response.getheader("Set-Cookie"),
+        }
+        connection.close()
+        return metadata, result
+
+    def test_setup_login_protection_and_csrf(self):
+        response, status = self.request("GET", "/api/auth/status")
+        self.assertEqual(response["status"], 200)
+        self.assertTrue(status["setup_required"])
+
+        response, health = self.request("GET", "/health")
+        self.assertEqual(response["status"], 200)
+        self.assertTrue(health["ok"])
+
+        response, _ = self.request("GET", "/")
+        self.assertEqual(response["status"], 303)
+        self.assertEqual(response["location"], "/login.html")
+
+        response, denied = self.request("GET", "/api/auth/users")
+        self.assertEqual(response["status"], 401)
+        self.assertEqual(denied["error"], "Authentication required")
+
+        setup_token = self.app.AUTH_MANAGER.ensure_setup_token()
+        response, created = self.request("POST", "/api/auth/setup", {
+            "setup_token": setup_token,
+            "username": "owner",
+            "password": "123456",
+            "remember": True,
+        })
+        self.assertEqual(response["status"], 200)
+        cookie = response["set_cookie"].split(";", 1)[0]
+        self.assertIn("HttpOnly", response["set_cookie"])
+        self.assertIn("SameSite=Lax", response["set_cookie"])
+        self.assertIn("Max-Age=", response["set_cookie"])
+
+        response, users = self.request(
+            "GET", "/api/auth/users", headers={"Cookie": cookie}
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(users["users"][0]["username"], "owner")
+
+        response, rejected = self.request(
+            "POST",
+            "/api/auth/users",
+            {"action": "create", "username": "family", "password": "abcdef"},
+            {"Cookie": cookie},
+        )
+        self.assertEqual(response["status"], 403)
+        self.assertIn("request token", rejected["error"])
+
+        response, added = self.request(
+            "POST",
+            "/api/auth/users",
+            {"action": "create", "username": "family", "password": "abcdef"},
+            {"Cookie": cookie, "X-CSRF-Token": created["csrf_token"]},
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(added["user"]["username"], "family")
+
+    def test_repeated_unauthorized_polling_is_logged_at_most_once_per_client(self):
+        self.app.AUTH_UNAUTHORIZED_LOG_AT.clear()
+        with mock.patch.object(self.app.HomeStartHandler, "log_message") as log_message:
+            first, _ = self.request("GET", "/api/system")
+            second, _ = self.request("GET", "/api/system")
+        self.assertEqual(first["status"], 401)
+        self.assertEqual(second["status"], 401)
+        self.assertEqual(log_message.call_count, 1)
 
 
 if __name__ == "__main__":

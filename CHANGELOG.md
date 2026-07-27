@@ -4,6 +4,34 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260727-3000
+
+- Improved registration and login contrast with solid input backgrounds,
+  visible borders, focus rings and separated remember-device controls.
+- Fixed login and initial-setup forms appearing simultaneously when author CSS
+  overrode the browser's native `hidden` behavior.
+- Repeated unauthorized polling from a dashboard tab opened before the update
+  is now logged at most once per client every five minutes.
+- Added mandatory first-time registration and sign-in without changing the
+  privileges available to authenticated File Browser, Samba, Docker, network,
+  backup or update operations.
+- Initial setup now requires a one-time random code written with mode `0600`
+  and displayed in the `homestart.service` journal. The code is removed after
+  the first user is created.
+- Passwords accept a minimum of six characters and are stored as salted
+  standard-library `scrypt` hashes. The UI recommends a longer passphrase.
+- Added opaque server-side sessions, an optional 30-day remembered-device
+  cookie, logout and CSRF protection for every state-changing API request.
+- Added a Users settings card for creating and deleting equal-privilege
+  accounts and changing the current password.
+- Added local password recovery through
+  `app.py auth reset-password USERNAME`; password changes and recovery revoke
+  the affected user's existing sessions.
+- Manual backups now preserve HomeStart users but intentionally omit sessions
+  and the one-time setup code. Restoring users revokes existing sessions.
+- Kept `/health` public so transactional update verification and automatic
+  rollback continue to work before and after initial registration.
+
 ## 20260727-2900
 
 - Eliminated repeated multi-megabyte history transfers: each dashboard loads a

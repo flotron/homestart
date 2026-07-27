@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in · HomeStart</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-card">
+        <div class="auth-brand">
+          <span class="auth-mark" aria-hidden="true">H</span>
+          <div><p>Linux home server</p><h1>HomeStart</h1></div>
+        </div>
+
+        <div id="auth-loading">
+          <h2>Checking HomeStart…</h2>
+          <p class="form-note">Preparing secure access.</p>
+        </div>
+
+        <form id="login-form" class="auth-form" hidden>
+          <div><h2>Welcome back</h2><p>Sign in to manage this server.</p></div>
+          <label>Username<input id="login-username" autocomplete="username" required /></label>
+          <label>Password<input id="login-password" type="password" autocomplete="current-password" required /></label>
+          <label class="auth-remember"><input id="login-remember" type="checkbox" checked /> Remember this device for 30 days</label>
+          <p id="login-error" class="auth-error" role="alert" hidden></p>
+          <button type="submit">Sign in</button>
+        </form>
+
+        <form id="setup-form" class="auth-form" hidden>
+          <div>
+            <p class="eyebrow">First-time setup</p>
+            <h2>Create the first user</h2>
+            <p>This account will have full access to HomeStart, including files, Samba, Docker and server settings.</p>
+          </div>
+          <label>Setup code<input id="setup-token" autocomplete="one-time-code" spellcheck="false" required /></label>
+          <p class="form-note setup-help">Find it on a default installation with:<br /><code>sudo cat /opt/homestart/data/setup-token</code><br />It is also printed as “Setup code” in the HomeStart service journal.</p>
+          <label>Username<input id="setup-username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username" required /></label>
+          <label>Password<input id="setup-password" type="password" minlength="6" autocomplete="new-password" required /><small>At least 6 characters. A longer passphrase is recommended.</small></label>
+          <label>Repeat password<input id="setup-password-confirm" type="password" minlength="6" autocomplete="new-password" required /></label>
+          <label class="auth-remember"><input id="setup-remember" type="checkbox" checked /> Remember this device for 30 days</label>
+          <p id="setup-error" class="auth-error" role="alert" hidden></p>
+          <button type="submit">Create user and continue</button>
+        </form>
+      </section>
+    </main>
+    <script src="/login.js"></script>
+  </body>
+</html>
