@@ -5253,15 +5253,26 @@ class CountingWriter:
 
 
 class HomeStartHandler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".webmanifest": "application/manifest+json",
+    }
     PUBLIC_GET_PATHS = {
         "/health",
         "/api/auth/status",
         "/login",
         "/login.html",
         "/login.js",
+        "/manifest.webmanifest",
+        "/pwa.js",
+        "/service-worker.js",
         "/styles.css",
         "/favicon.ico",
     }
+    PUBLIC_GET_PREFIXES = (
+        "/brand/",
+        "/icons/",
+    )
     PUBLIC_POST_PATHS = {
         "/api/auth/setup",
         "/api/auth/login",
@@ -5359,6 +5370,12 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         else:
             self.redirect("/login.html")
 
+    def public_get_route(self, route):
+        return (
+            route in self.PUBLIC_GET_PATHS
+            or route.startswith(self.PUBLIC_GET_PREFIXES)
+        )
+
     def do_GET(self):
         route = urlparse(self.path).path
         if route in {"/login", "/login.html"}:
@@ -5368,7 +5385,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
             self.path = "/login.html"
             super().do_GET()
             return
-        if route not in self.PUBLIC_GET_PATHS and self.current_auth_session() is None:
+        if not self.public_get_route(route) and self.current_auth_session() is None:
             self.reject_unauthenticated()
             return
         if not API_ROUTER.get(self):
@@ -5378,7 +5395,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         route = urlparse(self.path).path
         if route in {"/login", "/login.html"}:
             self.path = "/login.html"
-        elif route not in self.PUBLIC_GET_PATHS and self.current_auth_session() is None:
+        elif not self.public_get_route(route) and self.current_auth_session() is None:
             self.reject_unauthenticated()
             return
         if not API_ROUTER.head(self):

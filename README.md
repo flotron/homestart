@@ -35,6 +35,9 @@ and apply local or GitHub release updates without bundling private runtime data.
   transparently fall back to the portable buffered engine when unavailable.
 - Permanent server clock: date and time follow the Linux server's configured
   IANA region, editable from Settings.
+- Installable web app with HomeStart branding, favicon, Android maskable icons
+  and iOS home-screen metadata. Compatible browsers expose an **Install
+  HomeStart** action when the dashboard is served in a secure context.
 - Interactive history charts: hover or touch to inspect the exact server time
   and CPU, memory, GPU, download and upload values for a sample.
 - History snapshots are gzip-compressed and refreshed periodically while the
@@ -56,8 +59,8 @@ and apply local or GitHub release updates without bundling private runtime data.
 - App Store templates show informational warnings for privileged containers,
   host namespaces, Docker socket/device access and sensitive host mounts.
 - Configurable theme, accent, density, dashboard labels, and alert thresholds.
-- Instantaneous top CPU process/container attribution and optional SMART disk
-  health alerts through `smartctl`.
+- Instantaneous top CPU process/container attribution and optional daily SMART
+  disk health alerts through `smartctl`, without waking standby HDDs.
 - Manual downloadable backups for configuration, history, and custom icons.
 - Custom app icons stored locally under `data/`.
 - Settings: network interface configuration through Netplan or NetworkManager,
@@ -100,6 +103,25 @@ The built-in login protects access but plain HTTP does not encrypt credentials
 or session cookies on the network. HomeStart is still intended for a trusted
 LAN. Use HTTPS through a suitable reverse proxy before exposing it across an
 untrusted network or the public internet.
+
+## Install as a web app
+
+HomeStart includes a web app manifest, HomeStart launcher icons and a service
+worker, so it can open in its own standalone window from a desktop or mobile
+home screen. When Chromium exposes its native installation prompt, HomeStart
+shows an **Install HomeStart** button in the sidebar. On iPhone and iPad, use
+Safari's **Share > Add to Home Screen** action.
+
+Browsers require a secure context for service workers and full PWA
+installation. This means HTTPS (normally supplied by a trusted reverse proxy)
+or `localhost`; a dashboard opened directly through a plain LAN address such
+as `http://192.168.x.x:81` may only offer a regular bookmark or shortcut,
+depending on the browser.
+
+The service worker is intentionally online-only. It never caches authenticated
+dashboard pages, API responses, file downloads or update packages. Installed
+HomeStart therefore has the same login behavior and receives the same online
+updates as the browser version.
 
 Reverse-proxy cookie handling is configured in `Settings > Account`. The default
 Automatic policy keeps direct HTTP access working and adds the `Secure`

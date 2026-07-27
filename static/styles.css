@@ -46,38 +46,31 @@
 }
 
 .auth-brand {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  display: grid;
+  gap: 8px;
   margin-bottom: 30px;
 }
 
 .auth-brand p,
-.auth-brand h1,
 .auth-form h2,
 .auth-form p {
   margin: 0;
 }
 
+.auth-logo {
+  display: block;
+  width: min(100%, 360px);
+  height: auto;
+  object-fit: contain;
+  object-position: left center;
+}
+
 .auth-brand p {
+  padding-left: 4px;
   color: var(--muted);
   font-size: 12px;
   letter-spacing: .08em;
   text-transform: uppercase;
-}
-
-.auth-mark {
-  display: grid;
-  width: 48px;
-  height: 48px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line));
-  border-radius: 14px;
-  color: white;
-  background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #172033));
-  font-size: 22px;
-  font-weight: 800;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .auth-form {
@@ -370,6 +363,25 @@ body {
   margin: 0;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand > div {
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  object-fit: contain;
+  filter: drop-shadow(0 7px 14px rgb(14 165 233 / .2));
+}
+
 .brand p {
   color: var(--muted);
   text-transform: uppercase;
@@ -414,6 +426,48 @@ body {
   background: linear-gradient(135deg, rgb(56 189 248 / 0.16), rgb(255 255 255 / 0.04));
   color: var(--text);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.install-app {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 11px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  text-align: left;
+}
+
+.install-app:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+}
+
+.install-app img {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+.install-app span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.install-app strong {
+  font-size: 12px;
+}
+
+.install-app small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shell {
@@ -2548,6 +2602,16 @@ button:disabled {
   .sidebar-clock strong { font-size:18px; }
   .sidebar-clock span { text-align:right; }
   .sidebar-clock small { display:none; }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+    flex-basis: 38px;
+  }
+
+  .install-app {
+    justify-content: center;
+  }
 
   .session-card {
     grid-template-columns: minmax(0, 1fr) auto;

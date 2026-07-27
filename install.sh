@@ -90,7 +90,19 @@ SERVICE
 systemctl daemon-reload
 systemctl enable --now homestart.service
 
+SETUP_TOKEN_PATH="${INSTALL_DIR}/data/setup-token"
+for _ in {1..20}; do
+  [[ -s "$SETUP_TOKEN_PATH" ]] && break
+  sleep 0.25
+done
+
 echo
 echo "HomeStart installed."
 echo "Open: http://$(hostname -I | awk '{print $1}'):${PORT}"
 echo "Config: ${INSTALL_DIR}/config.json"
+if [[ -s "$SETUP_TOKEN_PATH" ]]; then
+  echo "Setup code: $(tr -d '[:space:]' < "$SETUP_TOKEN_PATH")"
+  echo "Setup code file: ${SETUP_TOKEN_PATH}"
+else
+  echo "Setup code: run sudo journalctl -u homestart.service -n 60 --no-pager"
+fi
