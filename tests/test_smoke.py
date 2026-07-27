@@ -1596,6 +1596,37 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("border-color: var(--accent)", styles)
         self.assertIn("sudo cat /opt/homestart/data/setup-token", login)
 
+    def test_pwa_manifest_branding_and_install_flow_are_packaged(self):
+        root = Path(__file__).parents[1]
+        static = root / "static"
+        manifest = json.loads(
+            (static / "manifest.webmanifest").read_text(encoding="utf-8")
+        )
+        index = (static / "index.html").read_text(encoding="utf-8")
+        login = (static / "login.html").read_text(encoding="utf-8")
+        pwa = (static / "pwa.js").read_text(encoding="utf-8")
+        worker = (static / "service-worker.js").read_text(encoding="utf-8")
+
+        self.assertEqual(manifest["name"], "HomeStart")
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["start_url"], "/")
+        purposes = {icon["purpose"] for icon in manifest["icons"]}
+        self.assertEqual(purposes, {"any", "maskable"})
+        for icon in manifest["icons"]:
+            self.assertTrue((static / icon["src"].lstrip("/")).is_file())
+        self.assertTrue((static / "favicon.ico").is_file())
+        self.assertTrue((static / "icons" / "homestart-apple-touch.png").is_file())
+        self.assertIn('rel="manifest"', index)
+        self.assertIn('id="install-app"', index)
+        self.assertIn("/brand/homestart-mark.png", index)
+        self.assertIn("/brand/homestart-wordmark.png", login)
+        self.assertIn('src="/pwa.js"', index)
+        self.assertIn('src="/pwa.js"', login)
+        self.assertIn('updateViaCache: "none"', pwa)
+        self.assertIn('register("/service-worker.js"', pwa)
+        self.assertNotIn("cache.put", worker)
+        self.assertNotIn("respondWith", worker)
+
     def test_overview_orders_resources_before_network_and_exposes_security_controls(self):
         root = Path(__file__).parents[1]
         html = (root / "static" / "index.html").read_text(encoding="utf-8")
@@ -1665,6 +1696,18 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
         response, status = self.request("GET", "/api/auth/status")
         self.assertEqual(response["status"], 200)
         self.assertTrue(status["setup_required"])
+
+        for path in (
+            "/manifest.webmanifest",
+            "/service-worker.js",
+            "/pwa.js",
+            "/favicon.ico",
+            "/icons/homestart-192.png",
+            "/brand/homestart-wordmark.png",
+        ):
+            response, asset = self.request("GET", path)
+            self.assertEqual(response["status"], 200, path)
+            self.assertTrue(asset, path)
 
         response, health = self.request("GET", "/health")
         self.assertEqual(response["status"], 200)

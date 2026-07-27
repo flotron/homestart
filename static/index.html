@@ -3,15 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0ea5e9" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HomeStart" />
     <title>HomeStart</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/homestart-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/homestart-apple-touch.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <p id="dashboard-subtitle">Dashboard</p>
-          <strong id="dashboard-title">HomeStart</strong>
+          <img class="brand-mark" src="/brand/homestart-mark.png" alt="" aria-hidden="true" />
+          <div>
+            <p id="dashboard-subtitle">Dashboard</p>
+            <strong id="dashboard-title">HomeStart</strong>
+          </div>
         </div>
         <nav class="nav" aria-label="Main navigation">
           <button class="nav-item active" type="button" data-view="status"><strong>Overview</strong><small>Health and performance</small></button>
@@ -19,6 +31,10 @@
           <button class="nav-item" type="button" data-view="files"><strong>File Browser</strong><small>Storage and sharing</small></button>
           <button class="nav-item" type="button" data-view="settings"><strong>Settings</strong><small>System configuration</small></button>
         </nav>
+        <button id="install-app" class="install-app" type="button" hidden>
+          <img src="/icons/homestart-32.png" alt="" aria-hidden="true" />
+          <span><strong>Install HomeStart</strong><small>Add this dashboard as an app</small></span>
+        </button>
         <div class="session-card">
           <div><small>Signed in as</small><strong id="session-username">User</strong></div>
           <button id="session-logout" type="button">Sign out</button>
@@ -685,5 +701,6 @@
     <script src="/auth-client.js"></script>
     <script src="/security.js"></script>
     <script src="/app.js"></script>
+    <script src="/pwa.js"></script>
   </body>
 </html>

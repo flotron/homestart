@@ -3,15 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0ea5e9" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HomeStart" />
     <title>Sign in · HomeStart</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/homestart-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/homestart-apple-touch.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="auth-page">
     <main class="auth-shell">
       <section class="auth-card">
         <div class="auth-brand">
-          <span class="auth-mark" aria-hidden="true">H</span>
-          <div><p>Linux home server</p><h1>HomeStart</h1></div>
+          <img class="auth-logo" src="/brand/homestart-wordmark.png" alt="HomeStart" />
+          <p>Linux home server</p>
         </div>
 
         <div id="auth-loading">
@@ -46,5 +55,6 @@
       </section>
     </main>
     <script src="/login.js"></script>
+    <script src="/pwa.js"></script>
   </body>
 </html>

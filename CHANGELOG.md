@@ -4,6 +4,20 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260727-3030-test1
+
+- Added an installable Progressive Web App manifest for desktop, Android and
+  iOS home-screen use, including normal and maskable HomeStart app icons.
+- Added the new HomeStart logo to the dashboard, sign-in screen, browser tab,
+  bookmarks and installed-app launcher.
+- Added a contextual **Install HomeStart** action when a compatible browser
+  exposes its native installation prompt.
+- Registered a deliberately online-only service worker. It does not cache
+  authenticated pages, API responses, files or update packages, so signing out
+  and HomeStart's online updater continue to use current server state.
+- Kept every PWA/branding asset public so the sign-in page and first-time setup
+  can load the manifest and icons before authentication.
+
 ## 20260727-3020
 
 - SMART checks now use `smartctl -n standby,3`, allowing sleeping HDDs to
