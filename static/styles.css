@@ -99,7 +99,9 @@
 }
 
 .auth-form input:not([type="checkbox"]),
-.security-form input:not([type="checkbox"]) {
+.security-form input:not([type="checkbox"]),
+.security-form select,
+.security-form textarea {
   width: 100%;
   min-height: 47px;
   padding: 11px 13px;
@@ -115,12 +117,16 @@
 }
 
 .auth-form input:not([type="checkbox"]):hover,
-.security-form input:not([type="checkbox"]):hover {
+.security-form input:not([type="checkbox"]):hover,
+.security-form select:hover,
+.security-form textarea:hover {
   border-color: color-mix(in srgb, var(--line) 55%, var(--text) 45%);
 }
 
 .auth-form input:not([type="checkbox"]):focus,
-.security-form input:not([type="checkbox"]):focus {
+.security-form input:not([type="checkbox"]):focus,
+.security-form select:focus,
+.security-form textarea:focus {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--bg) 92%, var(--accent));
   box-shadow:
@@ -241,6 +247,29 @@
   line-height: 1.4;
 }
 
+.security-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.security-proxy-form {
+  grid-column: 1 / -1;
+}
+
+.security-proxy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.security-request-status {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--panel);
+}
+
 .security-user-row {
   display: flex;
   align-items: center;
@@ -284,6 +313,10 @@
 
   .security-block:first-child {
     grid-row: auto;
+  }
+
+  .security-proxy-grid {
+    grid-template-columns: 1fr;
   }
 
   .session-card {

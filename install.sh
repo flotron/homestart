@@ -44,7 +44,7 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
-  apt-get install -y python3 python3-yaml iproute2 procps util-linux
+  apt-get install -y python3 python3-yaml iproute2 procps util-linux smartmontools
 fi
 
 mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/data" "$INSTALL_DIR/homestart"

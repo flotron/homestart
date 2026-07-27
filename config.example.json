@@ -9,6 +9,10 @@
     "accent": "#38bdf8",
     "density": "comfortable"
   },
+  "security": {
+    "cookie_secure": "auto",
+    "trusted_proxies": []
+  },
   "network": {
     "monitor_interface": "auto"
   },

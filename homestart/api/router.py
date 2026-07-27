@@ -27,6 +27,8 @@ class ApiRouter:
             handler.send_json(b.auth_status(handler))
         elif route == "/api/auth/users":
             handler.send_json(b.auth_users_payload(handler))
+        elif route == "/api/auth/security":
+            handler.send_json(b.auth_security_payload(handler))
         elif route == "/api/apps":
             handler.send_json(b.app_payload())
         elif route in {"/speedtest", "/speedtest/"}:
@@ -158,6 +160,8 @@ class ApiRouter:
                 b.auth_users_action(handler, self.json_body(handler))
             elif route == "/api/auth/password":
                 b.auth_change_password(handler, self.json_body(handler))
+            elif route == "/api/auth/security":
+                b.auth_security_action(handler, self.json_body(handler))
             elif route == "/api/settings/general":
                 handler.send_json(b.update_settings(self.json_body(handler)))
             elif route == "/api/backups/restore":

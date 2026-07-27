@@ -90,6 +90,7 @@ const appUninstallWarning = document.querySelector("#app-uninstall-warning");
 const appUninstallCancel = document.querySelector("#app-uninstall-cancel");
 const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
+const cpuTop = document.querySelector("#cpu-top");
 const cpuBar = document.querySelector("#cpu-bar");
 const cpuRing = document.querySelector("#cpu-ring");
 const memoryValue = document.querySelector("#memory-value");
@@ -1318,6 +1319,12 @@ async function loadSystem() {
   const data = await response.json();
 
   setMeterVisual(cpuValue, cpuBar, cpuRing, data.cpu?.percent);
+  if (data.cpu?.top) {
+    const kind = data.cpu.top.kind === "host_container" ? "container" : "process";
+    cpuTop.textContent = `Top now: ${data.cpu.top.name} · ${formatPercent(data.cpu.top.percent)} of host CPU · ${kind}`;
+  } else {
+    cpuTop.textContent = "Top now: collecting process activity…";
+  }
   setMeterVisual(memoryValue, memoryBar, memoryRing, data.memory?.percent);
 
   if (data.gpu?.available) {
@@ -1391,6 +1398,7 @@ function renderDisk(disk) {
     disk.transport ? disk.transport.toUpperCase() : "",
     disk.filesystems?.length ? disk.filesystems.join(", ") : "",
     mounts,
+    disk.smart?.healthy === true ? "SMART passed" : disk.smart?.healthy === false ? "SMART warning" : "",
   ].filter(Boolean).join(" · ");
 
   node.querySelector("strong").textContent = title || disk.device;

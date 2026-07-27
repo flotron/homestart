@@ -32,7 +32,16 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from .api.router import ApiRouter
-from .auth import AuthManager
+from .auth import (
+    AuthManager,
+    LoginRateLimiter,
+    address_in_networks,
+    effective_client_ip as forwarded_client_ip,
+    forwarded_https,
+    normalize_cookie_secure_mode,
+    normalize_trusted_proxies,
+    trusted_proxy_networks,
+)
 from .config import (
     CURATED_APPS,
     DEFAULT_CONFIG,
@@ -84,6 +93,8 @@ from .system.network_config import (
     parse_nmcli_rows,
     validate_ipv4_settings as validate_network_ipv4_settings,
 )
+from .system.disks import SmartHealthMonitor
+from .system.processes import ProcessCpuTracker
 from .updates.github import GitHubReleaseClient, update_asset_version
 from .updates.package import (
     TransactionalPackageUpdater,
@@ -158,8 +169,11 @@ COPY_MANAGER = None
 METRIC_STORE = None
 GITHUB_RELEASE_CLIENT = None
 AUTH_MANAGER = None
+LOGIN_RATE_LIMITER = LoginRateLimiter()
 AUTH_UNAUTHORIZED_LOG_AT = {}
 AUTH_UNAUTHORIZED_LOG_LOCK = threading.Lock()
+PROCESS_CPU_TRACKER = ProcessCpuTracker()
+SMART_HEALTH_MONITOR = SmartHealthMonitor()
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 DOCKER_ARCHITECTURE_CACHE = {}
@@ -289,6 +303,7 @@ def settings_payload():
         "dashboard": config["dashboard"],
         "appearance": config["appearance"],
         "alerts": config["alerts"],
+        "security": config["security"],
         "network": config["network"],
         "time": {"timezone": system_timezone(), "server_timestamp": int(time.time())},
         "trash": config["trash"],
@@ -1539,7 +1554,14 @@ def system_payload(network_channel=None):
         gpu = summarize_gpus(gpus)
     payload = {
         "timestamp": int(time.time()),
-        "cpu": {"percent": cpu_percent()},
+        "cpu": {
+            "percent": cpu_percent(),
+            "top": PROCESS_CPU_TRACKER.top(
+                lambda pid: host_process_identity(
+                    pid, docker_identities=docker_identity_names(),
+                )
+            ),
+        },
         "memory": memory_payload(),
         "gpu": gpu,
         "gpus": gpus,
@@ -1702,6 +1724,18 @@ def overview_payload():
     for disk in status["disks"]:
         if disk.get("percent", 0) >= float(thresholds.get("disk_percent", 90)):
             alerts.append({"id": f"disk-{disk['device']}", "level": "critical", "title": "Disk almost full", "detail": f"{disk['device']} is at {disk['percent']:.0f}%"})
+        smart = disk.get("smart") or {}
+        if smart.get("healthy") is False:
+            disk_name = " · ".join(
+                value for value in (disk.get("model", ""), disk.get("device", ""))
+                if value
+            )
+            alerts.append({
+                "id": f"smart-{disk.get('device', 'disk')}",
+                "level": "critical",
+                "title": "SMART disk health warning",
+                "detail": f"{disk_name or 'A physical disk'} reports a failed health assessment",
+            })
     for service in status["services"]:
         if service.get("active") != "active":
             service_name = service.get("name", "Service")
@@ -3393,8 +3427,15 @@ def service_status(unit):
 def status_payload():
     host = local_ip()
     services = load_config_file().get("services", [])
+    disks = disk_payload()
+    smart = SMART_HEALTH_MONITOR.inspect(disks)
+    for disk in disks:
+        disk["smart"] = smart.get(disk.get("device", ""), {
+            "status": "unknown",
+            "healthy": None,
+        })
     return {
-        "disks": disk_payload(),
+        "disks": disks,
         "services": [service for unit in services if (service := service_status(unit))],
         "containers": docker_apps(host),
     }
@@ -4971,7 +5012,7 @@ def auth_cookie(handler, token, remember=True):
     ]
     if remember:
         parts.append(f"Max-Age={30 * 24 * 60 * 60}")
-    if handler.request_is_https():
+    if handler.cookie_should_be_secure():
         parts.append("Secure")
     return "; ".join(parts)
 
@@ -5025,9 +5066,38 @@ def auth_login(handler, payload):
     manager = auth_manager()
     if not manager.has_users():
         raise ValueError("Initial setup is required")
-    user = manager.authenticate(payload.get("username", ""), payload.get("password", ""))
+    username = payload.get("username", "")
+    client_ip = handler.effective_client_ip()
+    retry_after = LOGIN_RATE_LIMITER.retry_after(client_ip, username)
+    if retry_after:
+        handler.send_json(
+            {
+                "ok": False,
+                "error": f"Too many sign-in attempts. Try again in {retry_after} seconds.",
+                "retry_after": retry_after,
+            },
+            HTTPStatus.TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(retry_after)},
+        )
+        return
+    user = manager.authenticate(username, payload.get("password", ""))
     if user is None:
-        raise ValueError("Invalid username or password")
+        retry_after = LOGIN_RATE_LIMITER.record_failure(client_ip, username)
+        response = {
+            "ok": False,
+            "error": "Invalid username or password",
+        }
+        headers = {}
+        if retry_after:
+            response["retry_after"] = retry_after
+            headers["Retry-After"] = str(retry_after)
+        handler.send_json(
+            response,
+            HTTPStatus.UNAUTHORIZED,
+            headers=headers,
+        )
+        return
+    LOGIN_RATE_LIMITER.record_success(client_ip, username)
     session = manager.create_session(user["id"], remember=bool(payload.get("remember", True)))
     handler.send_json(
         {
@@ -5056,6 +5126,48 @@ def auth_users_payload(handler):
         "users": auth_manager().list_users(),
         "current_user_id": session["user"]["id"],
     }
+
+
+def auth_security_payload(handler):
+    handler.require_auth_session()
+    config = load_config_file().get("security", {})
+    try:
+        mode = normalize_cookie_secure_mode(config.get("cookie_secure", "auto"))
+    except ValueError:
+        mode = "auto"
+    try:
+        proxies = normalize_trusted_proxies(config.get("trusted_proxies", []))
+    except ValueError:
+        proxies = []
+    peer = handler.peer_ip()
+    return {
+        "ok": True,
+        "cookie_secure": mode,
+        "trusted_proxies": proxies,
+        "request": {
+            "peer_ip": peer,
+            "effective_client_ip": handler.effective_client_ip(),
+            "trusted_proxy": handler.peer_is_trusted_proxy(),
+            "https": handler.request_is_https(),
+            "cookie_will_be_secure": handler.cookie_should_be_secure(),
+        },
+    }
+
+
+def auth_security_action(handler, payload):
+    handler.require_auth_session()
+    mode = normalize_cookie_secure_mode(payload.get("cookie_secure", "auto"))
+    proxies = normalize_trusted_proxies(payload.get("trusted_proxies", []))
+    config = load_config_file()
+    config["security"] = deep_merge(
+        config.get("security", {}),
+        {
+            "cookie_secure": mode,
+            "trusted_proxies": proxies,
+        },
+    )
+    save_config_file(config)
+    handler.send_json(auth_security_payload(handler))
 
 
 def auth_users_action(handler, payload):
@@ -5147,7 +5259,7 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
 
     def log_request(self, code="-", size="-"):
         if str(code) == str(HTTPStatus.UNAUTHORIZED) and urlparse(self.path).path.startswith("/api/"):
-            address = self.client_address[0] if self.client_address else "unknown"
+            address = self.effective_client_ip() or "unknown"
             now = time.monotonic()
             with AUTH_UNAUTHORIZED_LOG_LOCK:
                 previous = AUTH_UNAUTHORIZED_LOG_AT.get(address, 0)
@@ -5161,8 +5273,41 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         self._auth_session = None
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
+    def peer_ip(self):
+        return self.client_address[0] if self.client_address else ""
+
+    def trusted_proxy_networks(self):
+        values = load_config_file().get("security", {}).get("trusted_proxies", [])
+        try:
+            return trusted_proxy_networks(values)
+        except ValueError:
+            return []
+
+    def peer_is_trusted_proxy(self):
+        return address_in_networks(self.peer_ip(), self.trusted_proxy_networks())
+
+    def effective_client_ip(self):
+        return forwarded_client_ip(
+            self.peer_ip(), self.headers, self.trusted_proxy_networks(),
+        )
+
     def request_is_https(self):
-        return isinstance(self.connection, ssl.SSLSocket)
+        if isinstance(self.connection, ssl.SSLSocket):
+            return True
+        return self.peer_is_trusted_proxy() and forwarded_https(self.headers)
+
+    def cookie_should_be_secure(self):
+        try:
+            mode = normalize_cookie_secure_mode(
+                load_config_file().get("security", {}).get("cookie_secure", "auto")
+            )
+        except ValueError:
+            mode = "auto"
+        if mode == "always":
+            return True
+        if mode == "never":
+            return False
+        return self.request_is_https()
 
     def current_auth_session(self):
         if not self._auth_session_loaded:

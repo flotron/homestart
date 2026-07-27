@@ -1,6 +1,8 @@
 const securityUsers = document.querySelector("#security-users");
 const securityCreateForm = document.querySelector("#security-create-user");
 const securityPasswordForm = document.querySelector("#security-change-password");
+const securityProxyForm = document.querySelector("#security-proxy-form");
+const securityProxyRequest = document.querySelector("#security-proxy-request");
 const securityStatus = document.querySelector("#security-status");
 
 function securityMessage(message, error = false) {
@@ -53,6 +55,18 @@ async function loadSecurityUsers() {
   }));
 }
 
+async function loadProxySecurity() {
+  if (!securityProxyForm) return;
+  const payload = await securityJson(await fetch("/api/auth/security", { cache: "no-store" }));
+  securityProxyForm.querySelector('[name="cookie_secure"]').value = payload.cookie_secure || "auto";
+  securityProxyForm.querySelector('[name="trusted_proxies"]').value = (payload.trusted_proxies || []).join("\n");
+  const request = payload.request || {};
+  const route = request.trusted_proxy ? `trusted proxy ${request.peer_ip}` : "direct or untrusted connection";
+  const scheme = request.https ? "HTTPS" : "HTTP";
+  const cookie = request.cookie_will_be_secure ? "Secure cookie enabled" : "Secure cookie not used";
+  securityProxyRequest.textContent = `${scheme} · ${route} · client ${request.effective_client_ip || "--"} · ${cookie}`;
+}
+
 securityCreateForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const username = securityCreateForm.querySelector('[name="username"]').value;
@@ -92,4 +106,30 @@ securityPasswordForm?.addEventListener("submit", async (event) => {
   }
 });
 
-window.HomeStartAuth?.ready.then(loadSecurityUsers).catch(() => {});
+securityProxyForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const mode = securityProxyForm.querySelector('[name="cookie_secure"]').value;
+  const proxies = securityProxyForm.querySelector('[name="trusted_proxies"]').value
+    .split(/[\n,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (mode === "always" && securityProxyRequest?.textContent.startsWith("HTTP")) {
+    if (!window.confirm("Always secure cookies cannot be sent over direct HTTP. Save this only if you will access HomeStart through HTTPS.")) return;
+  }
+  try {
+    await securityJson(await fetch("/api/auth/security", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cookie_secure: mode, trusted_proxies: proxies }),
+    }));
+    securityMessage("Proxy and cookie security saved");
+    await loadProxySecurity();
+  } catch (error) {
+    securityMessage(error.message, true);
+  }
+});
+
+window.HomeStartAuth?.ready.then(() => Promise.all([
+  loadSecurityUsers(),
+  loadProxySecurity(),
+])).catch(() => {});

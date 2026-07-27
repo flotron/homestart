@@ -65,6 +65,7 @@
               </div>
               <div class="metric-ring" id="cpu-ring" aria-hidden="true"></div>
               <div class="meter"><span id="cpu-bar"></span></div>
+              <small id="cpu-top">Top now: collecting process activity…</small>
             </article>
             <article class="metric">
               <div class="metric-head">
@@ -107,46 +108,6 @@
               <div class="section-head"><div><h2>Attention</h2><p>Current local alerts and noteworthy conditions.</p></div><button id="restore-ignored-alerts" class="subtle-action" type="button" hidden></button></div>
               <div id="overview-alerts" class="stack"></div>
             </article>
-          </section>
-
-          <section class="status-panel bandwidth-panel">
-            <div class="section-head bandwidth-head">
-              <div><h2>Network bandwidth</h2><p id="bandwidth-subtitle">Traffic through the active network interface.</p></div>
-              <label class="monitor-interface-control"><span>Interface to monitor</span><select id="monitor-interface" aria-label="Interface to monitor"><option value="auto">Automatic</option></select><small id="monitor-interface-detail">Detecting hardware…</small></label>
-            </div>
-            <div class="live-bandwidth" aria-live="polite">
-              <article class="download"><span>Live download</span><strong id="live-download">--</strong><small id="live-download-top">Top now: waiting for data…</small></article>
-              <article class="upload"><span>Live upload</span><strong id="live-upload">--</strong><small id="live-upload-top">Top now: waiting for data…</small></article>
-              <div class="live-bandwidth-status"><span class="live-dot"></span><strong id="live-interface">Detecting interface</strong><small id="live-updated">Waiting for live data…</small></div>
-            </div>
-            <p class="sampling-note">Live values and top Docker consumers update every 2 seconds. Network history retains seven days.</p>
-            <div id="bandwidth-stats" class="history-stats bandwidth-stats"></div>
-            <div id="bandwidth-chart" class="history-chart" aria-label="Network bandwidth chart"></div>
-            <div id="bandwidth-time-axis" class="history-time-axis"></div>
-            <p id="bandwidth-meta" class="history-meta">Loading bandwidth samples…</p>
-            <div class="chart-legend bandwidth-legend"><span class="download">Download</span><span class="upload">Upload</span></div>
-            <section class="bandwidth-ranking">
-              <div class="section-head">
-                <div><h3>Measured Docker traffic</h3><p>Directly measured from isolated Docker network namespaces.</p></div>
-                <select id="bandwidth-ranking-period" aria-label="Bandwidth ranking period">
-                  <option value="60">Last minute</option>
-                  <option value="3600" selected>Last hour</option>
-                  <option value="86400">Last day</option>
-                </select>
-              </div>
-              <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>App / container</span><span>Download</span><span>Upload</span><span>Total</span></div>
-              <div id="bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting container traffic…</p></div>
-              <p id="bandwidth-ranking-note" class="form-note">Measured container traffic is collected every two seconds.</p>
-              <div class="estimated-bandwidth-ranking">
-                <div class="estimated-ranking-title">
-                  <div><h4>Estimated host traffic</h4><p>TCP traffic estimated from active sockets, process owners and Docker cgroups.</p></div>
-                  <span class="estimate-label">Estimate</span>
-                </div>
-                <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>Process / app</span><span>Download</span><span>Upload</span><span>Total</span></div>
-                <div id="host-bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting host TCP traffic…</p></div>
-                <p id="host-bandwidth-ranking-note" class="form-note">Confidence is shown for every result. UDP, short-lived connections and kernel traffic may appear as unattributed.</p>
-              </div>
-            </section>
           </section>
 
           <details class="resources-panel" id="resources-panel">
@@ -204,6 +165,46 @@
               </section>
             </div>
           </details>
+
+          <section class="status-panel bandwidth-panel">
+            <div class="section-head bandwidth-head">
+              <div><h2>Network bandwidth</h2><p id="bandwidth-subtitle">Traffic through the active network interface.</p></div>
+              <label class="monitor-interface-control"><span>Interface to monitor</span><select id="monitor-interface" aria-label="Interface to monitor"><option value="auto">Automatic</option></select><small id="monitor-interface-detail">Detecting hardware…</small></label>
+            </div>
+            <div class="live-bandwidth" aria-live="polite">
+              <article class="download"><span>Live download</span><strong id="live-download">--</strong><small id="live-download-top">Top now: waiting for data…</small></article>
+              <article class="upload"><span>Live upload</span><strong id="live-upload">--</strong><small id="live-upload-top">Top now: waiting for data…</small></article>
+              <div class="live-bandwidth-status"><span class="live-dot"></span><strong id="live-interface">Detecting interface</strong><small id="live-updated">Waiting for live data…</small></div>
+            </div>
+            <p class="sampling-note">Live values and top Docker consumers update every 2 seconds. Network history retains seven days.</p>
+            <div id="bandwidth-stats" class="history-stats bandwidth-stats"></div>
+            <div id="bandwidth-chart" class="history-chart" aria-label="Network bandwidth chart"></div>
+            <div id="bandwidth-time-axis" class="history-time-axis"></div>
+            <p id="bandwidth-meta" class="history-meta">Loading bandwidth samples…</p>
+            <div class="chart-legend bandwidth-legend"><span class="download">Download</span><span class="upload">Upload</span></div>
+            <section class="bandwidth-ranking">
+              <div class="section-head">
+                <div><h3>Measured Docker traffic</h3><p>Directly measured from isolated Docker network namespaces.</p></div>
+                <select id="bandwidth-ranking-period" aria-label="Bandwidth ranking period">
+                  <option value="60">Last minute</option>
+                  <option value="3600" selected>Last hour</option>
+                  <option value="86400">Last day</option>
+                </select>
+              </div>
+              <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>App / container</span><span>Download</span><span>Upload</span><span>Total</span></div>
+              <div id="bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting container traffic…</p></div>
+              <p id="bandwidth-ranking-note" class="form-note">Measured container traffic is collected every two seconds.</p>
+              <div class="estimated-bandwidth-ranking">
+                <div class="estimated-ranking-title">
+                  <div><h4>Estimated host traffic</h4><p>TCP traffic estimated from active sockets, process owners and Docker cgroups.</p></div>
+                  <span class="estimate-label">Estimate</span>
+                </div>
+                <div class="bandwidth-ranking-head" aria-hidden="true"><span>#</span><span>Process / app</span><span>Download</span><span>Upload</span><span>Total</span></div>
+                <div id="host-bandwidth-ranking-list" class="bandwidth-ranking-list"><p class="form-note">Collecting host TCP traffic…</p></div>
+                <p id="host-bandwidth-ranking-note" class="form-note">Confidence is shown for every result. UDP, short-lived connections and kernel traffic may appear as unattributed.</p>
+              </div>
+            </section>
+          </section>
 
           <section class="status-panel">
             <h2>Physical disks</h2>
@@ -521,6 +522,28 @@
                 <label>New password<input name="new_password" type="password" minlength="6" autocomplete="new-password" required /></label>
                 <label>Repeat new password<input name="confirmation" type="password" minlength="6" autocomplete="new-password" required /></label>
                 <button type="submit">Change password</button>
+              </form>
+              <form id="security-proxy-form" class="security-block security-form security-proxy-form">
+                <div>
+                  <h3>Session cookies and reverse proxy</h3>
+                  <p class="form-note">Forwarded HTTPS and client addresses are accepted only from the proxies listed here.</p>
+                </div>
+                <div class="security-proxy-grid">
+                  <label>Secure cookie policy
+                    <select name="cookie_secure">
+                      <option value="auto">Automatic (recommended)</option>
+                      <option value="always">Always secure</option>
+                      <option value="never">Never secure</option>
+                    </select>
+                    <small>Automatic uses Secure for direct HTTPS or HTTPS reported by a trusted proxy, while keeping direct HTTP access working.</small>
+                  </label>
+                  <label>Trusted proxy IPs or networks
+                    <textarea name="trusted_proxies" rows="4" placeholder="192.168.1.10&#10;172.18.0.0/16"></textarea>
+                    <small>One IP address or CIDR network per line. Leave empty when HomeStart is accessed directly.</small>
+                  </label>
+                </div>
+                <div id="security-proxy-request" class="security-request-status">Loading current connection…</div>
+                <button type="submit">Save proxy security</button>
               </form>
             </div>
             <p id="security-status" class="form-note" aria-live="polite"></p>

@@ -3,6 +3,7 @@ const loginForm = document.querySelector("#login-form");
 const setupForm = document.querySelector("#setup-form");
 const loginError = document.querySelector("#login-error");
 const setupError = document.querySelector("#setup-error");
+let loginRetryTimer = null;
 
 function showError(node, message) {
   node.textContent = message;
@@ -17,9 +18,31 @@ async function jsonRequest(url, payload) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) {
-    throw new Error(data.error || "HomeStart could not complete the request");
+    const error = new Error(data.error || "HomeStart could not complete the request");
+    error.retryAfter = Number(data.retry_after || response.headers.get("Retry-After")) || 0;
+    throw error;
   }
   return data;
+}
+
+function startLoginRetry(button, seconds) {
+  window.clearInterval(loginRetryTimer);
+  let remaining = Math.max(1, Math.ceil(seconds));
+  const original = button.dataset.defaultLabel || button.textContent;
+  button.dataset.defaultLabel = original;
+  button.disabled = true;
+  const render = () => {
+    button.textContent = `Try again in ${remaining}s`;
+    remaining -= 1;
+    if (remaining < 0) {
+      window.clearInterval(loginRetryTimer);
+      loginRetryTimer = null;
+      button.textContent = original;
+      button.disabled = false;
+    }
+  };
+  render();
+  loginRetryTimer = window.setInterval(render, 1000);
 }
 
 async function initialize() {
@@ -49,8 +72,9 @@ loginForm.addEventListener("submit", async (event) => {
     window.location.replace("/");
   } catch (error) {
     showError(loginError, error.message);
+    if (error.retryAfter) startLoginRetry(button, error.retryAfter);
   } finally {
-    button.disabled = false;
+    if (!loginRetryTimer) button.disabled = false;
   }
 });
 
