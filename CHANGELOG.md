@@ -4,7 +4,7 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
-## 20260727-3030-test1
+## 20260727-3030-test2
 
 - Added an installable Progressive Web App manifest for desktop, Android and
   iOS home-screen use, including normal and maskable HomeStart app icons.
@@ -17,6 +17,9 @@ packaging, security, and migration notes.
   and HomeStart's online updater continue to use current server state.
 - Kept every PWA/branding asset public so the sign-in page and first-time setup
   can load the manifest and icons before authentication.
+- Removed the default `/opt/homestart` assumption from first-time setup help.
+  The login now points to the service journal for every installation directory,
+  while fresh installs print both the setup code and its actual file path.
 
 ## 20260727-3020
 

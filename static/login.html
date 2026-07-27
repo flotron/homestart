@@ -44,7 +44,7 @@
             <p>This single account will have full access to HomeStart, including files, Samba, Docker and server settings.</p>
           </div>
           <label>Setup code<input id="setup-token" autocomplete="one-time-code" spellcheck="false" required /></label>
-          <p class="form-note setup-help">Find it on a default installation with:<br /><code>sudo cat /opt/homestart/data/setup-token</code><br />It is also printed as “Setup code” in the HomeStart service journal.</p>
+          <p class="form-note setup-help">Find “Setup code” in the HomeStart service journal:<br /><code>sudo journalctl -u homestart.service -n 60 --no-pager</code><br />This works with both default and custom installation directories.</p>
           <label>Username<input id="setup-username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username" required /></label>
           <label>Password<input id="setup-password" type="password" minlength="6" autocomplete="new-password" required /><small>At least 6 characters. A longer passphrase is recommended.</small></label>
           <label>Repeat password<input id="setup-password-confirm" type="password" minlength="6" autocomplete="new-password" required /></label>

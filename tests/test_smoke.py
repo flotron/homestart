@@ -1594,7 +1594,22 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("display: none !important", styles)
         self.assertIn('.auth-form input:not([type="checkbox"])', styles)
         self.assertIn("border-color: var(--accent)", styles)
-        self.assertIn("sudo cat /opt/homestart/data/setup-token", login)
+        self.assertIn(
+            "sudo journalctl -u homestart.service -n 60 --no-pager",
+            login,
+        )
+        self.assertNotIn("/opt/homestart/data/setup-token", login)
+
+    def test_installer_reports_the_selected_setup_token_path(self):
+        installer = (
+            Path(__file__).parents[1] / "install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('SETUP_TOKEN_PATH="${INSTALL_DIR}/data/setup-token"', installer)
+        self.assertIn('echo "Setup code file: ${SETUP_TOKEN_PATH}"', installer)
+        self.assertNotIn(
+            'SETUP_TOKEN_PATH="/opt/homestart/data/setup-token"',
+            installer,
+        )
 
     def test_pwa_manifest_branding_and_install_flow_are_packaged(self):
         root = Path(__file__).parents[1]
