@@ -1,6 +1,10 @@
-﻿# HomeStart
+﻿<p align="center">
+  <img src="static/brand/homestart-wordmark.png" alt="HomeStart" width="560">
+</p>
 
-[![Checks](https://github.com/flotron/homestart/actions/workflows/checks.yml/badge.svg)](https://github.com/flotron/homestart/actions/workflows/checks.yml)
+<p align="center">
+  <a href="https://github.com/flotron/homestart/actions/workflows/checks.yml"><img src="https://github.com/flotron/homestart/actions/workflows/checks.yml/badge.svg" alt="Checks"></a>
+</p>
 
 HomeStart is a small self-hosted dashboard for homelabs, local servers, and
 small office machines. It is written with the Python standard library plus
