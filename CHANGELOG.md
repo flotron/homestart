@@ -4,6 +4,18 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260728-3060
+
+- Added a one-command online installer for Debian, Ubuntu and Raspberry Pi OS.
+  It downloads the stable installer asset, verifies its SHA-256 checksum,
+  installs dependencies, creates the systemd service and prints the initial
+  dashboard URL and setup code.
+- Added stable `homestart-installer.tar.gz` and `homestart-update.tar.gz`
+  release assets plus `SHA256SUMS`, while retaining versioned packages.
+- Added non-interactive installer settings through `HOMESTART_INSTALL_DIR` and
+  `HOMESTART_PORT`. When the default port is occupied, automatic installation
+  selects the next available port.
+
 ## 20260728-3050
 
 - Replaced the compressed horizontal File Browser location tree on phones and

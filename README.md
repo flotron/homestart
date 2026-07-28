@@ -152,7 +152,35 @@ Local runtime data is intentionally not part of releases:
 - logs
 - installed `homestart.service`
 
-## Quick Start
+## Quick install
+
+On Debian, Ubuntu or Raspberry Pi OS, install the latest stable release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/flotron/homestart/main/install-online.sh | sudo bash
+```
+
+The bootstrap downloads the latest packaged installer, verifies it against the
+release `SHA256SUMS`, installs the required system packages, creates and starts
+`homestart.service`, and prints the dashboard URL plus the one-time setup code.
+It installs to `/opt/homestart` and uses port 80, or the next available port.
+
+To review the script before running it:
+
+```sh
+curl -fLO https://raw.githubusercontent.com/flotron/homestart/main/install-online.sh
+less install-online.sh
+sudo bash install-online.sh
+```
+
+Optional non-interactive overrides:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/flotron/homestart/main/install-online.sh |
+  sudo HOMESTART_PORT=8080 HOMESTART_INSTALL_DIR=/opt/homestart bash
+```
+
+## Manual/development start
 
 Clone the repository:
 
@@ -200,7 +228,7 @@ Open:
 http://SERVER_IP:8080
 ```
 
-## Install as a Service
+## Install a downloaded package as a service
 
 The packaged installer is the recommended path for another machine:
 
