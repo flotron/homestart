@@ -132,6 +132,8 @@ class CopyManager:
         path = self.native_cp_path()
         if not path:
             return False
+        operation = self.status(job_id).get("operation", "copy")
+        verb = "Moving" if operation == "move" else "Copying"
         command = self.native_cp_command(path, source, target)
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_file:
             try:
@@ -148,7 +150,7 @@ class CopyManager:
                 engine="native_cp",
                 engine_label="Native cp",
                 current_file=source.name,
-                message=f"Copying {source.name} with native cp…",
+                message=f"{verb} {source.name} with native cp…",
             )
             while True:
                 return_code = process.poll()
@@ -177,6 +179,9 @@ class CopyManager:
             pass
 
     def copy_with_progress(self, source, target, job_id):
+        operation = self.status(job_id).get("operation", "copy")
+        verb = "Moving" if operation == "move" else "Copying"
+
         def copy_item(source_file, destination_file):
             if self.cancelled(job_id):
                 raise CopyCancelled()
@@ -212,10 +217,19 @@ class CopyManager:
             return destination_file
 
         try:
-            total_bytes, file_count, folder_count = self.path_usage(
-                source,
-                cancelled=lambda: self.cancelled(job_id),
+            same_filesystem_move = (
+                operation == "move"
+                and source.stat().st_dev == target.parent.stat().st_dev
             )
+            if same_filesystem_move:
+                total_bytes = source.stat().st_size if source.is_file() else 0
+                file_count = 1 if source.is_file() else 0
+                folder_count = 1 if source.is_dir() else 0
+            else:
+                total_bytes, file_count, folder_count = self.path_usage(
+                    source,
+                    cancelled=lambda: self.cancelled(job_id),
+                )
             self.update_job(
                 job_id,
                 total_bytes=total_bytes,
@@ -228,21 +242,40 @@ class CopyManager:
                 engine_label="Python fallback",
                 _speed_last_at=time.monotonic(),
                 _speed_last_bytes=0,
-                message=f"Copying {source.name}…",
+                message=f"{verb} {source.name}…",
             )
-            used_native = self.run_native_copy(source, target, job_id, total_bytes)
-            if not used_native:
-                if source.is_dir():
-                    shutil.copytree(source, target, copy_function=copy_item)
-                else:
-                    copy_item(source, target)
+            if same_filesystem_move:
+                source.replace(target)
+                self.update_job(
+                    job_id,
+                    copied_bytes=total_bytes,
+                    engine="native_move",
+                    engine_label="Native move",
+                    current_file=source.name,
+                )
+            else:
+                used_native = self.run_native_copy(source, target, job_id, total_bytes)
+                if not used_native:
+                    if source.is_dir():
+                        shutil.copytree(source, target, copy_function=copy_item)
+                    else:
+                        copy_item(source, target)
+                if operation == "move":
+                    if source.is_dir():
+                        shutil.rmtree(source)
+                    else:
+                        source.unlink()
             engine = self.status(job_id).get("engine_label", "Python fallback")
             self.update_job(
                 job_id,
                 status="completed",
                 copied_bytes=total_bytes,
                 path=str(target),
-                message=f"Pasted as {target.name} with {engine}",
+                message=(
+                    f"Moved as {target.name} with {engine}"
+                    if operation == "move"
+                    else f"Pasted as {target.name} with {engine}"
+                ),
                 completed_at=int(time.time()),
             )
         except CopyCancelled:
@@ -256,7 +289,13 @@ class CopyManager:
                 eta_seconds=None,
             )
         except Exception as error:
-            self.remove_incomplete(target)
+            if operation == "move" and not source.exists() and target.exists():
+                try:
+                    target.replace(source)
+                except OSError:
+                    pass
+            else:
+                self.remove_incomplete(target)
             self.update_job(
                 job_id,
                 status="failed",
@@ -265,7 +304,9 @@ class CopyManager:
                 completed_at=int(time.time()),
             )
 
-    def start(self, source, target):
+    def start(self, source, target, operation="copy"):
+        operation = "move" if operation == "move" else "copy"
+        verb = "Moving" if operation == "move" else "Calculating"
         now = int(time.time())
         with self.lock:
             expired = [
@@ -281,6 +322,7 @@ class CopyManager:
                 "source": str(source),
                 "destination": str(target),
                 "name": source.name,
+                "operation": operation,
                 "copied_bytes": 0,
                 "total_bytes": 0,
                 "percent": 0,
@@ -289,7 +331,7 @@ class CopyManager:
                 "engine": "preparing",
                 "engine_label": "Selecting copy engine",
                 "cancel_requested": False,
-                "message": f"Calculating {source.name}…",
+                "message": f"{verb} {source.name}…",
                 "created_at": now,
                 "updated_at": now,
                 "_speed_last_at": time.monotonic(),
