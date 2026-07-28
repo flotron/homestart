@@ -4,6 +4,25 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260728-3040
+
+- Redesigned the interface around a denser, more purposeful dashboard that
+  makes better use of wide screens while retaining a mobile-first layout.
+- Bundled IBM Plex Sans locally and refined typography, spacing, navigation,
+  panels, controls and data hierarchy for a more distinctive HomeStart look.
+- Expanded the configured accent color across navigation, focus states,
+  buttons, charts and selected controls while preserving readable contrast.
+- Improved the responsive navigation and compact overview layout for phones,
+  tablets and installable PWA windows.
+- Prevented multi-GPU details from overlapping by giving the list predictable
+  row spacing and a contained scroll area when many devices are present.
+- Removed the redundant **Refresh status** button; live dashboard data
+  continues to update automatically.
+- Increased network-interface name and detail contrast in both normal and
+  selected cards.
+- Kept the visual theme and locally bundled fonts available during sign-in and
+  first-time setup, before authentication is established.
+
 ## 20260727-3030
 
 - Changed the background SMART health refresh from every five minutes to every

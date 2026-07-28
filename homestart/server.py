@@ -5267,10 +5267,12 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         "/pwa.js",
         "/service-worker.js",
         "/styles.css",
+        "/visual.css",
         "/favicon.ico",
     }
     PUBLIC_GET_PREFIXES = (
         "/brand/",
+        "/fonts/",
         "/icons/",
     )
     PUBLIC_POST_PATHS = {

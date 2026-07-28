@@ -1643,6 +1643,34 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertNotIn("cache.put", worker)
         self.assertNotIn("respondWith", worker)
 
+    def test_visual_system_is_compact_branded_and_accent_driven(self):
+        root = Path(__file__).parents[1]
+        static = root / "static"
+        styles = (static / "styles.css").read_text(encoding="utf-8-sig")
+        visual = (static / "visual.css").read_text(encoding="utf-8")
+        html = (static / "index.html").read_text(encoding="utf-8")
+        script = (static / "app.js").read_text(encoding="utf-8")
+
+        self.assertTrue((static / "fonts" / "ibm-plex-sans-latin.woff2").is_file())
+        self.assertTrue((static / "fonts" / "ibm-plex-sans-latin-ext.woff2").is_file())
+        self.assertTrue((static / "fonts" / "IBM-Plex-Sans-OFL.txt").is_file())
+        self.assertIn('font-family: "IBM Plex Sans"', styles)
+        self.assertIn("--accent-strong: color-mix", styles)
+        self.assertIn("width: min(1510px", visual)
+        self.assertIn('href="/visual.css"', html)
+        self.assertIn('class="overview-stage"', html)
+        self.assertIn('class="metric metric-cpu"', html)
+        self.assertIn('class="nav-icon"', html)
+        self.assertNotIn('id="refresh-status"', html)
+        self.assertNotIn("refreshStatus", script)
+        self.assertIn(".metric-gpu {", visual)
+        self.assertIn("min-height: 178px", visual)
+        self.assertIn(".network-card strong", visual)
+        self.assertIn("color: var(--text)", visual)
+        self.assertIn("function applyAccentColor", script)
+        self.assertIn('"--accent-contrast"', script)
+        self.assertIn('addEventListener("input"', script)
+
     def test_overview_orders_resources_before_network_and_exposes_security_controls(self):
         root = Path(__file__).parents[1]
         html = (root / "static" / "index.html").read_text(encoding="utf-8")
@@ -1717,7 +1745,9 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
             "/manifest.webmanifest",
             "/service-worker.js",
             "/pwa.js",
+            "/visual.css",
             "/favicon.ico",
+            "/fonts/ibm-plex-sans-latin.woff2",
             "/icons/homestart-192.png",
             "/brand/homestart-wordmark.png",
         ):

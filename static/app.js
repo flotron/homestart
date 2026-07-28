@@ -88,7 +88,6 @@ const appUninstallConfirmationLabel = document.querySelector("#app-uninstall-con
 const appUninstallConfirmation = document.querySelector("#app-uninstall-confirmation");
 const appUninstallWarning = document.querySelector("#app-uninstall-warning");
 const appUninstallCancel = document.querySelector("#app-uninstall-cancel");
-const refreshStatus = document.querySelector("#refresh-status");
 const cpuValue = document.querySelector("#cpu-value");
 const cpuTop = document.querySelector("#cpu-top");
 const cpuBar = document.querySelector("#cpu-bar");
@@ -1935,10 +1934,22 @@ async function loadGeneralSettings() {
   document.querySelector("#setting-memory-alert").value = data.alerts?.memory_percent ?? 90;
   document.querySelector("#setting-disk-alert").value = data.alerts?.disk_percent ?? 90;
   document.querySelector("#setting-temperature-alert").value = data.alerts?.temperature_c ?? 85;
-  document.documentElement.style.setProperty("--accent", data.appearance?.accent || "#38bdf8");
+  applyAccentColor(data.appearance?.accent || "#38bdf8");
   document.documentElement.dataset.theme = data.appearance?.theme || "dark";
   document.body.dataset.density = data.appearance?.density || "comfortable";
   updatePermanentClock();
+}
+
+function applyAccentColor(value) {
+  const accent = /^#[0-9a-f]{6}$/i.test(String(value || "")) ? value : "#38bdf8";
+  const red = Number.parseInt(accent.slice(1, 3), 16) / 255;
+  const green = Number.parseInt(accent.slice(3, 5), 16) / 255;
+  const blue = Number.parseInt(accent.slice(5, 7), 16) / 255;
+  const linear = (channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  const luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
+  document.documentElement.style.setProperty("--accent", accent);
+  document.documentElement.style.setProperty("--accent-contrast", luminance > 0.34 ? "#071117" : "#ffffff");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", accent);
 }
 
 async function saveGeneralSettings(event) {
@@ -2876,7 +2887,6 @@ appUninstallForm.addEventListener("submit", (event) => {
     window.alert(error.message);
   });
 });
-refreshStatus.addEventListener("click", loadStatus);
 resourcesPanel.addEventListener("toggle", () => loadResources().catch(console.error));
 processSortButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -2973,4 +2983,5 @@ trashEmpty?.addEventListener("click", emptyTrashFromUi);
 monitorInterface?.addEventListener("change", () => changeMonitorInterface().catch(console.error));
 logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
+document.querySelector("#setting-accent")?.addEventListener("input", (event) => applyAccentColor(event.target.value));
 backupCreate?.addEventListener("click", createBackupFromUi);
