@@ -39,6 +39,14 @@ jobs:
           fi
       - name: Build and validate packages
         run: ./scripts/build_package.sh "${{ steps.version.outputs.value }}"
+      - name: Prepare stable download names and checksums
+        run: |
+          cp "dist/homestart-installer-${{ steps.version.outputs.value }}.tar.gz" \
+            dist/homestart-installer.tar.gz
+          cp "dist/homestart-update-${{ steps.version.outputs.value }}.tar.gz" \
+            dist/homestart-update.tar.gz
+          cd dist
+          sha256sum homestart-installer.tar.gz homestart-update.tar.gz > SHA256SUMS
       - name: Create GitHub release
         if: steps.version.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
@@ -49,3 +57,6 @@ jobs:
           files: |
             dist/homestart-installer-${{ steps.version.outputs.value }}.tar.gz
             dist/homestart-update-${{ steps.version.outputs.value }}.tar.gz
+            dist/homestart-installer.tar.gz
+            dist/homestart-update.tar.gz
+            dist/SHA256SUMS

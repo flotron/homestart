@@ -1643,6 +1643,25 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertIn("Managed by ${managerLabels", script)
         self.assertIn("architecture_compatible === false", script)
 
+    def test_online_installer_and_stable_release_assets_are_wired(self):
+        root = Path(__file__).parents[1]
+        online_installer = (root / "install-online.sh").read_text(encoding="utf-8")
+        installer = (root / "install.sh").read_text(encoding="utf-8")
+        release_workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        package_script = (root / "scripts" / "build_package.sh").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("homestart-installer.tar.gz", online_installer)
+        self.assertIn("SHA256SUMS", online_installer)
+        self.assertIn("sha256sum --check", online_installer)
+        self.assertIn('HOMESTART_NONINTERACTIVE="${HOMESTART_NONINTERACTIVE:-1}"', online_installer)
+        self.assertIn('HOMESTART_INSTALL_DIR', installer)
+        self.assertIn('HOMESTART_PORT', installer)
+        self.assertIn('install-online.sh" "$PACKAGE_DIR/install-online.sh"', package_script)
+        self.assertIn("dist/homestart-installer.tar.gz", release_workflow)
+        self.assertIn("dist/SHA256SUMS", release_workflow)
+        self.assertIn("install-online.sh | sudo bash", readme)
+
     def test_auth_forms_are_distinct_and_inputs_have_visible_boundaries(self):
         root = Path(__file__).parents[1]
         styles = (root / "static" / "styles.css").read_text(encoding="utf-8-sig")

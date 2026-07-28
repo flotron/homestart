@@ -9,6 +9,12 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR_DEFAULT="/opt/homestart"
 PORT_DEFAULT="80"
 
+port_is_occupied() {
+  local candidate="$1"
+  command -v ss >/dev/null 2>&1 &&
+    ss -ltnH | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | grep -qx "$candidate"
+}
+
 echo "HomeStart installer"
 echo
 echo "Occupied TCP ports:"
@@ -19,26 +25,52 @@ else
 fi
 echo
 
-read -r -p "Install directory [${INSTALL_DIR_DEFAULT}]: " INSTALL_DIR
-INSTALL_DIR="${INSTALL_DIR:-$INSTALL_DIR_DEFAULT}"
+if [[ -n "${HOMESTART_INSTALL_DIR:-}" ]]; then
+  INSTALL_DIR="$HOMESTART_INSTALL_DIR"
+elif [[ "${HOMESTART_NONINTERACTIVE:-0}" == "1" ]]; then
+  INSTALL_DIR="$INSTALL_DIR_DEFAULT"
+else
+  read -r -p "Install directory [${INSTALL_DIR_DEFAULT}]: " INSTALL_DIR
+  INSTALL_DIR="${INSTALL_DIR:-$INSTALL_DIR_DEFAULT}"
+fi
 if [[ "$INSTALL_DIR" != /* ]]; then
   echo "Install directory must be an absolute path, for example: /opt/homestart" >&2
   echo "If you wanted to use port ${INSTALL_DIR}, press Enter for the install directory and type ${INSTALL_DIR} at the port prompt." >&2
   exit 1
 fi
 
-read -r -p "Dashboard port [${PORT_DEFAULT}]: " PORT
-PORT="${PORT:-$PORT_DEFAULT}"
+if [[ -n "${HOMESTART_PORT:-}" ]]; then
+  PORT="$HOMESTART_PORT"
+elif [[ "${HOMESTART_NONINTERACTIVE:-0}" == "1" ]]; then
+  PORT="$PORT_DEFAULT"
+else
+  read -r -p "Dashboard port [${PORT_DEFAULT}]: " PORT
+  PORT="${PORT:-$PORT_DEFAULT}"
+fi
 
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
   echo "Invalid port: $PORT" >&2
   exit 1
 fi
-if command -v ss >/dev/null 2>&1 && ss -ltnH | awk '{print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | grep -qx "$PORT"; then
-  read -r -p "Port ${PORT} appears to be occupied. Continue anyway? [y/N]: " CONFIRM_PORT
-  if [[ ! "$CONFIRM_PORT" =~ ^[Yy]$ ]]; then
-    echo "Installation cancelled. Run installer again and choose a free port." >&2
+if port_is_occupied "$PORT"; then
+  if [[ "${HOMESTART_NONINTERACTIVE:-0}" == "1" && -z "${HOMESTART_PORT:-}" ]]; then
+    while port_is_occupied "$PORT"; do
+      if (( PORT >= 65535 )); then
+        echo "No free TCP port could be selected automatically." >&2
+        exit 1
+      fi
+      PORT=$((PORT + 1))
+    done
+    echo "Default port is occupied; using port ${PORT}."
+  elif [[ "${HOMESTART_NONINTERACTIVE:-0}" == "1" ]]; then
+    echo "Requested port ${PORT} is occupied." >&2
     exit 1
+  else
+    read -r -p "Port ${PORT} appears to be occupied. Continue anyway? [y/N]: " CONFIRM_PORT
+    if [[ ! "$CONFIRM_PORT" =~ ^[Yy]$ ]]; then
+      echo "Installation cancelled. Run installer again and choose a free port." >&2
+      exit 1
+    fi
   fi
 fi
 
