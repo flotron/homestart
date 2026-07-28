@@ -237,7 +237,7 @@
           </section>
 
           <section class="status-panel">
-            <h2>Physical disks</h2>
+            <h2>Physical drives</h2>
             <div id="disks" class="stack"></div>
           </section>
         </section>
@@ -378,7 +378,11 @@
         <section class="view" id="view-files" data-view-panel="files">
           <section class="file-panel">
             <div class="file-explorer">
-              <aside class="file-sidebar">
+              <button id="file-locations-toggle" class="file-locations-toggle" type="button" aria-expanded="false" aria-controls="file-sidebar">
+                <span><strong>Locations and drives</strong><small>Choose a folder or mounted drive</small></span>
+                <span class="file-locations-chevron" aria-hidden="true">⌄</span>
+              </button>
+              <aside id="file-sidebar" class="file-sidebar">
                 <div class="file-sidebar-title">
                   <strong>Files</strong>
                   <span>Locations</span>
@@ -408,6 +412,15 @@
                   <button type="submit">Go</button>
                 </form>
                 <div id="file-drop-status" class="file-drop-status">Drop files here to upload</div>
+                <div id="file-selection-toolbar" class="file-selection-toolbar" hidden>
+                  <strong id="file-selection-count">0 selected</strong>
+                  <div>
+                    <button id="file-selection-copy" type="button">Copy</button>
+                    <button id="file-selection-cut" type="button">Cut</button>
+                    <button id="file-selection-delete" class="danger" type="button">Move to trash</button>
+                    <button id="file-selection-clear" type="button">Clear</button>
+                  </div>
+                </div>
                 <div id="file-copy-progress" class="file-copy-progress" hidden>
                   <div class="file-copy-progress-head">
                     <strong id="file-copy-label">Preparing copy…</strong>
@@ -417,11 +430,21 @@
                   <small id="file-copy-detail">Calculating size…</small>
                 </div>
                 <div class="file-columns">
-                  <span>Name</span>
+                  <button class="file-sort active" type="button" data-file-sort="name">Name <span aria-hidden="true">↑</span></button>
                   <span>Type</span>
-                  <span>Size</span>
-                  <span>Modified</span>
+                  <button class="file-sort" type="button" data-file-sort="size">Size <span aria-hidden="true"></span></button>
+                  <button class="file-sort" type="button" data-file-sort="modified">Modified <span aria-hidden="true"></span></button>
                   <span>Actions</span>
+                </div>
+                <div class="file-sort-mobile">
+                  <label>Sort by
+                    <select id="file-sort-mobile">
+                      <option value="name">Name</option>
+                      <option value="modified">Modified</option>
+                      <option value="size">Size</option>
+                    </select>
+                  </label>
+                  <button id="file-sort-direction" type="button" aria-label="Sort ascending" title="Sort ascending">↑</button>
                 </div>
                 <div id="files" class="file-list list-view"></div>
               </div>
@@ -507,13 +530,6 @@
           </header>
 
           <div class="settings-workspace">
-            <nav class="settings-section-menu" aria-label="Settings sections">
-              <button class="active" type="button" data-settings-target="settings-general"><strong>General</strong><small>Appearance, alerts and time</small></button>
-              <button type="button" data-settings-target="settings-security"><strong>Account</strong><small>Password, sessions and proxy</small></button>
-              <button type="button" data-settings-target="settings-backups"><strong>Backups</strong><small>Download local data</small></button>
-              <button type="button" data-settings-target="settings-network"><strong>Network</strong><small>Interfaces and IPv4</small></button>
-              <button type="button" data-settings-target="settings-updates"><strong>Updates</strong><small>Online and manual packages</small></button>
-            </nav>
             <div class="settings-content">
           <section class="settings-panel" id="settings-general">
             <div class="section-head"><div><h2>Appearance and alerts</h2><p>Customize HomeStart without editing config.json.</p></div></div>
@@ -694,7 +710,9 @@
       <div class="file-context-title"><strong id="file-context-name">File</strong><small id="file-context-kind"></small></div>
       <button type="button" data-file-context-action="open">Open</button>
       <button type="button" data-file-context-action="download">Download</button>
+      <button type="button" data-file-context-action="select">Select</button>
       <button type="button" data-file-context-action="copy">Copy</button>
+      <button type="button" data-file-context-action="cut">Cut</button>
       <button type="button" data-file-context-action="properties">Properties</button>
       <button type="button" data-file-context-action="rename">Rename</button>
       <button class="danger" type="button" data-file-context-action="delete">Move to trash</button>

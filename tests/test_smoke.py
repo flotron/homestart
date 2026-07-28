@@ -594,6 +594,48 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(status["copied_bytes"], source.stat().st_size)
         self.assertEqual(Path(status["path"]).read_bytes(), source.read_bytes())
 
+    def test_async_move_uses_native_rename_and_removes_source(self):
+        root = Path(self.temp.name) / "move-progress"
+        source_folder = root / "source"
+        destination = root / "destination"
+        source_folder.mkdir(parents=True)
+        destination.mkdir()
+        source = source_folder / "archive.bin"
+        source.write_bytes(b"move-me")
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+
+        started = self.app.start_move_job(str(source), str(destination))
+        deadline = __import__("time").time() + 3
+        while __import__("time").time() < deadline:
+            status = self.app.copy_job_status(started["job_id"])
+            if status["status"] in {"completed", "failed"}:
+                break
+            __import__("time").sleep(.02)
+
+        target = destination / "archive.bin"
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["operation"], "move")
+        self.assertEqual(status["engine"], "native_move")
+        self.assertFalse(source.exists())
+        self.assertEqual(target.read_bytes(), b"move-me")
+
+    def test_move_rejects_existing_destination(self):
+        root = Path(self.temp.name) / "move-conflict"
+        source_folder = root / "source"
+        destination = root / "destination"
+        source_folder.mkdir(parents=True)
+        destination.mkdir()
+        source = source_folder / "same.txt"
+        source.write_text("source", encoding="utf-8")
+        (destination / source.name).write_text("existing", encoding="utf-8")
+        config = self.app.load_config_file()
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        with self.assertRaises(FileExistsError):
+            self.app.resolve_move_target(str(source), str(destination))
+
     def test_docker_image_matching_ignores_registry_tag(self):
         self.assertEqual(self.app.image_repository("docker.io/library/redis:7"), "redis")
         self.assertEqual(self.app.image_repository("jellyfin/jellyfin:latest"), "jellyfin/jellyfin")
@@ -1563,7 +1605,21 @@ class HomeStartSmokeTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         script = (root / "static" / "app.js").read_text(encoding="utf-8")
         html = (root / "static" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('action: "copy_start"', script)
+        self.assertIn('"copy_start"', script)
+        self.assertIn('"move_start"', script)
+        self.assertIn("selectedFiles: new Map()", script)
+        self.assertIn('id="file-selection-toolbar"', html)
+        self.assertIn('data-file-context-action="cut"', html)
+        self.assertIn("Physical drives", html)
+        self.assertNotIn("Physical disks", html)
+        self.assertNotIn("settings-section-menu", html)
+        self.assertIn('data-file-sort="name"', html)
+        self.assertIn('data-file-sort="size"', html)
+        self.assertIn('data-file-sort="modified"', html)
+        self.assertIn('id="file-locations-toggle"', html)
+        self.assertIn("function openFileLocation", script)
+        self.assertIn("function compareFileEntries", script)
+        self.assertIn('localStorage.setItem("homestart-file-sort"', script)
         self.assertIn("/api/file/properties", script)
         self.assertIn("/api/network/ranking", script)
         self.assertIn("appendLiveNetworkHistory(data)", script)

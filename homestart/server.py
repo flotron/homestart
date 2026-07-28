@@ -2762,13 +2762,21 @@ def file_listing(raw_path):
             ],
         }
 
-    if not target.exists():
-        raise FileNotFoundError("The path does not exist")
-    if not target.is_dir():
-        raise NotADirectoryError("The path is not a folder")
+    try:
+        if not target.exists():
+            raise FileNotFoundError("The path does not exist or its mount is no longer available")
+        if not target.is_dir():
+            raise NotADirectoryError("The path is not a folder")
+        target_items = list(target.iterdir())
+    except PermissionError as error:
+        raise PermissionError(
+            f"HomeStart cannot read {target}. Check the mount owner and permissions; "
+            "desktop/devmon mounts under /media may need to be remounted for the "
+            "account running HomeStart or mounted persistently under /mnt."
+        ) from error
 
     entries = []
-    for item in sorted(target.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+    for item in sorted(target_items, key=lambda path: (not path.is_dir(), path.name.lower())):
         try:
             stat = item.stat()
         except OSError:
@@ -2961,6 +2969,27 @@ def resolve_copy_target(source_path, destination_path):
     return source, target
 
 
+def resolve_move_target(source_path, destination_path):
+    source = resolve_file_path(source_path)
+    destination = resolve_file_path(destination_path)
+    if source is None or destination is None:
+        raise ValueError("Source and destination are required")
+    if not source.exists():
+        raise FileNotFoundError("The source path does not exist")
+    if not destination.exists() or not destination.is_dir():
+        raise NotADirectoryError("Destination folder does not exist")
+
+    target = destination / source.name
+    if source.resolve() == target.resolve():
+        raise ValueError("Source and destination are the same")
+    if source.is_dir() and source in target.parents:
+        raise ValueError("A folder cannot be moved into itself")
+    if target.exists():
+        raise FileExistsError("A file or folder with that name already exists")
+    resolve_file_path(str(target))
+    return source, target
+
+
 def copy_file_path(source_path, destination_path):
     ensure_file_operations_enabled()
     source, target = resolve_copy_target(source_path, destination_path)
@@ -3025,6 +3054,12 @@ def start_copy_job(source_path, destination_path):
     return copy_manager().start(source, target)
 
 
+def start_move_job(source_path, destination_path):
+    ensure_file_operations_enabled()
+    source, target = resolve_move_target(source_path, destination_path)
+    return copy_manager().start(source, target, operation="move")
+
+
 def copy_job_status(job_id):
     return copy_manager().status(job_id)
 
@@ -3073,6 +3108,8 @@ def file_action(payload):
         return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
     if action == "copy_start":
         return start_copy_job(payload.get("source", ""), payload.get("destination", ""))
+    if action == "move_start":
+        return start_move_job(payload.get("source", ""), payload.get("destination", ""))
     if action == "copy_cancel":
         return cancel_copy_job(payload.get("job_id", ""))
     if action == "upload":

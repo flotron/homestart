@@ -527,33 +527,7 @@ textarea:focus-visible,
 }
 
 .settings-workspace {
-  grid-template-columns: 214px minmax(0, 1fr);
-  gap: 10px;
   margin-top: 14px;
-}
-
-.settings-section-menu {
-  top: 14px;
-  gap: 4px;
-  padding: 7px;
-  border-radius: 9px;
-  background: var(--panel);
-}
-
-.settings-section-menu button {
-  padding: 9px 10px;
-  border-radius: 6px;
-  background: transparent;
-}
-
-.settings-section-menu button.active,
-.settings-section-menu button:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
-  background: var(--accent-soft);
-}
-
-.settings-section-menu button.active strong {
-  color: var(--accent);
 }
 
 .settings-content {
@@ -920,10 +894,6 @@ input[type="color"] {
 
   .history-stat small {
     display: none;
-  }
-
-  .settings-section-menu {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .settings-content .settings-panel {

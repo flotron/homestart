@@ -8,11 +8,25 @@ const state = {
   fileRootEntries: [],
   fileDriveEntries: [],
   fileClipboard: (() => {
-    try { return JSON.parse(sessionStorage.getItem("homestart-file-clipboard") || "null"); }
+    try {
+      const stored = JSON.parse(sessionStorage.getItem("homestart-file-clipboard") || "null");
+      if (!stored) return null;
+      if (Array.isArray(stored.entries)) return { mode: stored.mode === "cut" ? "cut" : "copy", entries: stored.entries };
+      return { mode: "copy", entries: [stored] };
+    }
     catch { return null; }
   })(),
   activeCopyJob: null,
   selectedFile: null,
+  selectedFiles: new Map(),
+  fileEntries: [],
+  fileSort: (() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("homestart-file-sort") || "null");
+      if (["name", "size", "modified"].includes(stored?.key) && ["asc", "desc"].includes(stored?.direction)) return stored;
+    } catch { /* Use the default sort below. */ }
+    return { key: "name", direction: "asc" };
+  })(),
   editingSambaShare: null,
   features: { file_operations: true },
   view: "status",
@@ -110,7 +124,6 @@ const resourceContainers = document.querySelector("#resource-containers");
 const resourceProcesses = document.querySelector("#resource-processes");
 const resourceTasks = document.querySelector("#resource-tasks");
 const processSortButtons = [...document.querySelectorAll("[data-process-sort]")];
-const settingsSectionButtons = [...document.querySelectorAll("[data-settings-target]")];
 const filesNode = document.querySelector("#files");
 const filePathNode = document.querySelector("#file-path");
 const filePathForm = document.querySelector("#file-path-form");
@@ -120,8 +133,19 @@ const fileNewFolder = document.querySelector("#file-new-folder");
 const filePaste = document.querySelector("#file-paste");
 const fileUpload = document.querySelector("#file-upload");
 const fileDropStatus = document.querySelector("#file-drop-status");
+const fileSelectionToolbar = document.querySelector("#file-selection-toolbar");
+const fileSelectionCount = document.querySelector("#file-selection-count");
+const fileSelectionCopy = document.querySelector("#file-selection-copy");
+const fileSelectionCut = document.querySelector("#file-selection-cut");
+const fileSelectionDelete = document.querySelector("#file-selection-delete");
+const fileSelectionClear = document.querySelector("#file-selection-clear");
+const fileSortButtons = [...document.querySelectorAll("[data-file-sort]")];
+const fileSortMobile = document.querySelector("#file-sort-mobile");
+const fileSortDirection = document.querySelector("#file-sort-direction");
 const fileMain = document.querySelector(".file-main");
 const fileRoots = document.querySelector("#file-roots");
+const fileSidebar = document.querySelector("#file-sidebar");
+const fileLocationsToggle = document.querySelector("#file-locations-toggle");
 const fileCount = document.querySelector("#file-count");
 const fileLocationName = document.querySelector("#file-location-name");
 const fileContextMenu = document.querySelector("#file-context-menu");
@@ -1531,17 +1555,115 @@ async function loadResources() {
   renderResourceProcesses();
 }
 
+function selectedFileEntries() {
+  return [...state.selectedFiles.values()];
+}
+
+function updateFileSelectionUi() {
+  const selected = selectedFileEntries();
+  const count = selected.length;
+  fileSelectionToolbar.hidden = count === 0;
+  fileSelectionCount.textContent = `${count} selected`;
+  [fileSelectionCopy, fileSelectionCut, fileSelectionDelete].forEach((button) => {
+    button.disabled = !count || !state.features.file_operations || Boolean(state.activeCopyJob);
+  });
+  document.querySelectorAll(".file-entry").forEach((node) => {
+    const active = state.selectedFiles.has(node.dataset.path);
+    node.classList.toggle("marked", active);
+    const checkbox = node.querySelector(".file-select input");
+    if (checkbox) checkbox.checked = active;
+  });
+}
+
+function setFileSelected(entry, selected) {
+  if (selected) state.selectedFiles.set(entry.path, entry);
+  else state.selectedFiles.delete(entry.path);
+  updateFileSelectionUi();
+}
+
+function clearFileSelection() {
+  state.selectedFiles.clear();
+  updateFileSelectionUi();
+}
+
+function compareFileEntries(left, right) {
+  const leftDirectory = left.type === "directory";
+  const rightDirectory = right.type === "directory";
+  if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
+
+  const direction = state.fileSort.direction === "desc" ? -1 : 1;
+  let comparison = 0;
+  if (state.fileSort.key === "size") {
+    comparison = Number(left.size_bytes || 0) - Number(right.size_bytes || 0);
+  } else if (state.fileSort.key === "modified") {
+    comparison = Number(left.modified || 0) - Number(right.modified || 0);
+  } else {
+    comparison = String(left.name || "").localeCompare(String(right.name || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+  if (!comparison && state.fileSort.key !== "name") {
+    comparison = String(left.name || "").localeCompare(String(right.name || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+  return comparison * direction;
+}
+
+function updateFileSortUi() {
+  fileSortButtons.forEach((button) => {
+    const active = button.dataset.fileSort === state.fileSort.key;
+    button.classList.toggle("active", active);
+    button.querySelector("span").textContent = active ? (state.fileSort.direction === "asc" ? "↑" : "↓") : "";
+    button.setAttribute("aria-sort", active ? (state.fileSort.direction === "asc" ? "ascending" : "descending") : "none");
+  });
+  if (fileSortMobile) fileSortMobile.value = state.fileSort.key;
+  if (fileSortDirection) {
+    const ascending = state.fileSort.direction === "asc";
+    fileSortDirection.textContent = ascending ? "↑" : "↓";
+    fileSortDirection.title = ascending ? "Sort ascending" : "Sort descending";
+    fileSortDirection.setAttribute("aria-label", fileSortDirection.title);
+  }
+}
+
+function renderSortedFiles() {
+  const entries = [...state.fileEntries].sort(compareFileEntries);
+  filesNode.replaceChildren(...entries.map(renderFileEntry));
+  updateFileSortUi();
+  updateFileSelectionUi();
+}
+
+function setFileSort(key, toggleDirection = false) {
+  if (!["name", "size", "modified"].includes(key)) return;
+  if (toggleDirection && state.fileSort.key === key) {
+    state.fileSort.direction = state.fileSort.direction === "asc" ? "desc" : "asc";
+  } else if (state.fileSort.key !== key) {
+    state.fileSort = { key, direction: key === "name" ? "asc" : "desc" };
+  }
+  localStorage.setItem("homestart-file-sort", JSON.stringify(state.fileSort));
+  renderSortedFiles();
+}
+
 function renderFileEntry(entry) {
   const node = document.createElement("div");
   node.className = `file-entry ${entry.type}`;
+  node.dataset.path = entry.path;
   node.innerHTML = `
-    <button class="file-name" type="button">
-      <span class="file-thumb"><span class="file-icon"></span></span>
-      <span class="file-text">
-        <span class="file-label"></span>
-        <span class="file-subtitle"></span>
-      </span>
-    </button>
+    <div class="file-primary">
+      <label class="file-select" title="Select item">
+        <input type="checkbox" aria-label="Select item" />
+        <span></span>
+      </label>
+      <button class="file-name" type="button">
+        <span class="file-thumb"><span class="file-icon"></span></span>
+        <span class="file-text">
+          <span class="file-label"></span>
+          <span class="file-subtitle"></span>
+        </span>
+      </button>
+    </div>
     <span class="file-type"></span>
     <span class="file-size"></span>
     <span class="file-modified"></span>
@@ -1559,9 +1681,11 @@ function renderFileEntry(entry) {
     ? "Folder"
     : [fileTypeLabel(entry), entry.size].filter(Boolean).join(" · ");
   node.querySelector(".file-open").textContent = entry.type === "directory" ? "Open" : "View";
-  if (state.fileClipboard?.path === entry.path) {
-    node.classList.add("copied");
+  const clipboardEntry = state.fileClipboard?.entries?.some((item) => item.path === entry.path);
+  if (clipboardEntry) {
+    node.classList.add(state.fileClipboard.mode === "cut" ? "cut" : "copied");
   }
+  if (state.selectedFiles.has(entry.path)) node.classList.add("marked");
 
   const openEntry = () => {
     if (entry.type === "directory") {
@@ -1570,12 +1694,20 @@ function renderFileEntry(entry) {
       window.open(`/api/file/open?path=${encodeURIComponent(entry.path)}`, "_blank", "noreferrer");
     }
   };
+  const checkbox = node.querySelector(".file-select input");
+  checkbox.checked = state.selectedFiles.has(entry.path);
+  checkbox.addEventListener("change", () => setFileSelected(entry, checkbox.checked));
   node.querySelector(".file-name").addEventListener("click", openEntry);
   node.querySelector(".file-open").addEventListener("click", openEntry);
   node.querySelector(".file-more").addEventListener("click", (event) => openFileContextMenu(entry, node, event.clientX, event.clientY));
   node.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     openFileContextMenu(entry, node, event.clientX, event.clientY);
+  });
+  node.addEventListener("click", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.target.closest("button, input, label")) return;
+    event.preventDefault();
+    setFileSelected(entry, !state.selectedFiles.has(entry.path));
   });
   let holdTimer = null;
   let held = false;
@@ -1586,6 +1718,7 @@ function renderFileEntry(entry) {
     holdStart = { x: event.clientX, y: event.clientY };
     holdTimer = window.setTimeout(() => {
       held = true;
+      setFileSelected(entry, true);
       openFileContextMenu(entry, node, event.clientX, event.clientY);
     }, 550);
   });
@@ -1613,32 +1746,41 @@ function openFileContextMenu(entry, node, x = 0, y = 0) {
   closeFileContextMenu();
   state.selectedFile = entry;
   node.classList.add("selected");
-  fileContextName.textContent = entry.name;
-  fileContextKind.textContent = entry.type === "directory" ? "Folder" : [fileTypeLabel(entry), entry.size].filter(Boolean).join(" · ");
+  const selectionIncludesEntry = state.selectedFiles.has(entry.path);
+  const selectionCount = selectionIncludesEntry ? state.selectedFiles.size : 0;
+  fileContextName.textContent = selectionCount > 1 ? `${selectionCount} selected` : entry.name;
+  fileContextKind.textContent = selectionCount > 1
+    ? "Actions apply to every selected item"
+    : entry.type === "directory" ? "Folder" : [fileTypeLabel(entry), entry.size].filter(Boolean).join(" · ");
   fileContextActions.forEach((button) => {
     const action = button.dataset.fileContextAction;
-    button.disabled = !state.features.file_operations && ["copy", "rename", "delete"].includes(action);
+    button.disabled = !state.features.file_operations && ["copy", "cut", "rename", "delete"].includes(action);
+    if (action === "select") button.textContent = selectionIncludesEntry ? "Unselect" : "Select";
   });
   fileContextMenu.hidden = false;
   const width = 230;
   const bounds = node.getBoundingClientRect();
   fileContextMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, x || bounds.right - width))}px`;
-  fileContextMenu.style.top = `${Math.max(8, Math.min(window.innerHeight - 360, y || bounds.bottom))}px`;
+  fileContextMenu.style.top = `${Math.max(8, Math.min(window.innerHeight - 450, y || bounds.bottom))}px`;
 }
 
 async function runFileContextAction(action) {
   const entry = state.selectedFile;
   if (!entry) return;
+  const entries = state.selectedFiles.has(entry.path) ? selectedFileEntries() : [entry];
   closeFileContextMenu();
   if (action === "open") {
     if (entry.type === "directory") loadFiles(entry.path);
     else window.open(`/api/file/open?path=${encodeURIComponent(entry.path)}`, "_blank", "noreferrer");
   } else if (action === "download") {
     window.location.href = `/api/file/download?path=${encodeURIComponent(entry.path)}`;
-  } else if (action === "copy") await copyFileEntry(entry);
+  } else if (action === "select") {
+    setFileSelected(entry, !state.selectedFiles.has(entry.path));
+  } else if (action === "copy") await setFileClipboard(entries, "copy");
+  else if (action === "cut") await setFileClipboard(entries, "cut");
   else if (action === "properties") await showFileProperties(entry);
   else if (action === "rename") await renameFileEntry(entry);
-  else if (action === "delete") await deleteFileEntry(entry);
+  else if (action === "delete") await deleteFileEntries(entries);
 }
 
 async function showFileProperties(entry) {
@@ -1679,7 +1821,11 @@ function updateFileControls() {
   fileNewFolder.disabled = !canOperate;
   fileUpload.disabled = !canOperate;
   filePaste.disabled = !canOperate || !state.fileClipboard || Boolean(state.activeCopyJob);
-  filePaste.textContent = state.fileClipboard ? `Paste ${state.fileClipboard.name}` : "Paste";
+  const clipboardCount = state.fileClipboard?.entries?.length || 0;
+  const clipboardAction = state.fileClipboard?.mode === "cut" ? "Move" : "Paste";
+  filePaste.textContent = clipboardCount
+    ? `${clipboardAction} ${clipboardCount === 1 ? state.fileClipboard.entries[0].name : `${clipboardCount} items`}`
+    : "Paste";
   if (!operationsEnabled) {
     fileDropStatus.textContent = "File operations are disabled";
   } else if (!hasFolder) {
@@ -1688,6 +1834,7 @@ function updateFileControls() {
     fileDropStatus.textContent = "Drop files here to upload";
   }
   fileDropStatus.classList.toggle("disabled", !operationsEnabled);
+  updateFileSelectionUi();
 }
 
 function fileRootLabel(root) {
@@ -1757,82 +1904,129 @@ async function createFolder() {
   }
 }
 
-async function copyFileEntry(entry) {
+async function setFileClipboard(entries, mode = "copy") {
   if (!state.features.file_operations) return;
+  const uniqueEntries = [...new Map(entries.map((entry) => [entry.path, entry])).values()];
+  if (!uniqueEntries.length) return;
   state.fileClipboard = {
-    path: entry.path,
-    name: entry.name,
-    type: entry.type,
+    mode: mode === "cut" ? "cut" : "copy",
+    entries: uniqueEntries.map((entry) => ({
+      path: entry.path,
+      name: entry.name,
+      type: entry.type,
+    })),
   };
   sessionStorage.setItem("homestart-file-clipboard", JSON.stringify(state.fileClipboard));
+  clearFileSelection();
   updateFileControls();
-  document.querySelectorAll(".file-entry.copied").forEach((item) => item.classList.remove("copied"));
-  const matchingEntry = [...document.querySelectorAll(".file-entry")].find((item) => item.querySelector(".file-label")?.textContent === entry.name);
-  matchingEntry?.classList.add("copied");
-  fileDropStatus.textContent = `Copied ${entry.name}. Open the destination folder and press Paste.`;
-  toast(`${entry.name} copied`, "success");
+  document.querySelectorAll(".file-entry.copied, .file-entry.cut").forEach((item) => item.classList.remove("copied", "cut"));
+  uniqueEntries.forEach((entry) => {
+    const matchingEntry = document.querySelector(`.file-entry[data-path="${CSS.escape(entry.path)}"]`);
+    matchingEntry?.classList.add(state.fileClipboard.mode === "cut" ? "cut" : "copied");
+  });
+  const countLabel = uniqueEntries.length === 1 ? uniqueEntries[0].name : `${uniqueEntries.length} items`;
+  const verb = state.fileClipboard.mode === "cut" ? "Cut" : "Copied";
+  fileDropStatus.textContent = `${verb} ${countLabel}. Open the destination folder and press ${state.fileClipboard.mode === "cut" ? "Move" : "Paste"}.`;
+  toast(`${countLabel} ${state.fileClipboard.mode === "cut" ? "ready to move" : "copied"}`, "success");
+}
+
+async function copyFileEntry(entry) {
+  return setFileClipboard([entry], "copy");
 }
 
 async function pasteFileEntry() {
-  if (!state.filePath || !state.fileClipboard || !state.features.file_operations) return;
+  if (!state.filePath || !state.fileClipboard?.entries?.length || !state.features.file_operations) return;
   const destination = state.filePath;
-  const clipboard = { ...state.fileClipboard };
+  const clipboard = {
+    mode: state.fileClipboard.mode === "cut" ? "cut" : "copy",
+    entries: [...state.fileClipboard.entries],
+  };
+  const action = clipboard.mode === "cut" ? "move_start" : "copy_start";
+  const verb = clipboard.mode === "cut" ? "Move" : "Copy";
   try {
-    const result = await postFileAction({ action: "copy_start", source: clipboard.path, destination });
-    state.activeCopyJob = result.job_id;
-    updateFileControls();
     fileCopyProgress.hidden = false;
-    fileCopyCancel.disabled = false;
-    fileCopyLabel.textContent = `Preparing ${clipboard.name}…`;
-    fileCopyPercent.textContent = "0%";
-    fileCopySpeed.textContent = "--";
-    fileCopyBar.style.width = "0%";
-    fileCopyDetail.textContent = "Calculating total size…";
-    while (state.activeCopyJob === result.job_id) {
-      const response = await fetch(`/api/files/copy/status?job_id=${encodeURIComponent(result.job_id)}`, { cache: "no-store" });
-      const status = await response.json();
-      if (!response.ok || !status.ok) throw new Error(status.error || "Could not read copy progress");
-      const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
-      fileCopyLabel.textContent = status.status === "preparing"
-        ? `Preparing ${clipboard.name}…`
-        : status.status === "cancelling" ? "Cancelling copy…" : `Copying ${clipboard.name}`;
-      fileCopyPercent.textContent = `${percent.toFixed(percent % 1 ? 1 : 0)}%`;
-      fileCopySpeed.textContent = status.speed_bps ? `${formatCopySize(status.speed_bps)}/s` : (status.status === "running" ? "Measuring…" : "--");
-      fileCopyBar.style.width = `${percent}%`;
-      if (status.total_bytes) {
-        const detail = [`${formatCopySize(status.copied_bytes)} of ${formatCopySize(status.total_bytes)}`];
-        if (status.eta_seconds != null) detail.push(`${formatCopyDuration(status.eta_seconds)} remaining`);
-        if (status.engine_label) detail.push(status.engine_label);
-        if (status.current_file) detail.push(status.current_file);
-        fileCopyDetail.textContent = detail.join(" · ");
-      } else {
-        fileCopyDetail.textContent = status.message || "Calculating total size…";
+    let allCompleted = true;
+    for (let index = 0; index < clipboard.entries.length; index += 1) {
+      const entry = clipboard.entries[index];
+      const result = await postFileAction({ action, source: entry.path, destination });
+      state.activeCopyJob = result.job_id;
+      updateFileControls();
+      fileCopyCancel.disabled = false;
+      fileCopyLabel.textContent = `${verb} ${index + 1} of ${clipboard.entries.length}: ${entry.name}`;
+      fileCopyPercent.textContent = "0%";
+      fileCopySpeed.textContent = "--";
+      fileCopyBar.style.width = "0%";
+      fileCopyDetail.textContent = "Calculating total size…";
+      let completed = false;
+      while (state.activeCopyJob === result.job_id) {
+        const response = await fetch(`/api/files/copy/status?job_id=${encodeURIComponent(result.job_id)}`, { cache: "no-store" });
+        const status = await response.json();
+        if (!response.ok || !status.ok) throw new Error(status.error || "Could not read transfer progress");
+        const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+        const activeVerb = clipboard.mode === "cut" ? "Moving" : "Copying";
+        fileCopyLabel.textContent = status.status === "preparing"
+          ? `Preparing ${index + 1} of ${clipboard.entries.length}: ${entry.name}`
+          : status.status === "cancelling" ? `Cancelling ${activeVerb.toLowerCase()}…` : `${activeVerb} ${index + 1} of ${clipboard.entries.length}: ${entry.name}`;
+        fileCopyPercent.textContent = `${percent.toFixed(percent % 1 ? 1 : 0)}%`;
+        fileCopySpeed.textContent = status.speed_bps ? `${formatCopySize(status.speed_bps)}/s` : (status.status === "running" ? "Measuring…" : "--");
+        fileCopyBar.style.width = `${percent}%`;
+        if (status.total_bytes) {
+          const detail = [`${formatCopySize(status.copied_bytes)} of ${formatCopySize(status.total_bytes)}`];
+          if (status.eta_seconds != null) detail.push(`${formatCopyDuration(status.eta_seconds)} remaining`);
+          if (status.engine_label) detail.push(status.engine_label);
+          if (status.current_file) detail.push(status.current_file);
+          fileCopyDetail.textContent = detail.join(" · ");
+        } else {
+          fileCopyDetail.textContent = status.message || "Calculating total size…";
+        }
+        if (status.status === "completed") {
+          completed = true;
+          break;
+        }
+        if (status.status === "cancelled") {
+          fileCopyLabel.textContent = `${verb} cancelled`;
+          fileCopySpeed.textContent = "--";
+          fileCopyCancel.disabled = true;
+          fileCopyDetail.textContent = status.message || "The incomplete destination was removed.";
+          toast(`${verb} cancelled`, "info");
+          break;
+        }
+        if (status.status === "failed") throw new Error(status.error || `${verb} failed`);
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
       }
-      if (status.status === "completed") {
-        fileCopyLabel.textContent = "Copy complete";
-        fileCopyCancel.disabled = true;
-        fileCopyDetail.textContent = status.message || `${clipboard.name} pasted`;
-        await loadFiles(destination);
-        toast(status.message || `${clipboard.name} pasted`, "success");
-        window.setTimeout(() => { fileCopyProgress.hidden = true; }, 2500);
+      state.activeCopyJob = null;
+      if (!completed) {
+        allCompleted = false;
         break;
       }
-      if (status.status === "cancelled") {
-        fileCopyLabel.textContent = "Copy cancelled";
-        fileCopySpeed.textContent = "--";
-        fileCopyCancel.disabled = true;
-        fileCopyDetail.textContent = status.message || "The incomplete destination was removed.";
-        await loadFiles(destination);
-        toast("Copy cancelled", "info");
-        window.setTimeout(() => { fileCopyProgress.hidden = true; }, 3500);
-        break;
+      if (clipboard.mode === "cut" && state.fileClipboard?.entries) {
+        state.fileClipboard.entries = state.fileClipboard.entries.filter((item) => item.path !== entry.path);
+        if (state.fileClipboard.entries.length) {
+          sessionStorage.setItem("homestart-file-clipboard", JSON.stringify(state.fileClipboard));
+        } else {
+          state.fileClipboard = null;
+          sessionStorage.removeItem("homestart-file-clipboard");
+        }
       }
-      if (status.status === "failed") throw new Error(status.error || "Copy failed");
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
     }
+    await loadFiles(destination);
+    if (!allCompleted) {
+      window.setTimeout(() => { fileCopyProgress.hidden = true; }, 3500);
+      return;
+    }
+    if (clipboard.mode === "cut") {
+      state.fileClipboard = null;
+      sessionStorage.removeItem("homestart-file-clipboard");
+    }
+    fileCopyLabel.textContent = `${verb} complete`;
+    fileCopyCancel.disabled = true;
+    fileCopySpeed.textContent = "--";
+    fileCopyDetail.textContent = `${clipboard.entries.length} item${clipboard.entries.length === 1 ? "" : "s"} ${clipboard.mode === "cut" ? "moved" : "pasted"}`;
+    toast(fileCopyDetail.textContent, "success");
+    window.setTimeout(() => { fileCopyProgress.hidden = true; }, 2500);
   } catch (error) {
     toast(error.message, "error");
-    fileCopyLabel.textContent = "Copy failed";
+    fileCopyLabel.textContent = `${verb} failed`;
     fileCopyCancel.disabled = true;
     fileCopyDetail.textContent = error.message;
     fileCopyProgress.hidden = false;
@@ -1874,11 +2068,23 @@ async function cancelActiveCopy() {
 }
 
 async function deleteFileEntry(entry) {
+  return deleteFileEntries([entry]);
+}
+
+async function deleteFileEntries(entries) {
   if (!state.features.file_operations) return;
-  const confirmed = window.confirm(`Move "${entry.name}" to HomeStart trash?`);
+  const uniqueEntries = [...new Map(entries.map((entry) => [entry.path, entry])).values()];
+  if (!uniqueEntries.length) return;
+  const description = uniqueEntries.length === 1 ? `"${uniqueEntries[0].name}"` : `${uniqueEntries.length} selected items`;
+  const confirmed = window.confirm(`Move ${description} to HomeStart trash?`);
   if (!confirmed) return;
   try {
-    await runFileAction({ action: "delete", path: entry.path });
+    for (const entry of uniqueEntries) {
+      await postFileAction({ action: "delete", path: entry.path });
+    }
+    clearFileSelection();
+    await loadFiles(state.filePath);
+    toast(`${uniqueEntries.length} item${uniqueEntries.length === 1 ? "" : "s"} moved to trash`, "success");
   } catch (error) {
     window.alert(error.message);
   }
@@ -2113,7 +2319,7 @@ function renderRoots() {
       node.classList.add("active");
       wrapper.classList.add("active");
     }
-    node.addEventListener("click", () => loadFiles(root));
+    node.addEventListener("click", () => openFileLocation(root));
     wrapper.appendChild(node);
     if (root === activeRoot) renderCurrentPathBranch(wrapper, root);
     return wrapper;
@@ -2121,7 +2327,7 @@ function renderRoots() {
 
   const driveNodes = state.fileDriveEntries.length
     ? [
-        sectionLabel("Physical disks"),
+        sectionLabel("Physical drives"),
         ...state.fileDriveEntries.map(renderDriveEntry),
       ]
     : [];
@@ -2181,11 +2387,11 @@ function renderDriveNode(entry, isDisk) {
   }
   if (mount) {
     node.tabIndex = 0;
-    node.addEventListener("click", () => loadFiles(mount.path));
+    node.addEventListener("click", () => openFileLocation(mount.path));
     node.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        loadFiles(mount.path);
+        openFileLocation(mount.path);
       }
     });
   }
@@ -2224,6 +2430,16 @@ function rootContainsPath(root, path) {
   return path === root || path.startsWith(`${root}/`);
 }
 
+function setFileLocationsOpen(open) {
+  fileSidebar?.classList.toggle("mobile-open", open);
+  fileLocationsToggle?.setAttribute("aria-expanded", String(open));
+}
+
+function openFileLocation(path) {
+  if (window.matchMedia("(max-width: 980px)").matches) setFileLocationsOpen(false);
+  loadFiles(path);
+}
+
 function renderCurrentPathBranch(wrapper, root) {
   if (!rootContainsPath(root, state.filePath) || state.filePath === root || !state.filePath) return;
   const rootParts = root.split("/").filter(Boolean);
@@ -2244,7 +2460,7 @@ function renderCurrentPathBranch(wrapper, root) {
     child.querySelector("strong").textContent = part;
     child.classList.toggle("current", current === state.filePath);
     const target = current;
-    child.addEventListener("click", () => loadFiles(target));
+    child.addEventListener("click", () => openFileLocation(target));
     branch.appendChild(child);
   });
   wrapper.appendChild(branch);
@@ -2547,15 +2763,17 @@ async function loadFiles(path = "") {
   filePathNode.placeholder = "Available roots";
   fileLocationName.textContent = currentFolderName(state.filePath);
   const entries = data.entries || [];
+  state.fileEntries = entries;
   const folderCount = entries.filter((entry) => entry.type === "directory").length;
   const fileOnlyCount = entries.length - folderCount;
   fileCount.textContent = state.filePath
     ? `${entries.length} item${entries.length === 1 ? "" : "s"} · ${folderCount} folder${folderCount === 1 ? "" : "s"} · ${fileOnlyCount} file${fileOnlyCount === 1 ? "" : "s"}`
     : `${entries.length} location${entries.length === 1 ? "" : "s"}`;
   fileUp.disabled = !state.fileParent && !state.filePath;
+  state.selectedFiles.clear();
   updateFileControls();
   renderRoots();
-  filesNode.replaceChildren(...entries.map(renderFileEntry));
+  renderSortedFiles();
   if (sambaUseCurrent) sambaUseCurrent.disabled = !state.filePath;
 }
 
@@ -2832,13 +3050,6 @@ navItems.forEach((item) => {
   item.addEventListener("click", () => setView(item.dataset.view));
 });
 
-settingsSectionButtons.forEach((button) => {
-  button.addEventListener("click", () => {
-    settingsSectionButtons.forEach((item) => item.classList.toggle("active", item === button));
-    document.querySelector(`#${button.dataset.settingsTarget}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-});
-
 search.addEventListener("input", () => {
   state.query = search.value;
   render();
@@ -2908,6 +3119,10 @@ fileUp.addEventListener("click", () => loadFiles(state.fileParent));
 fileHome.addEventListener("click", () => loadFiles(""));
 fileNewFolder.addEventListener("click", createFolder);
 filePaste.addEventListener("click", pasteFileEntry);
+fileSelectionCopy?.addEventListener("click", () => setFileClipboard(selectedFileEntries(), "copy"));
+fileSelectionCut?.addEventListener("click", () => setFileClipboard(selectedFileEntries(), "cut"));
+fileSelectionDelete?.addEventListener("click", () => deleteFileEntries(selectedFileEntries()));
+fileSelectionClear?.addEventListener("click", clearFileSelection);
 fileCopyCancel?.addEventListener("click", cancelActiveCopy);
 fileUpload.addEventListener("change", () => {
   const selected = [...(fileUpload.files || [])];
@@ -2923,6 +3138,10 @@ document.addEventListener("pointerdown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeFileContextMenu();
+  if (event.key === "Delete" && state.view === "files" && state.selectedFiles.size && !event.target.closest("input, textarea, select")) {
+    event.preventDefault();
+    deleteFileEntries(selectedFileEntries()).catch((error) => toast(error.message, "error"));
+  }
 });
 restoreIgnoredAlerts.addEventListener("click", () => {
   localStorage.removeItem("homestart-ignored-alerts");
@@ -2941,6 +3160,18 @@ fileMain.addEventListener("drop", (event) => {
   event.preventDefault();
   setFileDropActive(false);
   uploadDroppedFiles([...event.dataTransfer.files]).catch(console.error);
+});
+fileSortButtons.forEach((button) => {
+  button.addEventListener("click", () => setFileSort(button.dataset.fileSort, true));
+});
+fileSortMobile?.addEventListener("change", () => setFileSort(fileSortMobile.value));
+fileSortDirection?.addEventListener("click", () => {
+  state.fileSort.direction = state.fileSort.direction === "asc" ? "desc" : "asc";
+  localStorage.setItem("homestart-file-sort", JSON.stringify(state.fileSort));
+  renderSortedFiles();
+});
+fileLocationsToggle?.addEventListener("click", () => {
+  setFileLocationsOpen(!fileSidebar?.classList.contains("mobile-open"));
 });
 load().catch((error) => {
   if (hostNode) {

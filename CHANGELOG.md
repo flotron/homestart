@@ -4,6 +4,35 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260728-3050
+
+- Replaced the compressed horizontal File Browser location tree on phones and
+  tablets with a full-width, touch-friendly **Locations and drives** panel.
+  It starts collapsed and closes automatically after choosing a location.
+
+- Added persistent File Browser sorting by name, modification time or size,
+  with ascending and descending controls in desktop column headings and a
+  compact equivalent on phones. Folders remain grouped before files.
+
+- Removed the redundant Settings section menu so every settings card uses the
+  full content width, especially on phones where the menu compressed forms
+  into an unusably narrow column.
+
+- Added persistent multi-selection to the File Browser through checkboxes,
+  Ctrl/Cmd-click and mobile long-press, with grouped Copy, Cut, Trash and Clear
+  actions.
+- Added multi-item clipboard support. Copy and cut operations run sequentially
+  through the existing progress panel, preserving speed, byte progress, ETA
+  and safe cancellation for each item.
+- Added Cut/Move support. Moves inside one filesystem use an immediate native
+  rename; moves across filesystems copy with progress and remove the source
+  only after the destination completes successfully.
+- Renamed **Physical disks** to **Physical drives** in the Overview and File
+  Browser navigation.
+- Improved File Browser errors for inaccessible desktop/devmon mounts under
+  `/media`, explaining that their Linux mount ownership or options must allow
+  the HomeStart service to traverse and read the path.
+
 ## 20260728-3040
 
 - Redesigned the interface around a denser, more purposeful dashboard that
