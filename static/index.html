@@ -595,8 +595,38 @@
           </section>
 
           <section class="settings-panel" id="settings-backups">
-            <div class="section-head"><div><h2>Backups</h2><p>Download HomeStart configuration, history and custom app icons to this device.</p></div><button id="backup-create" type="button">Download backup</button></div>
+            <div class="section-head">
+              <div><h2>Backups</h2><p>Download or restore HomeStart configuration, history, account and custom app icons.</p></div>
+              <div class="actions">
+                <button id="backup-create" class="backup-download-button" type="button">Download backup</button>
+                <label class="backup-restore-picker">
+                  <span>Restore backup</span>
+                  <input id="backup-restore-file" type="file" accept=".tar.gz,.tgz,application/gzip" />
+                </label>
+              </div>
+            </div>
             <p class="form-note">Your browser controls the destination. Enable “Ask where to save each file” in its download settings to choose a Windows folder or network drive.</p>
+            <div id="backup-download-progress" class="backup-download-progress" hidden>
+              <div class="backup-progress-copy">
+                <strong id="backup-download-title">Preparing backup…</strong>
+                <span id="backup-download-detail">Collecting and compressing HomeStart data.</span>
+              </div>
+              <div class="backup-progress-track" role="progressbar" aria-label="Backup download progress">
+                <span id="backup-download-bar"></span>
+              </div>
+            </div>
+            <div id="backup-restore-preview" class="backup-restore-preview" hidden>
+              <div>
+                <span class="eyebrow">RESTORE PREVIEW</span>
+                <strong id="backup-restore-name"></strong>
+                <p id="backup-restore-components" class="form-note"></p>
+              </div>
+              <div class="actions">
+                <button id="backup-restore-cancel" type="button" class="secondary">Cancel</button>
+                <button id="backup-restore-confirm" type="button" class="danger">Restore and restart</button>
+              </div>
+            </div>
+            <p id="backup-restore-status" class="form-note" aria-live="polite"></p>
           </section>
 
           <section class="settings-panel" id="settings-network">

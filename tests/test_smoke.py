@@ -84,6 +84,7 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
             side_effect=AssertionError("snapshot invoked smartctl"),
         ):
             self.assertEqual(monitor.snapshot(disks)["/dev/sda"]["status"], "checking")
+
         with mock.patch.object(
             monitor,
             "_read",
@@ -123,6 +124,35 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
         self.assertEqual(top["pid"], 123)
         self.assertEqual(top["percent"], 20)
         self.assertEqual(top["kind"], "host_container")
+
+    def test_gpu_monitor_hints_follow_detected_hardware(self):
+        from homestart import server as server_module
+
+        with tempfile.TemporaryDirectory() as temporary:
+            drm = Path(temporary)
+            vendor = drm / "card0" / "device" / "vendor"
+            vendor.parent.mkdir(parents=True)
+            vendor.write_text("0x10de\n", encoding="utf-8")
+            self.assertEqual(server_module.detected_gpu_vendors(drm), ["NVIDIA"])
+
+        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["NVIDIA"]), \
+                mock.patch.object(server_module.shutil, "which", return_value=None), \
+                mock.patch.object(server_module, "nvidia_driver_branch", return_value="580"):
+            hint = server_module.gpu_monitor_hint()
+        self.assertEqual(hint["vendor"], "NVIDIA")
+        self.assertEqual(hint["command"], "sudo apt install nvidia-utils-580")
+
+        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["Intel"]):
+            self.assertEqual(
+                server_module.gpu_monitor_hint()["command"],
+                "sudo apt install intel-gpu-tools",
+            )
+
+        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["AMD"]):
+            self.assertEqual(
+                server_module.gpu_monitor_hint()["command"],
+                "sudo apt install radeontop",
+            )
 
     def test_smartctl_check_does_not_wake_standby_disks(self):
         from homestart.system.disks import SmartHealthMonitor
@@ -364,6 +394,45 @@ class HomeStartSmokeTests(unittest.TestCase):
         with tarfile.open(fileobj=payload, mode="r:gz") as archive:
             with self.assertRaises(ValueError):
                 self.app.safe_extract_tar(archive, Path(self.temp.name) / "restore")
+
+    def test_uploaded_backup_is_inspected_staged_and_restored(self):
+        source = Path(self.temp.name) / "uploaded-backup.tar.gz"
+        config = {"dashboard": {"title": "Restored HomeStart"}}
+        database = Path(self.temp.name) / "uploaded.db"
+        connection = self.app.sqlite3.connect(database)
+        connection.execute("CREATE TABLE restored (value TEXT)")
+        connection.commit()
+        connection.close()
+        with tarfile.open(source, "w:gz") as archive:
+            config_bytes = json.dumps(config).encode("utf-8")
+            config_info = tarfile.TarInfo("config.json")
+            config_info.size = len(config_bytes)
+            archive.addfile(config_info, io.BytesIO(config_bytes))
+            archive.add(database, arcname="data/homestart.db")
+
+        inspection = self.app.inspect_backup_archive(source)
+        self.assertIn("HomeStart settings", inspection["components"])
+        self.assertIn("Metrics and Speedtest history", inspection["components"])
+
+        self.app.BACKUP_DIR = Path(self.temp.name) / "backups"
+        self.app.DB_PATH = Path(self.temp.name) / "restored.db"
+        with mock.patch.object(self.app, "save_config_file") as save_config:
+            result = self.app.restore_backup_file(source, "test backup")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restart"])
+        self.assertTrue(self.app.DB_PATH.is_file())
+        self.assertTrue((self.app.BACKUP_DIR / result["safety_backup"]).is_file())
+        save_config.assert_called_once_with(config)
+
+    def test_backup_inspection_rejects_unrelated_archives(self):
+        source = Path(self.temp.name) / "unrelated.tar.gz"
+        with tarfile.open(source, "w:gz") as archive:
+            content = b"not a backup"
+            info = tarfile.TarInfo("unrelated.txt")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        with self.assertRaisesRegex(ValueError, "unsupported file"):
+            self.app.inspect_backup_archive(source)
 
     def test_file_trash_can_be_restored(self):
         root = Path(self.temp.name) / "files"
