@@ -295,6 +295,12 @@ Updates preserve:
 Authentication sessions and the one-time setup code are not included in manual
 backups. Restoring the account database closes existing sessions.
 
+Downloaded backups can be restored from `Settings > Backups`. HomeStart
+validates the archive, previews the components it contains, creates a local
+safety backup, restores the selected archive and restarts the service. Program
+files, Linux packages, containers, Compose application data, Samba credentials,
+trash and active sessions are intentionally not restored.
+
 The updater validates package metadata and rejects installer archives.
 
 HomeStart can also check GitHub releases from `Settings > Updates`. The

@@ -232,6 +232,17 @@ const logsClose = document.querySelector("#logs-close");
 const toastRegion = document.querySelector("#toast-region");
 const generalSettingsForm = document.querySelector("#general-settings-form");
 const backupCreate = document.querySelector("#backup-create");
+const backupDownloadProgress = document.querySelector("#backup-download-progress");
+const backupDownloadTitle = document.querySelector("#backup-download-title");
+const backupDownloadDetail = document.querySelector("#backup-download-detail");
+const backupDownloadBar = document.querySelector("#backup-download-bar");
+const backupRestoreFile = document.querySelector("#backup-restore-file");
+const backupRestorePreview = document.querySelector("#backup-restore-preview");
+const backupRestoreName = document.querySelector("#backup-restore-name");
+const backupRestoreComponents = document.querySelector("#backup-restore-components");
+const backupRestoreCancel = document.querySelector("#backup-restore-cancel");
+const backupRestoreConfirm = document.querySelector("#backup-restore-confirm");
+const backupRestoreStatus = document.querySelector("#backup-restore-status");
 const trashList = document.querySelector("#trash-list");
 const trashSummary = document.querySelector("#trash-summary");
 const trashRetention = document.querySelector("#trash-retention");
@@ -1352,13 +1363,26 @@ async function loadSystem() {
 
   if (data.gpu?.available) {
     setMeterVisual(gpuValue, gpuBar, gpuRing, data.gpu.percent);
+    gpuDetail.classList.remove("gpu-monitor-hint");
     const freq = data.gpu.frequency_mhz ? `${data.gpu.frequency_mhz} MHz` : "no frequency";
     const count = data.gpu.count > 1 ? `${data.gpu.count} GPUs · ` : "";
     gpuDetail.textContent = data.gpu.percent === null ? `${count}${freq} · calculating usage` : `${count}${freq}`;
     renderGpuList(data.gpus || []);
   } else {
     setMeterVisual(gpuValue, gpuBar, gpuRing, null);
-    gpuDetail.textContent = "No counter available";
+    const hint = data.gpu?.monitor_hint;
+    gpuDetail.replaceChildren();
+    const title = document.createElement("strong");
+    title.textContent = hint?.title || "No GPU counter detected";
+    const message = document.createElement("span");
+    message.textContent = hint?.message || "Install a compatible GPU monitoring utility.";
+    gpuDetail.append(title, message);
+    if (hint?.command) {
+      const command = document.createElement("code");
+      command.textContent = hint.command;
+      gpuDetail.appendChild(command);
+    }
+    gpuDetail.classList.add("gpu-monitor-hint");
     renderGpuList([]);
   }
 }
@@ -2175,12 +2199,42 @@ async function saveGeneralSettings(event) {
 
 async function createBackupFromUi() {
   backupCreate.disabled = true;
+  backupCreate.classList.add("is-working");
+  backupCreate.textContent = "Preparing…";
+  backupDownloadProgress.hidden = false;
+  backupDownloadProgress.classList.add("is-indeterminate");
+  backupDownloadTitle.textContent = "Preparing backup…";
+  backupDownloadDetail.textContent = "Collecting and compressing HomeStart data. Large histories may take a moment.";
+  backupDownloadBar.style.width = "36%";
   try {
     const response = await fetch("/api/backups/download", { cache: "no-store" });
     if (!response.ok) throw new Error("Backup failed");
     const disposition = response.headers.get("Content-Disposition") || "";
     const filename = disposition.match(/filename=([^;]+)/i)?.[1]?.replace(/["']/g, "") || "homestart-backup.tar.gz";
-    const url = URL.createObjectURL(await response.blob());
+    const total = Number(response.headers.get("Content-Length")) || 0;
+    const reader = response.body?.getReader();
+    const chunks = [];
+    let received = 0;
+    backupDownloadProgress.classList.remove("is-indeterminate");
+    backupDownloadTitle.textContent = "Downloading backup…";
+    backupCreate.textContent = "Downloading…";
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        const percent = total ? Math.min(100, (received / total) * 100) : 0;
+        backupDownloadBar.style.width = total ? `${percent}%` : "100%";
+        backupDownloadDetail.textContent = total
+          ? `${formatFileSize(received)} of ${formatFileSize(total)} · ${percent.toFixed(0)}%`
+          : `${formatFileSize(received)} received`;
+      }
+    } else {
+      chunks.push(new Uint8Array(await response.arrayBuffer()));
+      received = chunks[0].byteLength;
+    }
+    const url = URL.createObjectURL(new Blob(chunks, { type: "application/gzip" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = filename;
@@ -2188,9 +2242,84 @@ async function createBackupFromUi() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    backupDownloadBar.style.width = "100%";
+    backupDownloadTitle.textContent = "Backup ready";
+    backupDownloadDetail.textContent = `${filename} · ${formatFileSize(received || total)}`;
     toast(`Backup ${filename} ready to save`, "success");
-  } catch (error) { toast(error.message, "error"); }
-  finally { backupCreate.disabled = false; }
+  } catch (error) {
+    backupDownloadProgress.classList.remove("is-indeterminate");
+    backupDownloadTitle.textContent = "Backup failed";
+    backupDownloadDetail.textContent = error.message;
+    backupDownloadBar.style.width = "0";
+    toast(error.message, "error");
+  } finally {
+    backupCreate.disabled = false;
+    backupCreate.classList.remove("is-working");
+    backupCreate.textContent = "Download backup";
+  }
+}
+
+let stagedBackupToken = "";
+
+function clearBackupRestore() {
+  stagedBackupToken = "";
+  if (backupRestoreFile) backupRestoreFile.value = "";
+  if (backupRestorePreview) backupRestorePreview.hidden = true;
+  if (backupRestoreStatus) backupRestoreStatus.textContent = "";
+}
+
+async function inspectBackupFromUi() {
+  const file = backupRestoreFile?.files?.[0];
+  if (!file) return;
+  stagedBackupToken = "";
+  backupRestorePreview.hidden = true;
+  backupRestoreStatus.textContent = `Inspecting ${file.name}…`;
+  backupRestoreFile.disabled = true;
+  try {
+    const response = await fetch("/api/backups/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/gzip" },
+      body: file,
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "The backup could not be inspected");
+    stagedBackupToken = data.token;
+    backupRestoreName.textContent = `${file.name} · ${formatFileSize(data.size)}`;
+    backupRestoreComponents.textContent = `Will restore: ${data.components.join(", ")}. HomeStart will first create a safety backup.`;
+    backupRestorePreview.hidden = false;
+    backupRestoreStatus.textContent = "Backup validated. Review the contents before restoring.";
+  } catch (error) {
+    backupRestoreStatus.textContent = error.message;
+    toast(error.message, "error");
+    backupRestoreFile.value = "";
+  } finally {
+    backupRestoreFile.disabled = false;
+  }
+}
+
+async function restoreBackupFromUi() {
+  if (!stagedBackupToken) return;
+  if (!window.confirm("Restore this backup now? HomeStart will create a safety backup, replace the listed data and restart.")) return;
+  backupRestoreConfirm.disabled = true;
+  backupRestoreCancel.disabled = true;
+  backupRestoreStatus.textContent = "Restoring backup and preparing restart…";
+  try {
+    const response = await fetch("/api/backups/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: stagedBackupToken }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "Backup restore failed");
+    backupRestoreStatus.textContent = `Restore complete. Safety backup: ${data.safety_backup}. HomeStart is restarting…`;
+    toast("Backup restored. HomeStart is restarting.", "success");
+    setTimeout(() => window.location.reload(), 5000);
+  } catch (error) {
+    backupRestoreStatus.textContent = error.message;
+    toast(error.message, "error");
+    backupRestoreConfirm.disabled = false;
+    backupRestoreCancel.disabled = false;
+  }
 }
 
 async function loadTrash() {
@@ -3216,3 +3345,6 @@ logsClose?.addEventListener("click", () => logsDialog.close());
 generalSettingsForm?.addEventListener("submit", saveGeneralSettings);
 document.querySelector("#setting-accent")?.addEventListener("input", (event) => applyAccentColor(event.target.value));
 backupCreate?.addEventListener("click", createBackupFromUi);
+backupRestoreFile?.addEventListener("change", () => inspectBackupFromUi().catch(console.error));
+backupRestoreCancel?.addEventListener("click", clearBackupRestore);
+backupRestoreConfirm?.addEventListener("click", () => restoreBackupFromUi().catch(console.error));

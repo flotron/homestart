@@ -164,9 +164,14 @@ class ApiRouter:
                 b.auth_security_action(handler, self.json_body(handler))
             elif route == "/api/settings/general":
                 handler.send_json(b.update_settings(self.json_body(handler)))
+            elif route == "/api/backups/inspect":
+                handler.send_json(b.stage_backup_upload(handler))
             elif route == "/api/backups/restore":
                 payload = self.json_body(handler)
-                handler.send_json(b.restore_backup(payload.get("name", "")))
+                if payload.get("token"):
+                    handler.send_json(b.restore_staged_backup(payload.get("token", "")))
+                else:
+                    handler.send_json(b.restore_backup(payload.get("name", "")))
             elif route == "/api/trash/restore":
                 payload = self.json_body(handler)
                 handler.send_json(b.restore_trash_item(payload.get("key", "")))

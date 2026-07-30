@@ -114,6 +114,10 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "homestart.db"
 BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_STAGING_DIR = DATA_DIR / "restore-staging"
+MAX_BACKUP_UPLOAD_SIZE = 1024 * 1024 * 1024
+MAX_BACKUP_EXTRACTED_SIZE = 4 * 1024 * 1024 * 1024
+BACKUP_STAGE_TTL_SECONDS = 60 * 60
 TRASH_DIR = DATA_DIR / "trash"
 TRASH_INDEX = DATA_DIR / "trash.json"
 TRASH_LAST_CLEANUP = 0
@@ -1511,6 +1515,86 @@ def nvidia_gpus_payload():
     return gpus
 
 
+GPU_VENDOR_NAMES = {
+    "0x10de": "NVIDIA",
+    "0x8086": "Intel",
+    "0x1002": "AMD",
+}
+
+
+def detected_gpu_vendors(drm_root=Path("/sys/class/drm")):
+    vendors = []
+    try:
+        cards = sorted(drm_root.glob("card[0-9]*"))
+    except OSError:
+        return vendors
+    for card in cards:
+        try:
+            vendor_id = (card / "device" / "vendor").read_text(
+                encoding="utf-8", errors="replace",
+            ).strip().lower()
+        except OSError:
+            continue
+        vendor = GPU_VENDOR_NAMES.get(vendor_id)
+        if vendor and vendor not in vendors:
+            vendors.append(vendor)
+    return vendors
+
+
+def nvidia_driver_branch(version_path=Path("/proc/driver/nvidia/version")):
+    try:
+        text = version_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"(?:Kernel Module|NVRM version:.*?Kernel Module)\s+(\d+)", text)
+    return match.group(1) if match else None
+
+
+def gpu_monitor_hint(vendors=None):
+    vendors = vendors if vendors is not None else detected_gpu_vendors()
+    if "NVIDIA" in vendors:
+        if shutil.which("nvidia-smi"):
+            return {
+                "vendor": "NVIDIA",
+                "title": "NVIDIA counter unavailable",
+                "message": "nvidia-smi is installed but cannot read the GPU. Check that the NVIDIA driver and userspace libraries use the same version.",
+                "command": "nvidia-smi",
+            }
+        branch = nvidia_driver_branch()
+        if branch:
+            command = f"sudo apt install nvidia-utils-{branch}"
+            message = f"Install the NVIDIA {branch} monitoring utilities, then restart HomeStart."
+        else:
+            command = "sudo ubuntu-drivers install"
+            message = "Install the recommended NVIDIA driver and its nvidia-smi utility, then restart the server."
+        return {
+            "vendor": "NVIDIA",
+            "title": "NVIDIA monitoring utility missing",
+            "message": message,
+            "command": command,
+        }
+    if "Intel" in vendors:
+        return {
+            "vendor": "Intel",
+            "title": "Intel counter unavailable",
+            "message": "HomeStart reads Intel i915 counters directly. Check that the i915 driver and debugfs are available; intel-gpu-tools can help diagnose the GPU.",
+            "command": "sudo apt install intel-gpu-tools",
+        }
+    if "AMD" in vendors:
+        return {
+            "vendor": "AMD",
+            "title": "AMD counter unavailable",
+            "message": "HomeStart needs utilization counters exposed by the amdgpu kernel driver. radeontop can help verify that the GPU is reporting activity.",
+            "command": "sudo apt install radeontop",
+        }
+    return {
+        "vendor": "",
+        "title": "No GPU counter detected",
+        "message": "No supported GPU monitoring interface was found. NVIDIA requires nvidia-smi; Intel uses the built-in i915 counters; AMD requires amdgpu counters.",
+        "command": "",
+    }
+
+
 def summarize_gpus(gpus):
     available = [gpu for gpu in gpus if gpu.get("available")]
     if not available:
@@ -1552,6 +1636,8 @@ def system_payload(network_channel=None):
         }
         gpus = [intel_gpu] if intel_gpu["available"] else []
         gpu = summarize_gpus(gpus)
+    if not gpu.get("available"):
+        gpu["monitor_hint"] = gpu_monitor_hint()
     payload = {
         "timestamp": int(time.time()),
         "cpu": {
@@ -3535,7 +3621,9 @@ def create_backup(destination=None):
         destination = BACKUP_DIR / f"homestart-backup-{stamp}.tar.gz"
     else:
         destination = Path(destination)
-    with tarfile.open(destination, "w:gz") as archive:
+    # Metrics history can make this archive large. Level 1 keeps the portable
+    # .tar.gz format while avoiding long CPU-bound waits on homelab hardware.
+    with tarfile.open(destination, "w:gz", compresslevel=1) as archive:
         if CONFIG_PATH.exists():
             archive.add(CONFIG_PATH, arcname="config.json")
         if DB_PATH.exists():
@@ -3547,6 +3635,7 @@ def create_backup(destination=None):
             archive.add(APP_ICON_DIR, arcname="data/app-icons")
         if APP_ICON_INDEX.exists():
             archive.add(APP_ICON_INDEX, arcname="data/app-icons.json")
+    destination.chmod(0o600)
     return {"ok": True, "name": destination.name, "size": destination.stat().st_size, "created_at": int(destination.stat().st_mtime)}
 
 
@@ -3595,9 +3684,164 @@ def safe_extract_tar(archive, destination):
     archive.extractall(destination)
 
 
-def restore_backup(name):
-    source = backup_path(name)
-    create_backup()
+def cleanup_staged_backups():
+    BACKUP_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - BACKUP_STAGE_TTL_SECONDS
+    for item in BACKUP_STAGING_DIR.glob("*.tar.gz"):
+        try:
+            if item.stat().st_mtime < cutoff:
+                item.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def inspect_backup_archive(source):
+    source = Path(source)
+    if not source.is_file():
+        raise FileNotFoundError("Backup not found")
+    if source.stat().st_size > MAX_BACKUP_UPLOAD_SIZE:
+        raise ValueError("Backup is larger than the 1 GB upload limit")
+
+    allowed_files = {
+        "config.json": "HomeStart settings",
+        "data/homestart.db": "Metrics and Speedtest history",
+        "data/auth-users.json": "Owner account",
+        "data/app-icons.json": "Custom app icon index",
+    }
+    components = []
+    seen_components = set()
+    extracted_size = 0
+    member_count = 0
+    with tarfile.open(source, "r:gz") as archive:
+        members = archive.getmembers()
+        for member in members:
+            member_count += 1
+            if member_count > 10000:
+                raise ValueError("Backup contains too many entries")
+            path = Path(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("Backup contains an invalid path")
+            if member.issym() or member.islnk() or member.isdev():
+                raise ValueError("Backup contains an unsupported entry")
+            if member.isfile():
+                extracted_size += max(0, member.size)
+                if extracted_size > MAX_BACKUP_EXTRACTED_SIZE:
+                    raise ValueError("Backup expands beyond the 4 GB safety limit")
+                name = path.as_posix()
+                if name in allowed_files:
+                    component = allowed_files[name]
+                elif name.startswith("data/app-icons/"):
+                    component = "Custom app icons"
+                else:
+                    raise ValueError(f"Backup contains an unsupported file: {name}")
+                if component not in seen_components:
+                    seen_components.add(component)
+                    components.append(component)
+
+        if not components:
+            raise ValueError("The archive does not contain a HomeStart backup")
+
+        for name in ("config.json", "data/auth-users.json", "data/app-icons.json"):
+            try:
+                member = archive.getmember(name)
+            except KeyError:
+                continue
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError(f"Backup entry cannot be read: {name}")
+            try:
+                payload = json.load(stream)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError(f"Backup contains invalid JSON in {name}") from error
+            if not isinstance(payload, dict):
+                raise ValueError(f"Backup contains invalid data in {name}")
+            if name == "data/auth-users.json":
+                users = payload.get("users")
+                if not isinstance(users, list) or not users:
+                    raise ValueError("Backup does not contain a valid owner account")
+                owner = users[0]
+                if (
+                    not isinstance(owner, dict)
+                    or not str(owner.get("id") or "").strip()
+                    or not str(owner.get("username") or "").strip()
+                    or not str(owner.get("password") or "").startswith("scrypt$")
+                ):
+                    raise ValueError("Backup does not contain a valid owner account")
+
+        try:
+            database_member = archive.getmember("data/homestart.db")
+        except KeyError:
+            database_member = None
+        if database_member is not None:
+            stream = archive.extractfile(database_member)
+            if stream is None or stream.read(16) != b"SQLite format 3\x00":
+                raise ValueError("Backup contains an invalid HomeStart database")
+
+    return {
+        "ok": True,
+        "size": source.stat().st_size,
+        "extracted_size": extracted_size,
+        "components": components,
+    }
+
+
+def stage_backup_upload(handler):
+    try:
+        length = int(handler.headers.get("Content-Length", "0"))
+    except ValueError as error:
+        raise ValueError("Invalid backup upload size") from error
+    if length <= 0:
+        raise ValueError("Choose a HomeStart backup file")
+    if length > MAX_BACKUP_UPLOAD_SIZE:
+        raise ValueError("Backup is larger than the 1 GB upload limit")
+
+    cleanup_staged_backups()
+    token = uuid.uuid4().hex
+    destination = BACKUP_STAGING_DIR / f"{token}.tar.gz"
+    remaining = length
+    try:
+        with destination.open("wb") as output:
+            destination.chmod(0o600)
+            while remaining:
+                chunk = handler.rfile.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("Backup upload ended unexpectedly")
+                output.write(chunk)
+                remaining -= len(chunk)
+        inspection = inspect_backup_archive(destination)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return {**inspection, "token": token}
+
+
+def staged_backup_path(token):
+    clean = str(token or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", clean):
+        raise ValueError("Invalid or expired restore request")
+    cleanup_staged_backups()
+    target = BACKUP_STAGING_DIR / f"{clean}.tar.gz"
+    if not target.is_file():
+        raise FileNotFoundError("The inspected backup expired; choose it again")
+    return target
+
+
+def atomic_restore_file(source, destination, mode=None):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.restore-{uuid.uuid4().hex}")
+    try:
+        shutil.copy2(source, temporary)
+        if mode is not None:
+            temporary.chmod(mode)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def restore_backup_file(source, display_name=None):
+    source = Path(source)
+    inspection = inspect_backup_archive(source)
+    safety_backup = create_backup()
     with tempfile.TemporaryDirectory(prefix="homestart-restore-") as directory:
         target = Path(directory)
         with tarfile.open(source, "r:gz") as archive:
@@ -3609,14 +3853,12 @@ def restore_backup(name):
             restored.append("config.json")
         database = target / "data/homestart.db"
         if database.exists():
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(database, DB_PATH)
+            atomic_restore_file(database, DB_PATH)
             restored.append("data/homestart.db")
         users = target / "data/auth-users.json"
         if users.exists():
             manager = auth_manager()
-            shutil.copy2(users, manager.users_path)
-            manager.users_path.chmod(0o600)
+            atomic_restore_file(users, manager.users_path, 0o600)
             manager.setup_token_path.unlink(missing_ok=True)
             manager.revoke_all_sessions()
             restored.append("data/auth-users.json")
@@ -3628,9 +3870,34 @@ def restore_backup(name):
             restored.append("data/app-icons")
         index = target / "data/app-icons.json"
         if index.exists():
-            shutil.copy2(index, APP_ICON_INDEX)
+            atomic_restore_file(index, APP_ICON_INDEX)
             restored.append("data/app-icons.json")
-    return {"ok": True, "restored": restored, "message": f"Restored {source.name}"}
+    return {
+        "ok": True,
+        "restored": restored,
+        "components": inspection["components"],
+        "safety_backup": safety_backup["name"],
+        "session_revoked": "data/auth-users.json" in restored,
+        "restart": True,
+        "message": f"Restored {display_name or source.name}",
+    }
+
+
+def restore_backup(name):
+    source = backup_path(name)
+    result = restore_backup_file(source)
+    restart_service_later()
+    return result
+
+
+def restore_staged_backup(token):
+    source = staged_backup_path(token)
+    try:
+        result = restore_backup_file(source, "uploaded backup")
+    finally:
+        source.unlink(missing_ok=True)
+    restart_service_later()
+    return result
 
 
 def serve_download(handler, raw_path, include_body=True):
