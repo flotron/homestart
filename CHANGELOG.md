@@ -4,36 +4,25 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
-## 20260730-3070-test4
-
-- Fixed the Download backup accent style being overridden by the generic
-  Settings action-button rule.
-
-## 20260730-3070-test3
-
-- Added an always-visible accented Download backup button and a two-stage
-  progress display: animated preparation while the archive is built, followed
-  by transferred size and percentage while the browser receives it.
-- Changed backup gzip compression to its fast level, substantially reducing
-  long CPU-bound waits while retaining the portable `.tar.gz` format.
-
-## 20260730-3070-test2
-
-- Added a graphical backup restore flow in Settings. Downloaded `.tar.gz`
-  backups can now be selected from the browser, validated and previewed before
-  restoration.
-- A local safety backup is created before replacement, supported files are
-  restored atomically where applicable, owner sessions are revoked when account
-  data is restored, and HomeStart restarts automatically.
-- Added upload, archive traversal, entry count and extracted-size protections;
-  unrelated or malformed archives are rejected before live data is changed.
-
-## 20260729-3070-test1
+## 20260730-3070
 
 - Replaced the empty GPU card's generic message with hardware-aware monitoring
   guidance. NVIDIA systems distinguish a missing matching `nvidia-utils`
   package from a broken `nvidia-smi`/driver pairing; Intel and AMD systems show
   their relevant driver counters and diagnostic utility.
+- Added a graphical backup restore flow in Settings. Downloaded `.tar.gz`
+  backups can now be selected, validated and previewed before restoration.
+- HomeStart creates a safety backup before replacement, restores supported
+  files atomically where applicable, revokes restored owner sessions and
+  restarts automatically.
+- Added archive traversal, entry count, upload and extracted-size protections.
+  Unrelated or malformed archives are rejected before live data is changed.
+- Added a two-stage backup progress display: animated preparation followed by
+  transferred size and percentage while the browser receives the archive.
+- Switched backups to fast gzip compression to reduce CPU-bound waiting while
+  retaining the portable `.tar.gz` format.
+- Fixed the Download backup accent style being overridden by the generic
+  Settings action-button rule.
 
 ## 20260728-3060
 
