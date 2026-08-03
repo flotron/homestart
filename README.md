@@ -33,7 +33,10 @@ and apply local or GitHub release updates without bundling private runtime data.
   start, stop, restart, image updates and stack-wide uninstall.
 - Compose uninstall can preserve volumes and app data or remove named volumes
   plus HomeStart-managed data. External bind-mounted folders are never deleted.
-- Native web discovery: detects Apache/Nginx virtual hosts from enabled config files.
+- Native web discovery: detects Apache/Nginx virtual hosts and automatically
+  identifies other host applications by correlating listening HTTP/HTTPS ports
+  with their Linux process and `systemd` service. Infrastructure protocols,
+  containers and internal services are filtered from the Apps view.
 - File Browser: Windows-like navigation, full path address bar, physical disk/USB shortcuts, drag and drop, copy/paste with progress, live speed, ETA and safe cancellation, recursive properties, rename, recoverable trash, downloads, folder ZIPs, new folders, and an optional Samba Share Manager.
 - Large copies prefer native GNU `cp` with automatic kernel optimizations and
   transparently fall back to the portable buffered engine when unavailable.
@@ -361,6 +364,12 @@ Use `Apps` to discover and control services:
   uninstall command when configured.
 
 Docker images and volumes are preserved by uninstall.
+
+HomeStart also probes native TCP listeners and includes the ones that actually
+speak HTTP or HTTPS. Auto-detected cards show their process or `systemd` unit
+and open the application through the server's LAN address. Loopback-only web
+services are identified but deliberately do not expose a non-working remote
+link. Discovery is cached and refreshed in the background.
 
 Recommended App Store entries declare their own installation fields and Compose
 services in `flotron/homestart-apps`. HomeStart downloads and validates the

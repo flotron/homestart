@@ -33,6 +33,10 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   `smartctl -n standby,3` prevents supported sleeping disks from being spun up.
 - `homestart/system/processes.py` attributes short-interval procfs CPU deltas
   to the current top host process or container.
+- `homestart/system/webapps.py` discovers native web applications by joining
+  TCP listeners with procfs and systemd metadata, validating HTTP/HTTPS with
+  bounded concurrent probes, filtering infrastructure services and serving a
+  background-refreshed cache to the Apps API.
 - `homestart/docker/projects.py` owns managed Compose project discovery,
   lifecycle actions, protected data removal and template risk analysis.
 - `homestart/docker/store.py` owns declarative catalog validation, placeholder

@@ -4,6 +4,16 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260803-3080
+
+- Added general native web application discovery. HomeStart now correlates
+  listening TCP ports with their Linux process and `systemd` unit, verifies
+  HTTP/HTTPS availability and adds useful applications to Apps automatically.
+- Filters infrastructure protocols, Docker-owned listeners, reverse proxies
+  and internal Linux services so Apps remains an application-oriented view.
+- Identifies loopback-only web services without presenting an unusable remote
+  link, and caches discovery with bounded parallel probes to keep Apps fast.
+
 ## 20260730-3070
 
 - Replaced the empty GPU card's generic message with hardware-aware monitoring
