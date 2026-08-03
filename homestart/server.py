@@ -95,6 +95,7 @@ from .system.network_config import (
 )
 from .system.disks import SmartHealthMonitor
 from .system.processes import ProcessCpuTracker
+from .system.webapps import NativeWebAppDiscovery
 from .updates.github import GitHubReleaseClient, update_asset_version
 from .updates.package import (
     TransactionalPackageUpdater,
@@ -178,6 +179,7 @@ AUTH_UNAUTHORIZED_LOG_AT = {}
 AUTH_UNAUTHORIZED_LOG_LOCK = threading.Lock()
 PROCESS_CPU_TRACKER = ProcessCpuTracker()
 SMART_HEALTH_MONITOR = SmartHealthMonitor()
+NATIVE_WEB_APP_DISCOVERY = NativeWebAppDiscovery()
 DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 DOCKER_ARCHITECTURE_CACHE = {}
@@ -1025,6 +1027,18 @@ def native_service_apps():
         )
         apply_uninstall_metadata(app)
         apps.append(app)
+    return apps
+
+
+def native_listener_apps(host):
+    try:
+        home_port = int(os.environ.get("PORT", "80"))
+    except (TypeError, ValueError):
+        home_port = 80
+    apps = NATIVE_WEB_APP_DISCOVERY.snapshot(host, home_port)
+    for app in apps:
+        with_icon(app)
+        apply_uninstall_metadata(app)
     return apps
 
 
@@ -4903,6 +4917,7 @@ def app_payload():
     discovered_docker = managed_compose_apps(host, raw_containers)
     configured = load_config()
     discovered_native = native_web_apps(host)
+    discovered_listeners = native_listener_apps(host)
     discovered_services = native_service_apps()
 
     for app in configured:
@@ -4934,6 +4949,13 @@ def app_payload():
         if normalized_name(app.get("name", "")) not in seen and str(app.get("url") or "") not in seen_urls
     ]
     seen.update(normalized_name(app.get("name", "")) for app in [*discovered, *native_discovered])
+    listener_discovered = [
+        app
+        for app in discovered_listeners
+        if normalized_name(app.get("name", "")) not in seen
+        and str(app.get("url") or "") not in seen_urls
+    ]
+    seen.update(normalized_name(app.get("name", "")) for app in listener_discovered)
     service_discovered = [
         app
         for app in discovered_services
@@ -4943,7 +4965,7 @@ def app_payload():
     return {
         "dashboard": load_config_file().get("dashboard", {}),
         "host": host,
-        "apps": configured + discovered + native_discovered + service_discovered,
+        "apps": configured + discovered + native_discovered + listener_discovered + service_discovered,
         "features": load_config_file().get("features", {}),
     }
 
