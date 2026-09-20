@@ -531,6 +531,18 @@
 
           <div class="settings-workspace">
             <div class="settings-content">
+          <section class="settings-panel" id="settings-power">
+            <div class="section-head">
+              <div><h2>Host power</h2><p>Restart or shut down the entire Linux computer.</p></div>
+            </div>
+            <p id="power-host" class="power-host">Checking host…</p>
+            <div class="power-actions">
+              <button type="button" data-host-power="reboot" disabled>Restart computer</button>
+              <button type="button" data-host-power="poweroff" class="danger" disabled>Shut down computer</button>
+            </div>
+            <p id="power-availability" class="form-note" role="status">Checking power controls…</p>
+          </section>
+
           <section class="settings-panel" id="settings-general">
             <div class="section-head"><div><h2>Appearance and alerts</h2><p>Customize HomeStart without editing config.json.</p></div></div>
             <form id="general-settings-form" class="settings-grid-form">
@@ -725,13 +737,18 @@
         <div class="badges"></div>
         <p class="description"></p>
         <div class="meta"></div>
-        <div class="actions">
+        <div class="app-primary-actions">
           <a class="open" target="_blank" rel="noreferrer">Open</a>
+          <details class="app-controls">
+            <summary>Manage <span aria-hidden="true">⋯</span></summary>
+            <div class="actions">
           <button class="stop" type="button">Stop</button>
           <button class="restart" type="button">Restart</button>
           <button class="update" type="button">Update</button>
           <button class="logs" type="button">Logs</button>
           <button class="uninstall" type="button">Uninstall</button>
+            </div>
+          </details>
         </div>
       </article>
     </template>
@@ -758,10 +775,26 @@
       <pre id="logs-content">Loading…</pre>
     </dialog>
 
+    <dialog id="power-dialog" class="store-dialog power-dialog" aria-labelledby="power-title" aria-describedby="power-description">
+      <form id="power-form">
+        <h2 id="power-title">Host power</h2>
+        <p id="power-description"></p>
+        <label class="power-confirmation"><input id="power-confirmation" type="checkbox" required />
+          <span>I understand that all apps, transfers and shared folders on this computer will be interrupted.</span>
+        </label>
+        <p id="power-progress" class="form-note" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="power-cancel" type="button" class="secondary">Cancel</button>
+          <button id="power-submit" type="submit" class="danger" disabled>Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
 
     <script src="/auth-client.js"></script>
     <script src="/security.js"></script>
+    <script src="/power.js"></script>
     <script src="/app.js"></script>
     <script src="/pwa.js"></script>
   </body>

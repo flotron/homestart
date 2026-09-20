@@ -1880,6 +1880,40 @@ class HomeStartAuthenticationHttpTests(unittest.TestCase):
         connection.close()
         return metadata, result
 
+    def test_host_power_requires_auth_csrf_and_explicit_confirmation(self):
+        payload = {"action": "reboot", "confirmation": "reboot", "hostname": "test-host"}
+        with mock.patch("homestart.system.power.subprocess.run") as command:
+            response, _ = self.request("POST", "/api/system/power", payload)
+            self.assertEqual(response["status"], 401)
+            response, _ = self.request("GET", "/api/system/power")
+            self.assertEqual(response["status"], 401)
+            _, created = self.request("POST", "/api/auth/setup", {
+                "setup_token": self.app.AUTH_MANAGER.ensure_setup_token(),
+                "username": "owner", "password": "test-password",
+            })
+            # Create a session through the actual login endpoint for the cookie.
+            response, session = self.request("POST", "/api/auth/login", {
+                "username": "owner", "password": "test-password",
+            })
+            headers = {"Cookie": response["set_cookie"].split(";", 1)[0]}
+            response, _ = self.request("POST", "/api/system/power", payload, headers)
+            self.assertEqual(response["status"], 403)
+            headers["X-CSRF-Token"] = session["csrf_token"]
+            response, _ = self.request("POST", "/api/system/power", {"action": "reboot"}, headers)
+            self.assertEqual(response["status"], 400)
+            command.assert_not_called()
+            available = {"ok": True, "hostname": "test-host", "available": True,
+                         "reason": "", "pending": None, "boot_id": "test-boot"}
+            command.return_value = self.app.subprocess.CompletedProcess([], 0, "", "")
+            with mock.patch.object(self.app.POWER_MANAGER, "status", return_value=available):
+                response, data = self.request("POST", "/api/system/power", payload, headers)
+                self.assertEqual(response["status"], 202)
+                self.assertTrue(data["accepted"])
+                self.assertEqual(data["pending"]["action"], "reboot")
+                response, _ = self.request("POST", "/api/system/power", payload, headers)
+                self.assertEqual(response["status"], 400)
+                self.assertEqual(command.call_count, 1)
+
     def test_setup_login_protection_and_csrf(self):
         response, status = self.request("GET", "/api/auth/status")
         self.assertEqual(response["status"], 200)

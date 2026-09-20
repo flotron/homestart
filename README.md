@@ -504,3 +504,19 @@ Automated checks and tagged release packaging are defined under
   time, item size, restore, permanent deletion and empty-all actions.
 - Automatic Trash retention is opt-in and can be set to never, 7, 30 or 90
   days. The default is never.
+
+### Restarting or shutting down the computer
+
+Open **Settings → Host power**. Choose **Restart computer** or **Shut down
+computer**, check the computer name and acknowledge that apps, file transfers and
+shared folders will be interrupted. These controls affect the entire Linux host.
+
+The normal systemd shutdown sequence begins about five seconds after acceptance.
+HomeStart checks for a new Linux boot ID after a restart. After shutdown, power the
+computer back on physically or through a remote-power method you already configured.
+Commands are never automatically retried after a lost connection.
+
+Power controls require the native HomeStart service running as root on a systemd
+host, as configured by the installer. Containers and unsupported environments show
+an explanation instead of usable power buttons. Only authenticated, CSRF-protected
+requests with explicit confirmation are accepted.

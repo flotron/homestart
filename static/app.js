@@ -51,8 +51,21 @@ const state = {
   selectedStoreApp: null,
   selectedUninstallApp: null,
   hostArchitecture: "unknown",
-  favorites: new Set(JSON.parse(localStorage.getItem("homestart-favorites") || "[]")),
+  favorites: (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("homestart-favorites") || "[]");
+      return new Set(Array.isArray(saved) ? saved : []);
+    } catch { return new Set(); }
+  })(),
 };
+
+const overviewRequests = new Set();
+async function visibleOverviewRequest(key, task) {
+  if (document.hidden || state.view !== "status" || window.HomeStartPower?.pending || overviewRequests.has(key)) return;
+  overviewRequests.add(key);
+  try { return await task(); }
+  finally { overviewRequests.delete(key); }
+}
 
 const navItems = [...document.querySelectorAll(".nav-item")];
 const viewPanels = [...document.querySelectorAll("[data-view-panel]")];
@@ -589,7 +602,7 @@ function currentTopConsumer(data, direction) {
 }
 
 async function loadLiveNetwork() {
-  if (liveNetworkLoading || document.hidden || state.view !== "status") return;
+  if (liveNetworkLoading || document.hidden || state.view !== "status" || window.HomeStartPower?.pending) return;
   liveNetworkLoading = true;
   try {
     const response = await fetch(`/api/network/live?time=${Date.now()}`, { cache: "no-store" });
@@ -655,7 +668,11 @@ function bandwidthRankingRows(items, period, estimated = false) {
   });
 }
 
-async function loadBandwidthRanking() {
+function loadBandwidthRanking() {
+  return visibleOverviewRequest("loadBandwidthRanking", fetchBandwidthRanking);
+}
+
+async function fetchBandwidthRanking() {
   if (!bandwidthRankingList || document.hidden) return;
   const period = Number(bandwidthRankingPeriod?.value || 3600);
   try {
@@ -688,7 +705,7 @@ async function loadBandwidthRanking() {
 }
 
 async function loadHistory(force = false) {
-  if (document.hidden || state.view !== "status") return;
+  if (document.hidden || state.view !== "status" || window.HomeStartPower?.pending) return;
   const requestedRange = historyRange?.value || 24;
   if (
     !force
@@ -733,7 +750,11 @@ async function loadHistory(force = false) {
   }
 }
 
-async function loadOverview() {
+function loadOverview() {
+  return visibleOverviewRequest("loadOverview", fetchOverview);
+}
+
+async function fetchOverview() {
   const response = await fetch("/api/overview", { cache: "no-store" });
   const data = await response.json();
   let ignored;
@@ -887,9 +908,13 @@ async function runAppAction(app, action, options = {}) {
   }
 }
 
+function appKey(app) {
+  return app.icon_key || normalize(`${app.name}-${app.compose_project || app.docker_name || app.service_name || ""}`);
+}
+
 function render() {
   appsNode.replaceChildren();
-  state.apps.filter(matches).sort((a, b) => Number(state.favorites.has(b.icon_key)) - Number(state.favorites.has(a.icon_key)) || String(a.name).localeCompare(String(b.name))).forEach((app) => {
+  state.apps.filter(matches).sort((a, b) => Number(state.favorites.has(appKey(b))) - Number(state.favorites.has(appKey(a))) || String(a.name).localeCompare(String(b.name))).forEach((app) => {
     const node = template.content.cloneNode(true);
     const card = node.querySelector(".card");
     const icon = node.querySelector(".icon");
@@ -908,10 +933,13 @@ function render() {
     const update = node.querySelector(".update");
     const logs = node.querySelector(".logs");
     const uninstall = node.querySelector(".uninstall");
-    app.action_key = app.icon_key || normalize(`${app.name}-${app.compose_project || app.docker_name || app.service_name || ""}`);
+    app.action_key = appKey(app);
     const favoriteKey = app.icon_key || app.action_key;
     favorite.textContent = state.favorites.has(favoriteKey) ? "★" : "☆";
     favorite.classList.toggle("active", state.favorites.has(favoriteKey));
+    favorite.setAttribute("aria-pressed", String(state.favorites.has(favoriteKey)));
+    favorite.setAttribute("aria-label", `Favorite ${app.name || "app"}`);
+    node.querySelector(".app-controls summary").setAttribute("aria-label", `Manage ${app.name || "app"}`);
     favorite.addEventListener("click", () => {
       state.favorites.has(favoriteKey) ? state.favorites.delete(favoriteKey) : state.favorites.add(favoriteKey);
       localStorage.setItem("homestart-favorites", JSON.stringify([...state.favorites]));
@@ -969,6 +997,10 @@ function render() {
       card.classList.add("disabled");
     }
 
+    open.addEventListener("click", (event) => {
+      if (open.getAttribute("aria-disabled") === "true") event.preventDefault();
+    });
+
     if (app.compose_project && state.features.docker_actions) {
       const startStopAction = app.docker_running ? "stop" : "start";
       stop.textContent = app.docker_running ? "Stop" : "Start";
@@ -1017,6 +1049,12 @@ function render() {
 
     appsNode.appendChild(node);
   });
+  if (!appsNode.childElementCount) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state apps-empty";
+    empty.textContent = state.query ? "No apps match your search. Try another name or port." : "No apps found for this filter.";
+    appsNode.append(empty);
+  }
 }
 
 function formatPercent(value) {
@@ -1348,7 +1386,11 @@ function renderGpuList(gpus = []) {
   });
 }
 
-async function loadSystem() {
+function loadSystem() {
+  return visibleOverviewRequest("loadSystem", fetchSystem);
+}
+
+async function fetchSystem() {
   const response = await fetch("/api/system", { cache: "no-store" });
   const data = await response.json();
 
@@ -1531,7 +1573,11 @@ function renderResourceProcesses() {
   resourceProcesses.replaceChildren(...sortedResourceProcesses().map(renderResourceProcess));
 }
 
-async function loadStatus() {
+function loadStatus() {
+  return visibleOverviewRequest("loadStatus", fetchStatus);
+}
+
+async function fetchStatus() {
   const response = await fetch("/api/status", { cache: "no-store" });
   const data = await response.json();
 
@@ -1559,7 +1605,11 @@ async function uploadAppIcon(app, input) {
   }
 }
 
-async function loadResources() {
+function loadResources() {
+  return visibleOverviewRequest("loadResources", fetchResources);
+}
+
+async function fetchResources() {
   if (!resourcesPanel.open) return;
 
   const response = await fetch("/api/resources", { cache: "no-store" });
@@ -3153,6 +3203,8 @@ function setView(view) {
   state.view = view;
   navItems.forEach((item) => {
     item.classList.toggle("active", item.dataset.view === view);
+    if (item.dataset.view === view) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
   });
   viewPanels.forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.viewPanel === view);
@@ -3172,7 +3224,10 @@ function setView(view) {
     loadTrash().catch(console.error);
     loadSambaShares().catch(console.error);
   }
-  if (view === "settings") loadNetworkSettings().catch(console.error);
+  if (view === "settings") {
+    loadNetworkSettings().catch(console.error);
+    window.HomeStartPower?.refresh();
+  }
 }
 
 navItems.forEach((item) => {
@@ -3314,10 +3369,7 @@ loadOverview().catch(console.error);
 loadHistory(true).catch(console.error);
 loadLiveNetwork().catch(console.error);
 loadBandwidthRanking().catch(console.error);
-loadNetworkSettings().catch(console.error);
 loadGeneralSettings().catch(console.error);
-loadTrash().catch(console.error);
-loadFiles().catch(console.error);
 setInterval(() => loadSystem().catch(console.error), 2000);
 setInterval(() => loadStatus().catch(console.error), 15000);
 setInterval(() => loadOverview().catch(console.error), 30000);
@@ -3326,6 +3378,15 @@ setInterval(() => loadLiveNetwork().catch(console.error), 2000);
 setInterval(() => loadHistory().catch(console.error), 60000);
 setInterval(() => loadBandwidthRanking().catch(console.error), 10000);
 setInterval(updatePermanentClock, 1000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.view === "status") {
+    loadSystem().catch(console.error);
+    loadStatus().catch(console.error);
+    loadOverview().catch(console.error);
+    loadLiveNetwork().catch(console.error);
+    loadHistory().catch(console.error);
+  }
+});
 historyRange?.addEventListener("change", () => loadHistory(true).catch(console.error));
 bandwidthRankingPeriod?.addEventListener("change", () => loadBandwidthRanking().catch(console.error));
 if (sambaRefresh) sambaRefresh.addEventListener("click", () => loadSambaShares().catch(console.error));

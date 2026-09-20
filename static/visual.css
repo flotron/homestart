@@ -943,3 +943,49 @@ button,
       rgb(248 250 252 / .96);
   }
 }
+
+/* 3090: clear app actions and touch-friendly navigation. */
+.app-primary-actions { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; margin-top:auto; }
+.app-primary-actions > .open { min-height:44px; display:inline-flex; align-items:center; padding:10px 18px; }
+.app-controls { flex:1; min-width:130px; }
+.app-controls summary { min-height:44px; padding:10px 12px; border:1px solid var(--line); border-radius:7px; cursor:pointer; color:var(--text); background:var(--panel-strong); }
+.app-controls summary span { float:right; }
+.app-controls .actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:8px; }
+.app-controls .actions button { min-height:44px; margin:0; }
+.app-controls .actions .uninstall { grid-column:1 / -1; }
+.app-controls summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.apps-empty { grid-column:1 / -1; }
+.card { align-self:start; }
+.card .description { overflow-wrap:anywhere; }
+.power-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.power-actions button, .power-dialog button { min-height:44px; }
+.power-actions .danger, .power-dialog .danger { background:#ae293e; color:#fff; border-color:#ae293e; }
+.power-dialog .secondary { background:var(--panel-strong); color:var(--text); }
+.power-host { font-size:16px; font-weight:600; overflow-wrap:anywhere; }
+.power-dialog { max-width:520px; }
+.power-dialog h2 { overflow-wrap:anywhere; }
+.power-dialog p { line-height:1.5; }
+.power-confirmation { display:flex; align-items:flex-start; gap:12px; padding:14px 0; cursor:pointer; }
+.power-confirmation input { flex:0 0 22px; width:22px; height:22px; margin-top:2px; }
+.power-confirmation[hidden] { display:none; }
+@media (max-width:640px) {
+  .sidebar { position:relative; backdrop-filter:none; }
+  .sidebar .nav {
+    position:fixed; inset:auto 0 0; z-index:40; gap:4px;
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    border-top:1px solid var(--line); background:var(--panel);
+    box-shadow:0 -4px 20px rgb(0 0 0 / .15);
+  }
+  .nav-item { min-height:54px; }
+  .nav-item strong { font-size:12px; }
+  .nav-item::after { inset:auto 18% 0; }
+  .shell { padding-bottom:calc(88px + env(safe-area-inset-bottom, 0px)); }
+  .toast-region { bottom:calc(82px + env(safe-area-inset-bottom, 0px)); }
+  .metric small, .gpu-row, .section-head p { font-size:13px; line-height:1.4; }
+  .gpu-row { min-height:20px; }
+  .overview-summary span { font-size:12px; }
+  .power-actions { display:grid; grid-template-columns:1fr; }
+  .power-dialog { width:calc(100% - 24px); max-height:calc(100dvh - 32px); overflow:auto; padding:18px; }
+  .power-dialog .dialog-actions { display:grid; grid-template-columns:1fr 1fr; }
+  .session-card button { min-height:44px; }
+}

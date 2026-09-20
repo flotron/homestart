@@ -16,6 +16,8 @@ Before opening a pull request, run:
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q app.py homestart
 node --check static/app.js
+node --check static/power.js
+node --test tests/test_ui.mjs
 ./scripts/build_package.sh
 python3 scripts/test_update_matrix.py \
   --update "dist/homestart-update-$(cat VERSION).tar.gz" \
