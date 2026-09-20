@@ -95,6 +95,7 @@ from .system.network_config import (
 )
 from .system.disks import SmartHealthMonitor
 from .system.processes import ProcessCpuTracker
+from .system.power import PowerManager
 from .system.webapps import NativeWebAppDiscovery
 from .updates.github import GitHubReleaseClient, update_asset_version
 from .updates.package import (
@@ -106,6 +107,7 @@ from .updates.package import (
 
 
 MODULE_PATH = Path(__file__).resolve()
+POWER_MANAGER = PowerManager()
 BASE_DIR = MODULE_PATH.parents[1]
 if not (BASE_DIR / "static").is_dir():
     # Compatibility bridge for installs upgraded by a pre-modular updater:

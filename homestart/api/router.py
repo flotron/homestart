@@ -40,6 +40,8 @@ class ApiRouter:
             b.serve_custom_app_icon(handler, query.get("key", [""])[0])
         elif route == "/api/system":
             handler.send_json(b.system_payload(None))
+        elif route == "/api/system/power":
+            handler.send_json(b.POWER_MANAGER.status())
         elif route == "/api/network/live":
             handler.send_json({"ok": True, **b.latest_network_payload()})
         elif route == "/api/network/ranking":
@@ -164,6 +166,8 @@ class ApiRouter:
                 b.auth_security_action(handler, self.json_body(handler))
             elif route == "/api/settings/general":
                 handler.send_json(b.update_settings(self.json_body(handler)))
+            elif route == "/api/system/power":
+                handler.send_json(b.POWER_MANAGER.request(self.json_body(handler)), HTTPStatus.ACCEPTED)
             elif route == "/api/backups/inspect":
                 handler.send_json(b.stage_backup_upload(handler))
             elif route == "/api/backups/restore":

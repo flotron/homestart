@@ -4,6 +4,22 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20260920-3090
+
+- Add Settings → Host power with explicit computer-name confirmation for graceful
+  systemd shutdown and reboot, authenticated POST/CSRF protection, duplicate-request
+  protection and a short timer so the HTTP response can be delivered first.
+- Explain when power controls are unavailable (containers, missing systemd or
+  insufficient privileges). Reboot reconnection checks the Linux boot ID instead
+  of mistaking the old running process for a completed restart.
+- Keep Open visible on app cards and group administrative actions under Manage.
+  Improve favorite accessibility, fix sorting for apps without icon keys, tolerate
+  malformed saved favorites and show a helpful empty search result.
+- Place mobile navigation at the bottom with safe-area spacing and larger labels.
+- Stop Overview polling in other sections, hidden tabs and during power requests;
+  prevent overlapping metric requests and defer Files/Network data until opened.
+- Add Python power/security tests and dependency-free JavaScript behavior tests.
+
 ## 20260803-3080
 
 - Added general native web application discovery. HomeStart now correlates
