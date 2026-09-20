@@ -4,7 +4,7 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
-## 20260920-3090-test1
+## 20260920-3090
 
 - Add Settings → Host power with explicit computer-name confirmation for graceful
   systemd shutdown and reboot, authenticated POST/CSRF protection, duplicate-request
