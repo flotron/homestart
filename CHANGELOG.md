@@ -4,6 +4,12 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3190
+
+- Complete the forwarding-wrapper cleanup: 24 helpers are direct imports and 22 service operations call their domain objects directly.
+- Reuse Samba, catalog, installation and Docker Hub services with live configuration/path providers.
+- Remove Samba method rewiring; routes and tests use the actual domain service boundaries.
+
 ## 20261002-3180
 
 - Simplify sidebar labels by keeping filesystem and device paths in hover details.

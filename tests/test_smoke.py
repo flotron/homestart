@@ -852,7 +852,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(app["architectures"], ["amd64", "arm64"])
         with mock.patch.object(
             self.app,
-            "detect_host_architecture",
+            "host_architecture_payload",
             return_value={"machine": "aarch64", "architecture": "arm64", "docker_platform": "linux/arm64"},
         ):
             self.assertTrue(self.app.require_catalog_architecture(app)["architecture_compatible"])
@@ -873,7 +873,7 @@ class HomeStartSmokeTests(unittest.TestCase):
     def test_docker_manifest_preflight_rejects_known_host_mismatch(self):
         with mock.patch.object(
             self.app,
-            "detect_host_architecture",
+            "host_architecture_payload",
             return_value={"machine": "aarch64", "architecture": "arm64", "docker_platform": "linux/arm64"},
         ), mock.patch.object(
             self.app,
@@ -886,12 +886,12 @@ class HomeStartSmokeTests(unittest.TestCase):
     def test_store_catalog_uses_stale_cache_when_remote_fetch_fails(self):
         self.app.STORE_CATALOG_CACHE = Path(self.temp.name) / "catalog-cache.json"
         catalog = self.app.validate_store_catalog(self.declarative_catalog())
-        self.app.save_store_catalog_cache(catalog)
+        self.app.CATALOG_CLIENT.save_store_catalog_cache(catalog)
         wrapper = json.loads(self.app.STORE_CATALOG_CACHE.read_text(encoding="utf-8"))
         wrapper["fetched_at"] = 1
         self.app.STORE_CATALOG_CACHE.write_text(json.dumps(wrapper), encoding="utf-8")
         with mock.patch.object(self.app, "fetch_store_catalog", side_effect=OSError("offline")):
-            loaded, metadata = self.app.load_store_catalog()
+            loaded, metadata = self.app.CATALOG_CLIENT.load_store_catalog()
         self.assertEqual(loaded["apps"][0]["id"], "sample-app")
         self.assertEqual(metadata["source"], "cache")
         self.assertTrue(metadata["stale"])
@@ -919,7 +919,7 @@ class HomeStartSmokeTests(unittest.TestCase):
                 mock.patch.object(self.app, "system_timezone", return_value="UTC"), \
                 mock.patch.object(self.app, "docker_container_exists", return_value=False), \
                 mock.patch.object(self.app, "run_docker_command", side_effect=docker):
-            result = self.app.compose_store_install({"template_id": "sample-app", "values": values})
+            result = self.app.INSTALL_MANAGER.compose_store_install({"template_id": "sample-app", "values": values})
         compose_path = Path(result["compose_file"])
         self.assertTrue(compose_path.is_file())
         self.assertTrue((compose_path.parent / "project.json").is_file())
@@ -1188,8 +1188,8 @@ class HomeStartSmokeTests(unittest.TestCase):
             "community/app": {"verified": False, "verification_label": "", "trusted_rank": 0},
             "trusted/app": {"verified": True, "verification_label": "Verified Publisher", "trusted_rank": 2},
         }
-        with mock.patch.object(self.app, "dockerhub_verification", side_effect=lambda name, official=False: checks[name]):
-            self.app.add_dockerhub_verification(results)
+        with mock.patch.object(self.app.DOCKERHUB_CLIENT, "dockerhub_verification", side_effect=lambda name, official=False: checks[name]):
+            self.app.DOCKERHUB_CLIENT.add_dockerhub_verification(results)
         results.sort(key=lambda item: (item.get("trusted_rank", 0), item["relevance"]), reverse=True)
         self.assertEqual(results[0]["name"], "trusted/app")
 
@@ -1469,12 +1469,12 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.app.save_config_file(config)
         state = {"shares": {}, "disabled": []}
         detected = {"ok": True, "shares": [], "users": []}
-        with mock.patch.object(self.app, "samba_state", return_value=state), \
-                mock.patch.object(self.app, "samba_shares_payload", return_value=detected), \
+        with mock.patch.object(self.app.SAMBA_MANAGER, "state", return_value=state), \
+                mock.patch.object(self.app.SAMBA_MANAGER, "shares_payload", return_value=detected), \
                 mock.patch.object(self.app.subprocess, "check_output", return_value="1000\n"), \
                 mock.patch.object(self.app.os, "chown") as chown, \
-                mock.patch.object(self.app, "save_samba_state", side_effect=lambda value: value):
-            result = self.app.samba_share_action({
+                mock.patch.object(self.app.SAMBA_MANAGER, "save_state", side_effect=lambda value: value):
+            result = self.app.SAMBA_MANAGER.action({
                 "action": "create", "name": "GuestFiles", "path": str(root),
                 "guest_ok": True, "read_only": False, "browseable": True,
                 "force_user": "operator",
@@ -1502,8 +1502,8 @@ class HomeStartSmokeTests(unittest.TestCase):
         with mock.patch.object(self.app, "samba_manager_enabled", return_value=True), \
                 mock.patch.object(self.app.subprocess, "check_output", return_value="1000\n"), \
                 mock.patch.object(self.app.subprocess, "run") as run, \
-                mock.patch.object(self.app, "samba_shares_payload", return_value={"ok": True}):
-            result = self.app.samba_share_action({
+                mock.patch.object(self.app.SAMBA_MANAGER, "shares_payload", return_value={"ok": True}):
+            result = self.app.SAMBA_MANAGER.action({
                 "action": "set_password", "username": "operator", "password": "secret-password",
             })
         self.assertTrue(result["ok"])
