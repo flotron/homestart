@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3100
+
+- Separate backup creation, validation and restoration into an independent module.
+- Separate file browsing, file operations and trash retention from the HTTP server,
+  preserving existing endpoints, access restrictions and archive formats.
+- Add isolated regression tests for restored accounts, interrupted backup uploads,
+  allowed file roots, trash restoration and retention.
+- Preserve compatibility with pre-modular installations and existing runtime data.
+
 ## 20260920-3090
 
 - Add Settings → Host power with explicit computer-name confirmation for graceful
