@@ -134,24 +134,24 @@ class HomeStartSecurityHelperTests(unittest.TestCase):
             vendor = drm / "card0" / "device" / "vendor"
             vendor.parent.mkdir(parents=True)
             vendor.write_text("0x10de\n", encoding="utf-8")
-            self.assertEqual(server_module.detected_gpu_vendors(drm), ["NVIDIA"])
+            self.assertEqual(server_module.HOST_METRICS.detected_gpu_vendors(drm), ["NVIDIA"])
 
-        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["NVIDIA"]), \
+        with mock.patch.object(server_module.HOST_METRICS, "detected_gpu_vendors", return_value=["NVIDIA"]), \
                 mock.patch.object(server_module.shutil, "which", return_value=None), \
-                mock.patch.object(server_module, "nvidia_driver_branch", return_value="580"):
-            hint = server_module.gpu_monitor_hint()
+                mock.patch.object(server_module.HOST_METRICS, "nvidia_driver_branch", return_value="580"):
+            hint = server_module.HOST_METRICS.gpu_monitor_hint()
         self.assertEqual(hint["vendor"], "NVIDIA")
         self.assertEqual(hint["command"], "sudo apt install nvidia-utils-580")
 
-        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["Intel"]):
+        with mock.patch.object(server_module.HOST_METRICS, "detected_gpu_vendors", return_value=["Intel"]):
             self.assertEqual(
-                server_module.gpu_monitor_hint()["command"],
+                server_module.HOST_METRICS.gpu_monitor_hint()["command"],
                 "sudo apt install intel-gpu-tools",
             )
 
-        with mock.patch.object(server_module, "detected_gpu_vendors", return_value=["AMD"]):
+        with mock.patch.object(server_module.HOST_METRICS, "detected_gpu_vendors", return_value=["AMD"]):
             self.assertEqual(
-                server_module.gpu_monitor_hint()["command"],
+                server_module.HOST_METRICS.gpu_monitor_hint()["command"],
                 "sudo apt install radeontop",
             )
 
@@ -1558,7 +1558,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             ],
             "services": [], "disks": [],
         }
-        with mock.patch.object(self.app, "system_payload", return_value=system), mock.patch.object(self.app, "status_payload", return_value=status):
+        with mock.patch.object(self.app.HOST_METRICS, "system_payload", return_value=system), mock.patch.object(self.app, "status_payload", return_value=status):
             alert = next(item for item in self.app.overview_payload()["alerts"] if item["id"] == "stopped-containers")
         self.assertIn("stopped-app", alert["detail"])
 
@@ -1577,7 +1577,7 @@ class HomeStartSmokeTests(unittest.TestCase):
                 "smart": {"healthy": False, "status": "failing"},
             }],
         }
-        with mock.patch.object(self.app, "system_payload", return_value=system), \
+        with mock.patch.object(self.app.HOST_METRICS, "system_payload", return_value=system), \
                 mock.patch.object(self.app, "status_payload", return_value=status):
             alert = next(
                 item for item in self.app.overview_payload()["alerts"]

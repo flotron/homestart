@@ -8,6 +8,14 @@ from pathlib import Path
 from ..files import browser as file_browser
 
 
+def browsable_filesystem(node):
+    """Container signatures are not filesystems mount(8) can browse."""
+    filesystem = str(node.get("fstype") or "").lower()
+    return bool(filesystem) and filesystem not in {
+        "lvm2_member", "crypto_luks", "swap", "zfs_member",
+    } and not filesystem.endswith("raid_member")
+
+
 def normalized_mountpoints(node):
     mountpoints = node.get("mountpoints") or []
     if isinstance(mountpoints, str):
@@ -127,8 +135,8 @@ class StorageManager:
         filesystem = node.get("fstype") or ""
         if device_type not in {"part", "lvm", "crypt", "rom"}:
             raise ValueError("Only partitions and volumes can be mounted from HomeStart")
-        if not filesystem:
-            raise ValueError("The selected device does not expose a filesystem")
+        if not browsable_filesystem(node):
+            raise ValueError("This device is a storage container or has no browsable filesystem; open its volume instead")
         mounts = normalized_mountpoints(node)
         if mounts:
             mount = Path(mounts[0]).resolve()
@@ -237,7 +245,7 @@ class StorageManager:
                 self.file_mounts_enabled()
                 and device_path
                 and node.get("type") in {"part", "lvm", "crypt", "rom"}
-                and bool(node.get("fstype"))
+                and browsable_filesystem(node)
                 and not mounts
                 and mount_target is not None
                 and self.mountpoint_allowed(mount_target.resolve())

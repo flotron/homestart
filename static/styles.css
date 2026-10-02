@@ -1998,31 +1998,39 @@ button:disabled {
 .drive-entry {
   width: 100%;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 42px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
   padding: 8px 8px 8px calc(8px + (var(--depth) * 14px));
   border-left: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
+  color: var(--text);
   text-align: left;
 }
 
-.drive-entry.partition {
-  min-height: 36px;
-}
-
-.drive-entry.active,
-.drive-entry:hover:not(.unavailable) {
-  border-left-color: var(--accent);
-  background: linear-gradient(135deg, color-mix(in srgb,var(--accent) 14%,transparent), rgb(255 255 255 / 0.04));
-  color: var(--text);
-}
-
-.drive-entry.unavailable {
+.drive-target {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
   cursor: default;
-  opacity: 0.56;
+}
+
+button.drive-target, .drive-action, .root-entry, .root-child { cursor: pointer; }
+button.drive-target:hover strong { color: var(--accent); }
+button.drive-target:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.drive-description { min-width: 0; }
+.drive-status { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+button.drive-target .drive-status { color: var(--accent); }
+.drive-entry.active {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .drive-entry strong,
@@ -2051,7 +2059,7 @@ button:disabled {
 }
 
 .drive-action {
-  min-height: 26px;
+  min-height: 36px;
   padding: 5px 7px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-radius: 7px;

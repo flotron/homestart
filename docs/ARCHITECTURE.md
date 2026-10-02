@@ -144,3 +144,10 @@ Copy and backup services are initialized once per process as `COPY_MANAGER` and
 authentication and configuration persistence use live providers; HTTP streaming,
 upload adaptation, path validation before copying and restart scheduling remain
 in the server. Tests explicitly configure temporary storage on their managers.
+
+Host resource collectors live in `homestart/metrics/host.py`. A single
+`HOST_METRICS` owns CPU/GPU sample baselines. System and Resources API routes,
+the sampler and overview call it directly, with no forwarding wrappers.
+Network sampling and application discovery are live injected providers; the
+module does not import the server. Network attribution, sampling schedules and
+history orchestration remain in the server for a subsequent focused extraction.
