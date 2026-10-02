@@ -20,6 +20,11 @@ class RouterTests(unittest.TestCase):
         self.handler.rfile = io.BytesIO(data)
         return self.handler
 
+    def test_apps_uses_persistent_discovery(self):
+        self.router.get(self.request('/api/apps'))
+        self.backend.APP_DISCOVERY.app_payload.assert_called_once_with()
+        self.handler.send_json.assert_called_once_with(self.backend.APP_DISCOVERY.app_payload.return_value)
+
     def test_wrong_method_never_invokes_power_action(self):
         self.assertFalse(self.router.head(self.request('/api/system/power')))
         self.router.get(self.request('/api/system/power'))

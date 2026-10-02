@@ -1039,7 +1039,7 @@ class HomeStartSmokeTests(unittest.TestCase):
                 "compose_project": "homestart-sample", "compose_service": "db", "compose_managed": True,
             },
         ]
-        apps = self.app.managed_compose_apps("host", containers)
+        apps = self.app.APP_DISCOVERY.managed_compose_apps("host", containers)
         self.assertEqual(len(apps), 1)
         self.assertEqual(apps[0]["name"], "Sample Stack")
         self.assertEqual(len(apps[0]["compose_services"]), 2)
@@ -1606,7 +1606,7 @@ class HomeStartSmokeTests(unittest.TestCase):
                     "collect",
                     side_effect=AssertionError("HTTP path collected SMART"),
                 ), \
-                mock.patch.object(self.app, "docker_apps", return_value=[]):
+                mock.patch.object(self.app.APP_DISCOVERY, "docker_apps", return_value=[]):
             status = self.app.status_payload()
         snapshot.assert_called_once_with(disks)
         self.assertEqual(status["disks"][0]["smart"]["status"], "standby")

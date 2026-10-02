@@ -128,7 +128,7 @@ class ApiRouter:
 
     def _get_api_apps(self, handler, query):
         b = self.backend
-        handler.send_json(b.app_payload())
+        handler.send_json(b.APP_DISCOVERY.app_payload())
 
     def _get_speedtest(self, handler, query):
         b = self.backend
