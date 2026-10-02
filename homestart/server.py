@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import json
 import base64
 import binascii
@@ -103,6 +103,7 @@ from .system.network_config import (
     parse_nmcli_rows,
     validate_ipv4_settings as validate_network_ipv4_settings,
 )
+from .system import storage
 from .system.disks import SmartHealthMonitor
 from .system.processes import ProcessCpuTracker
 from .system.power import PowerManager
@@ -1395,10 +1396,10 @@ def memory_payload():
         "total_bytes": total,
         "free_bytes": values.get("MemFree", 0),
         "available_bytes": available,
-        "used_label": format_bytes(used),
-        "total_label": format_bytes(total),
-        "free_label": format_bytes(values.get("MemFree", 0)),
-        "available_label": format_bytes(available),
+        "used_label": file_browser.format_bytes(used),
+        "total_label": file_browser.format_bytes(total),
+        "free_label": file_browser.format_bytes(values.get("MemFree", 0)),
+        "available_label": file_browser.format_bytes(available),
         "percent": clamp_percent(percent),
     }
 
@@ -1531,8 +1532,8 @@ def nvidia_gpus_payload():
                 "frequency_mhz": frequency,
                 "memory_used_bytes": memory_used,
                 "memory_total_bytes": memory_total,
-                "memory_used_label": format_bytes(memory_used),
-                "memory_total_label": format_bytes(memory_total),
+                "memory_used_label": file_browser.format_bytes(memory_used),
+                "memory_total_label": file_browser.format_bytes(memory_total),
                 "memory_percent": clamp_percent((memory_used / memory_total * 100) if memory_total else None),
                 "available": percent is not None or frequency is not None,
                 "source": "nvidia-smi",
@@ -2211,8 +2212,8 @@ def network_payload(channel="live"):
         "rx_bps": round(rx_bps),
         "tx_bps": round(tx_bps),
         "sample_seconds": sample_seconds,
-        "rx_label": f"{format_bytes(rx_bps)}/s",
-        "tx_label": f"{format_bytes(tx_bps)}/s",
+        "rx_label": f"{file_browser.format_bytes(rx_bps)}/s",
+        "tx_label": f"{file_browser.format_bytes(tx_bps)}/s",
     }
     return result
 
@@ -2424,7 +2425,7 @@ def process_payload(limit=12):
                 "cpu_percent": clamp_percent(raw_cpu),
                 "cpu_raw_percent": raw_cpu,
                 "memory_percent": memory_percent,
-                "memory": format_bytes(rss_bytes),
+                "memory": file_browser.format_bytes(rss_bytes),
                 "command": command,
             }
         )
@@ -2488,398 +2489,10 @@ def resources_payload():
     }
 
 
-def file_browser_manager():
-    return file_browser.FileBrowser(
-        load_config_file, DEFAULT_CONFIG["file_roots"],
-        file_sidebar_items, physical_drive_entries,
-    )
-
-
-def trash_manager():
-    return file_trash.TrashManager(
-        TRASH_DIR, TRASH_INDEX, file_browser_manager(), load_config_file,
-    )
-
-
-def format_bytes(size):
-    return file_browser.format_bytes(size)
-
-
-def file_kind(path):
-    return file_browser.file_kind(path)
-
-
-def allowed_roots():
-    return file_browser_manager().allowed_roots()
-
-
-def path_is_allowed(path, roots):
-    return file_browser.path_is_allowed(path, roots)
-
-
-def discovered_mount_roots(roots):
-    if not roots:
-        return []
-
-    mounts = []
-    ignored_prefixes = (
-        "/dev",
-        "/proc",
-        "/run/docker",
-        "/sys",
-        "/var/lib/containerd",
-        "/var/lib/docker",
-    )
-    try:
-        lines = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-
-    for line in lines:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        source, target, fstype = parts[:3]
-        if not source.startswith("/dev/"):
-            continue
-        if fstype in {"autofs", "devtmpfs", "overlay", "proc", "sysfs", "tmpfs"}:
-            continue
-        if target == "/" or target.startswith(ignored_prefixes):
-            continue
-        try:
-            mount = Path(target.replace("\\040", " ")).resolve()
-        except OSError:
-            continue
-        if mount.exists() and path_is_allowed(mount, roots):
-            mounts.append(mount)
-    return mounts
-
-
-def file_sidebar_roots():
-    roots = allowed_roots()
-    combined = []
-    seen = set()
-    for root in roots + discovered_mount_roots(roots):
-        key = str(root)
-        if key not in seen:
-            seen.add(key)
-            combined.append(root)
-    return combined
-
-
-def lsblk_payload():
-    try:
-        result = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,PATH,TYPE,TRAN,FSTYPE,LABEL,MOUNTPOINTS,SIZE,MODEL"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-        return {}
-    if result.returncode != 0:
-        return {}
-    try:
-        return json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return {}
-
-
-def normalized_mountpoints(node):
-    mountpoints = node.get("mountpoints") or []
-    if isinstance(mountpoints, str):
-        mountpoints = [mountpoints]
-    return [str(item) for item in mountpoints if item]
-
-
-def iter_block_nodes(payload):
-    def visit(node, parent_disk=None):
-        disk = node if node.get("type") == "disk" else parent_disk
-        yield node, disk
-        for child in node.get("children") or []:
-            yield from visit(child, disk)
-
-    for device in payload.get("blockdevices") or []:
-        yield from visit(device)
-
-
-def block_node_by_path(device_path):
-    clean_path = str(device_path or "").strip()
-    if not re.fullmatch(r"/dev/[A-Za-z0-9_./+-]+", clean_path):
-        raise ValueError("Invalid block device path")
-    payload = lsblk_payload()
-    for node, disk in iter_block_nodes(payload):
-        if node.get("path") == clean_path:
-            return node, disk or node
-    raise FileNotFoundError("Block device was not found")
-
-
-def homestart_mountpoint(device_path):
-    name = Path(device_path).name
-    safe_name = re.sub(r"[^A-Za-z0-9_.+-]+", "-", name).strip("-")
-    if not safe_name:
-        raise ValueError("Invalid block device name")
-    return FILE_MOUNT_ROOT / safe_name
-
-
-def mountpoint_allowed(path):
-    roots = allowed_roots()
-    return bool(roots) and path_is_allowed(path, roots)
-
-
-def mount_block_device_readonly(device_path):
-    ensure_file_mounts_enabled()
-    node, _disk = block_node_by_path(device_path)
-    device_type = node.get("type") or ""
-    filesystem = node.get("fstype") or ""
-    if device_type not in {"part", "lvm", "crypt", "rom"}:
-        raise ValueError("Only partitions and volumes can be mounted from HomeStart")
-    if not filesystem:
-        raise ValueError("The selected device does not expose a filesystem")
-    mounts = normalized_mountpoints(node)
-    if mounts:
-        mount = Path(mounts[0]).resolve()
-        if not mountpoint_allowed(mount):
-            raise PermissionError("Mounted path is outside the allowed file roots")
-        return {"ok": True, "action": "mount_readonly", "path": str(mount), "already_mounted": True}
-
-    target = homestart_mountpoint(device_path).resolve()
-    if not mountpoint_allowed(target):
-        raise PermissionError("HomeStart mount path is outside the allowed file roots")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.mkdir(exist_ok=True)
-    if target.is_symlink():
-        raise PermissionError("Mount point cannot be a symlink")
-    if os.path.ismount(target):
-        return {"ok": True, "action": "mount_readonly", "path": str(target), "already_mounted": True}
-
-    options = "ro,nosuid,nodev,noexec"
-    command = ["mount", "-o", options, str(device_path), str(target)]
-    try:
-        subprocess.check_output(command, text=True, timeout=20, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as error:
-        output = (error.output or "").strip()
-        raise ValueError(output or "Could not mount the device read-only") from error
-    return {"ok": True, "action": "mount_readonly", "path": str(target), "readonly": True}
-
-
-def unmount_homestart_device(device_path):
-    ensure_file_mounts_enabled()
-    node, _disk = block_node_by_path(device_path)
-    target = homestart_mountpoint(device_path).resolve()
-    mounts = [Path(item).resolve() for item in normalized_mountpoints(node)]
-    if target not in mounts and not os.path.ismount(target):
-        raise ValueError("This device is not mounted by HomeStart")
-    if not path_is_allowed(target, [FILE_MOUNT_ROOT.resolve()]):
-        raise PermissionError("Only HomeStart-managed mounts can be unmounted here")
-    try:
-        subprocess.check_output(["umount", str(target)], text=True, timeout=15, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as error:
-        output = (error.output or "").strip()
-        raise ValueError(output or "Could not unmount the device") from error
-    try:
-        target.rmdir()
-    except OSError:
-        pass
-    return {"ok": True, "action": "unmount", "path": str(target)}
-
-
-def block_mount_metadata():
-    metadata = {}
-    payload = lsblk_payload()
-    if not payload:
-        return metadata
-
-    def visit(node, parent_disk=None):
-        device_type = node.get("type") or ""
-        disk = node if device_type == "disk" else parent_disk
-        for mountpoint in normalized_mountpoints(node):
-            try:
-                mount = str(Path(mountpoint).resolve())
-            except OSError:
-                mount = str(mountpoint)
-            disk_info = disk or node
-            transport = disk_info.get("tran") or node.get("tran") or ""
-            metadata[mount] = {
-                "device": node.get("path") or node.get("name") or "",
-                "disk": disk_info.get("path") or disk_info.get("name") or "",
-                "filesystem": node.get("fstype") or "",
-                "label": node.get("label") or disk_info.get("label") or "",
-                "model": disk_info.get("model") or "",
-                "size": node.get("size") or disk_info.get("size") or "",
-                "transport": transport,
-                "kind": "usb" if str(transport).lower() == "usb" else "disk",
-            }
-        for child in node.get("children") or []:
-            visit(child, disk)
-
-    for device in payload.get("blockdevices") or []:
-        visit(device)
-    return metadata
-
-
-def physical_drive_entries():
-    payload = lsblk_payload()
-    roots = allowed_roots()
-    entries = []
-
-    def location_payload(node, disk, depth=0):
-        mounts = []
-        for mountpoint in normalized_mountpoints(node):
-            try:
-                mount = str(Path(mountpoint).resolve())
-            except OSError:
-                mount = mountpoint
-            mounts.append(
-                {
-                    "path": mount,
-                    "allowed": path_is_allowed(Path(mount), roots),
-                }
-            )
-        transport = disk.get("tran") or node.get("tran") or ""
-        device_path = node.get("path") or ""
-        mount_target = homestart_mountpoint(device_path) if device_path else None
-        mounted_by_homestart = any(
-            path_is_allowed(Path(mount["path"]).resolve(), [FILE_MOUNT_ROOT.resolve()])
-            for mount in mounts
-        )
-        can_mount = (
-            file_mounts_enabled()
-            and device_path
-            and node.get("type") in {"part", "lvm", "crypt", "rom"}
-            and bool(node.get("fstype"))
-            and not mounts
-            and mount_target is not None
-            and mountpoint_allowed(mount_target.resolve())
-        )
-        return {
-            "name": node.get("name") or node.get("path") or "",
-            "path": device_path,
-            "type": node.get("type") or "",
-            "kind": "usb" if str(transport).lower() == "usb" else "disk",
-            "transport": transport,
-            "filesystem": node.get("fstype") or "",
-            "label": node.get("label") or "",
-            "size": node.get("size") or "",
-            "model": node.get("model") or "",
-            "mountpoints": mounts,
-            "mount_target": str(mount_target) if mount_target else "",
-            "can_mount": bool(can_mount),
-            "can_unmount": bool(mounted_by_homestart),
-            "mounted_by_homestart": bool(mounted_by_homestart),
-            "depth": depth,
-        }
-
-    def visit_children(node, disk, depth):
-        children = []
-        for child in node.get("children") or []:
-            item = location_payload(child, disk, depth)
-            item["children"] = visit_children(child, disk, depth + 1)
-            children.append(item)
-        return children
-
-    for disk in payload.get("blockdevices") or []:
-        if disk.get("type") != "disk":
-            continue
-        item = location_payload(disk, disk, 0)
-        item["children"] = visit_children(disk, disk, 1)
-        entries.append(item)
-    return entries
-
-
-def file_sidebar_items():
-    roots = file_sidebar_roots()
-    disk_metadata = block_mount_metadata()
-    items = []
-    for root in roots:
-        root_path = str(root)
-        meta = disk_metadata.get(root_path, {})
-        name = meta.get("label") or ("Root" if root_path == "/" else Path(root_path).name or root_path)
-        kind = meta.get("kind") or ("root" if root_path == "/" else "folder")
-        items.append(
-            {
-                "path": root_path,
-                "name": name,
-                "kind": kind,
-                "device": meta.get("device", ""),
-                "disk": meta.get("disk", ""),
-                "filesystem": meta.get("filesystem", ""),
-                "label": meta.get("label", ""),
-                "model": meta.get("model", ""),
-                "size": meta.get("size", ""),
-                "transport": meta.get("transport", ""),
-            }
-        )
-    return items
-
-
-def resolve_file_path(raw_path):
-    return file_browser_manager().resolve_file_path(raw_path)
-
-
-def file_listing(raw_path):
-    return file_browser_manager().file_listing(raw_path)
-
-
-def file_operations_enabled():
-    return file_browser_manager().file_operations_enabled()
-
-
-def ensure_file_operations_enabled():
-    return file_browser_manager().ensure_file_operations_enabled()
-
-
-def file_mounts_enabled():
-    features = load_config_file().get("features", {})
-    return features.get("file_operations", True) and features.get("file_mounts", True)
-
-
-def ensure_file_mounts_enabled():
-    if not file_mounts_enabled():
-        raise PermissionError("File disk mounting is disabled")
-
-
-def resolve_new_child(parent_path, name):
-    return file_browser_manager().resolve_new_child(parent_path, name)
-
-
-def create_folder(parent_path, name):
-    return file_browser_manager().create_folder(parent_path, name)
-
-
-def inherit_parent_ownership(path):
-    return file_browser.inherit_parent_ownership(path)
-
-
-def delete_file_path(raw_path):
-    return file_browser_manager().delete_file_path(raw_path)
-
-
-def path_usage(path, cancelled=None):
-    return file_browser.path_usage(path, cancelled)
-
-
-def file_properties(raw_path):
-    return file_browser_manager().file_properties(raw_path)
-
-
-def resolve_copy_target(source_path, destination_path):
-    return file_browser_manager().resolve_copy_target(source_path, destination_path)
-
-
-def resolve_move_target(source_path, destination_path):
-    return file_browser_manager().resolve_move_target(source_path, destination_path)
-
-
-def copy_file_path(source_path, destination_path):
-    return file_browser_manager().copy_file_path(source_path, destination_path)
-
-
 def copy_manager():
     global COPY_MANAGER
     if COPY_MANAGER is None:
-        COPY_MANAGER = CopyManager(FILE_COPY_JOBS, FILE_COPY_JOBS_LOCK, path_usage)
+        COPY_MANAGER = CopyManager(FILE_COPY_JOBS, FILE_COPY_JOBS_LOCK, file_browser.path_usage)
     return COPY_MANAGER
 
 
@@ -2924,14 +2537,14 @@ def copy_file_with_progress(source, target, job_id):
 
 
 def start_copy_job(source_path, destination_path):
-    ensure_file_operations_enabled()
-    source, target = resolve_copy_target(source_path, destination_path)
+    FILE_BROWSER.ensure_file_operations_enabled()
+    source, target = FILE_BROWSER.resolve_copy_target(source_path, destination_path)
     return copy_manager().start(source, target)
 
 
 def start_move_job(source_path, destination_path):
-    ensure_file_operations_enabled()
-    source, target = resolve_move_target(source_path, destination_path)
+    FILE_BROWSER.ensure_file_operations_enabled()
+    source, target = FILE_BROWSER.resolve_move_target(source_path, destination_path)
     return copy_manager().start(source, target, operation="move")
 
 
@@ -2943,24 +2556,16 @@ def cancel_copy_job(job_id):
     return copy_manager().cancel(job_id)
 
 
-def decode_data_url(content):
-    return file_browser.decode_data_url(content)
-
-
-def upload_file(parent_path, name, content):
-    return file_browser_manager().upload_file(parent_path, name, content)
-
-
 def file_action(payload):
     action = payload.get("action", "")
     if action == "mkdir":
-        return create_folder(payload.get("parent", ""), payload.get("name", ""))
+        return FILE_BROWSER.create_folder(payload.get("parent", ""), payload.get("name", ""))
     if action == "delete":
-        return trash_file_path(payload.get("path", ""))
+        return TRASH_MANAGER.trash_file_path(payload.get("path", ""))
     if action == "rename":
-        return rename_file_path(payload.get("path", ""), payload.get("name", ""))
+        return FILE_BROWSER.rename_file_path(payload.get("path", ""), payload.get("name", ""))
     if action == "copy":
-        return copy_file_path(payload.get("source", ""), payload.get("destination", ""))
+        return FILE_BROWSER.copy_file_path(payload.get("source", ""), payload.get("destination", ""))
     if action == "copy_start":
         return start_copy_job(payload.get("source", ""), payload.get("destination", ""))
     if action == "move_start":
@@ -2968,11 +2573,11 @@ def file_action(payload):
     if action == "copy_cancel":
         return cancel_copy_job(payload.get("job_id", ""))
     if action == "upload":
-        return upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
+        return FILE_BROWSER.upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
     if action == "mount_readonly":
-        return mount_block_device_readonly(payload.get("device", ""))
+        return STORAGE.mount_block_device_readonly(payload.get("device", ""))
     if action == "unmount":
-        return unmount_homestart_device(payload.get("device", ""))
+        return STORAGE.unmount_homestart_device(payload.get("device", ""))
     raise ValueError("Invalid file action")
 
 
@@ -2986,7 +2591,7 @@ def samba_manager():
         SAMBA_MANAGED_PATH,
         SAMBA_STATE_PATH,
         samba_manager_enabled,
-        resolve_file_path,
+        FILE_BROWSER.resolve_file_path,
     )
 
 
@@ -3052,54 +2657,22 @@ def samba_share_action(payload):
     return manager.action(payload)
 
 
-def trash_file_path(raw_path):
-    return trash_manager().trash_file_path(raw_path)
-
-
-def trash_path_size(path):
-    return file_trash.trash_path_size(path)
-
-
-def save_trash_index(index):
-    return trash_manager().save_trash_index(index)
-
-
-def resolve_trash_item(key):
-    return trash_manager().resolve_trash_item(key)
-
-
-def delete_trash_item(key):
-    return trash_manager().delete_trash_item(key)
-
-
-def empty_trash():
-    return trash_manager().empty_trash()
-
-
 def cleanup_expired_trash(force=False):
     global TRASH_LAST_CLEANUP
     now = time.time()
     if not force and now - TRASH_LAST_CLEANUP < 3600:
         return 0
     TRASH_LAST_CLEANUP = now
-    return trash_manager().cleanup_expired_trash()
+    return TRASH_MANAGER.cleanup_expired_trash()
 
 
 def trash_listing():
     cleanup_expired_trash(force=True)
-    return trash_manager().trash_listing()
-
-
-def restore_trash_item(key):
-    return trash_manager().restore_trash_item(key)
-
-
-def rename_file_path(raw_path, raw_name):
-    return file_browser_manager().rename_file_path(raw_path, raw_name)
+    return TRASH_MANAGER.trash_listing()
 
 
 def serve_file(handler, raw_path, include_body=True):
-    target = resolve_file_path(raw_path)
+    target = FILE_BROWSER.resolve_file_path(raw_path)
     if target is None:
         raise FileNotFoundError("No file was provided")
     if not target.exists():
@@ -3122,78 +2695,7 @@ def serve_file(handler, raw_path, include_body=True):
 
 
 def disk_payload():
-    try:
-        output = subprocess.check_output(
-            [
-                "lsblk",
-                "-J",
-                "-b",
-                "-o",
-                "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,TRAN",
-            ],
-            text=True,
-            timeout=3,
-        )
-        devices = json.loads(output).get("blockdevices", [])
-    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
-        return []
-
-    disks = []
-    for device in devices:
-        if device.get("type") != "disk":
-            continue
-
-        mountpoints = []
-        filesystems = []
-        used_total = 0
-        mounted_total = 0
-        seen_mounts = set()
-        for child in device.get("children", []):
-            if child.get("fstype"):
-                filesystems.append(child["fstype"])
-
-            child_mounts = [
-                mountpoint
-                for mountpoint in (child.get("mountpoints") or [])
-                if mountpoint and mountpoint not in seen_mounts
-            ]
-            mountpoints.extend(child_mounts)
-            seen_mounts.update(child_mounts)
-            if not child_mounts:
-                continue
-
-            try:
-                usage = shutil.disk_usage(child_mounts[0])
-            except OSError:
-                continue
-
-            used_total += usage.used
-            mounted_total += usage.total
-
-        disk_size = int(device.get("size") or 0)
-        percent = used_total / mounted_total * 100 if mounted_total else 0
-        disks.append(
-            {
-                "name": device.get("name", ""),
-                "device": f"/dev/{device.get('name', '')}",
-                "model": (device.get("model") or "").strip(),
-                "serial": device.get("serial") or "",
-                "transport": device.get("tran") or "",
-                "filesystems": sorted(set(filesystems)),
-                "mountpoints": mountpoints,
-                "mountpoint": ", ".join(mountpoints) if mountpoints else "Not mounted",
-                "used": used_total,
-                "total": disk_size,
-                "mounted_total": mounted_total,
-                "free": max(0, mounted_total - used_total),
-                "used_label": format_bytes(used_total),
-                "total_label": format_bytes(disk_size),
-                "free_label": format_bytes(max(0, mounted_total - used_total)),
-                "percent": clamp_percent(percent),
-            }
-        )
-
-    return sorted(disks, key=lambda disk: disk["device"])
+    return STORAGE.disk_payload()
 
 
 def service_status(unit):
@@ -3370,7 +2872,7 @@ def restore_staged_backup(token):
 
 
 def serve_download(handler, raw_path, include_body=True):
-    target = resolve_file_path(raw_path)
+    target = FILE_BROWSER.resolve_file_path(raw_path)
     if target is None or not target.exists():
         raise FileNotFoundError("The path does not exist")
     temporary = None
@@ -4672,6 +4174,19 @@ def auth_change_password(handler, payload):
         headers={"Set-Cookie": cleared_auth_cookie(handler)},
     )
 
+
+# One instance per process; providers read current configuration and drive state
+# on each operation rather than capturing a Settings snapshot at startup.
+FILE_BROWSER = file_browser.FileBrowser(
+    lambda: load_config_file(), DEFAULT_CONFIG["file_roots"],
+    lambda: STORAGE.file_sidebar_items(), lambda: STORAGE.physical_drive_entries(),
+)
+STORAGE = storage.StorageManager(
+    FILE_BROWSER.allowed_roots, lambda: load_config_file(), FILE_MOUNT_ROOT, clamp_percent,
+)
+TRASH_MANAGER = file_trash.TrashManager(
+    TRASH_DIR, TRASH_INDEX, FILE_BROWSER, lambda: load_config_file(),
+)
 
 API_ROUTER = ApiRouter(sys.modules[__name__])
 

@@ -101,12 +101,12 @@ class ApiRouter:
             handler.send_json(b.status_payload())
         elif route == "/api/files":
             try:
-                handler.send_json(b.file_listing(query.get("path", [""])[0]))
+                handler.send_json(b.FILE_BROWSER.file_listing(query.get("path", [""])[0]))
             except (FileNotFoundError, NotADirectoryError, PermissionError) as error:
                 handler.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         elif route == "/api/file/properties":
             try:
-                handler.send_json(b.file_properties(query.get("path", [""])[0]))
+                handler.send_json(b.FILE_BROWSER.file_properties(query.get("path", [""])[0]))
             except (FileNotFoundError, PermissionError, OSError, ValueError) as error:
                 handler.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
         elif route == "/api/files/copy/status":
@@ -178,12 +178,12 @@ class ApiRouter:
                     handler.send_json(b.restore_backup(payload.get("name", "")))
             elif route == "/api/trash/restore":
                 payload = self.json_body(handler)
-                handler.send_json(b.restore_trash_item(payload.get("key", "")))
+                handler.send_json(b.TRASH_MANAGER.restore_trash_item(payload.get("key", "")))
             elif route == "/api/trash/delete":
                 payload = self.json_body(handler)
-                handler.send_json(b.delete_trash_item(payload.get("key", "")))
+                handler.send_json(b.TRASH_MANAGER.delete_trash_item(payload.get("key", "")))
             elif route == "/api/trash/empty":
-                handler.send_json(b.empty_trash())
+                handler.send_json(b.TRASH_MANAGER.empty_trash())
             elif route == "/api/update":
                 payload = self.json_body(handler)
                 handler.send_json(b.apply_update_package(payload.get("filename", ""), payload.get("content", "")))

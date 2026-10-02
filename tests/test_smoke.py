@@ -251,6 +251,45 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.temp.cleanup()
         os.environ.pop("HOMESTART_CONFIG", None)
 
+    def test_file_services_reuse_instances_with_live_configuration(self):
+        browser = self.app.FILE_BROWSER
+        trash = self.app.TRASH_MANAGER
+        first = Path(self.temp.name) / "first-root"
+        second = Path(self.temp.name) / "second-root"
+        first.mkdir()
+        second.mkdir()
+        config = json.loads(json.dumps(self.app.load_config_file()))
+        config["file_roots"] = [str(first)]
+        self.app.save_config_file(config)
+        self.assertEqual(browser.resolve_file_path(str(first)), first)
+        config["file_roots"] = [str(second)]
+        config["features"]["file_operations"] = False
+        config["trash"]["retention_days"] = 7
+        self.app.save_config_file(config)
+        with self.assertRaises(PermissionError):
+            browser.resolve_file_path(str(first))
+        self.assertEqual(browser.resolve_file_path(str(second)), second)
+        with self.assertRaisesRegex(PermissionError, "disabled"):
+            browser.create_folder(str(second), "blocked")
+        self.assertEqual(trash.load_config()["trash"]["retention_days"], 7)
+        self.assertIs(trash.browser, browser)
+        self.assertIs(self.app.FILE_BROWSER, browser)
+        self.assertIs(self.app.TRASH_MANAGER, trash)
+        self.assertFalse((second / "blocked").exists())
+
+    def test_file_actions_do_not_construct_new_managers(self):
+        root = Path(self.temp.name) / "file-actions"
+        root.mkdir()
+        config = json.loads(json.dumps(self.app.load_config_file()))
+        config["file_roots"] = [str(root)]
+        self.app.save_config_file(config)
+        with mock.patch.object(self.app.file_browser, "FileBrowser") as browser_class, \
+                mock.patch.object(self.app.file_trash, "TrashManager") as trash_class:
+            result = self.app.file_action({"action": "mkdir", "parent": str(root), "name": "child"})
+            self.assertTrue(Path(result["path"]).is_dir())
+            browser_class.assert_not_called()
+            trash_class.assert_not_called()
+
     def test_config_merges_defaults(self):
         config = self.app.load_config_file()
         self.assertEqual(config["dashboard"]["title"], "TestStart")
@@ -444,31 +483,37 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.app.save_config_file(config)
         self.app.TRASH_DIR = Path(self.temp.name) / "trash"
         self.app.TRASH_INDEX = Path(self.temp.name) / "trash.json"
-        result = self.app.trash_file_path(str(source))
+        self.app.TRASH_MANAGER = self.app.file_trash.TrashManager(
+            self.app.TRASH_DIR, self.app.TRASH_INDEX, self.app.FILE_BROWSER, self.app.load_config_file,
+        )
+        result = self.app.TRASH_MANAGER.trash_file_path(str(source))
         self.assertTrue(result["ok"])
         self.assertFalse(source.exists())
         item = self.app.trash_listing()["items"][0]
-        restored = self.app.restore_trash_item(item["key"])
+        restored = self.app.TRASH_MANAGER.restore_trash_item(item["key"])
         self.assertEqual(Path(restored["path"]).read_text(encoding="utf-8"), "recover me")
 
     def test_trash_reports_recursive_size_and_permanent_delete(self):
         self.app.TRASH_DIR = Path(self.temp.name) / "trash-size"
         self.app.TRASH_INDEX = Path(self.temp.name) / "trash-size.json"
+        self.app.TRASH_MANAGER = self.app.file_trash.TrashManager(
+            self.app.TRASH_DIR, self.app.TRASH_INDEX, self.app.FILE_BROWSER, self.app.load_config_file,
+        )
         folder = self.app.TRASH_DIR / "item-folder"
         folder.mkdir(parents=True)
         (folder / "a.bin").write_bytes(b"a" * 10)
         (folder / "b.bin").write_bytes(b"b" * 15)
-        self.app.save_trash_index({
+        self.app.TRASH_MANAGER.save_trash_index({
             "item-folder": {"original": "/tmp/folder", "name": "folder", "deleted_at": int(__import__("time").time())}
         })
         with mock.patch.object(self.app, "cleanup_expired_trash", return_value=0):
             listing = self.app.trash_listing()
         self.assertEqual(listing["items"][0]["size"], 25)
         self.assertEqual(listing["total_size"], 25)
-        self.app.delete_trash_item("item-folder")
+        self.app.TRASH_MANAGER.delete_trash_item("item-folder")
         self.assertFalse(folder.exists())
         with self.assertRaises(ValueError):
-            self.app.delete_trash_item("..")
+            self.app.TRASH_MANAGER.delete_trash_item("..")
 
     def test_copy_in_same_folder_creates_copy_name(self):
         root = Path(self.temp.name) / "copy-files"
@@ -478,7 +523,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         config = self.app.load_config_file()
         config["file_roots"] = [str(root)]
         self.app.save_config_file(config)
-        result = self.app.copy_file_path(str(source), str(root))
+        result = self.app.FILE_BROWSER.copy_file_path(str(source), str(root))
         copied = Path(result["path"])
         self.assertEqual(copied.name, "manual - copy.pdf")
         self.assertEqual(copied.read_bytes(), b"pdf")
@@ -638,7 +683,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         config = self.app.load_config_file()
         config["file_roots"] = [str(root)]
         self.app.save_config_file(config)
-        properties = self.app.file_properties(str(folder))
+        properties = self.app.FILE_BROWSER.file_properties(str(folder))
         self.assertEqual(properties["size_bytes"], 25)
         self.assertEqual(properties["file_count"], 2)
         self.assertEqual(properties["folder_count"], 2)
@@ -703,7 +748,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         config["file_roots"] = [str(root)]
         self.app.save_config_file(config)
         with self.assertRaises(FileExistsError):
-            self.app.resolve_move_target(str(source), str(destination))
+            self.app.FILE_BROWSER.resolve_move_target(str(source), str(destination))
 
     def test_docker_image_matching_ignores_registry_tag(self):
         self.assertEqual(self.app.image_repository("docker.io/library/redis:7"), "redis")
@@ -1411,7 +1456,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         config["file_roots"] = [str(root)]
         self.app.save_config_file(config)
         with mock.patch.object(self.app.os, "chown") as chown:
-            result = self.app.create_folder(str(root), "child")
+            result = self.app.FILE_BROWSER.create_folder(str(root), "child")
         parent_stat = root.stat()
         chown.assert_called_once_with(Path(result["path"]), parent_stat.st_uid, parent_stat.st_gid)
 
