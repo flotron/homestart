@@ -46,7 +46,7 @@ class RouterTests(unittest.TestCase):
         self.router.get(self.request('/api/files?path=%2Fprivate'))
         self.handler.send_json.assert_called_with({'error': 'denied'}, HTTPStatus.BAD_REQUEST)
         self.backend.FILE_BROWSER.file_listing.assert_called_once_with('/private')
-        self.backend.copy_job_status.side_effect = ValueError('missing')
+        self.backend.COPY_MANAGER.status.side_effect = ValueError('missing')
         self.router.get(self.request('/api/files/copy/status?job_id=abc'))
         self.handler.send_json.assert_called_with({'ok': False, 'error': 'missing'}, HTTPStatus.NOT_FOUND)
 

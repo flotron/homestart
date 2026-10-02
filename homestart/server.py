@@ -29,11 +29,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from .backup.manager import (
-    BackupManager,
-    safe_extract_tar as backup_safe_extract_tar,
-    atomic_restore_file as backup_atomic_restore_file,
-)
+from .backup.manager import BackupManager
 from .api.router import ApiRouter
 from .auth import (
     AuthManager,
@@ -183,7 +179,6 @@ DOCKER_IDENTITY_CACHE = {"at": 0, "items": {}}
 INTERFACE_ADDRESS_CACHE = {"at": 0, "interface": "", "items": set()}
 FILE_COPY_JOBS = {}
 FILE_COPY_JOBS_LOCK = threading.Lock()
-COPY_MANAGER = None
 METRIC_STORE = None
 GITHUB_RELEASE_CLIENT = None
 AUTH_MANAGER = None
@@ -2489,71 +2484,16 @@ def resources_payload():
     }
 
 
-def copy_manager():
-    global COPY_MANAGER
-    if COPY_MANAGER is None:
-        COPY_MANAGER = CopyManager(FILE_COPY_JOBS, FILE_COPY_JOBS_LOCK, file_browser.path_usage)
-    return COPY_MANAGER
-
-
-def update_copy_job(job_id, **changes):
-    return copy_manager().update_job(job_id, **changes)
-
-
-def copy_job_cancelled(job_id):
-    return copy_manager().cancelled(job_id)
-
-
-def native_cp_path():
-    return copy_manager().native_cp_path()
-
-
-def native_cp_command(path, source, target):
-    return CopyManager.native_cp_command(path, source, target)
-
-
-def process_copy_bytes(pid):
-    return CopyManager.process_copy_bytes(pid)
-
-
-def native_copy_progress(process, source, target, total_bytes):
-    return copy_manager().native_copy_progress(process, source, target, total_bytes)
-
-
-def stop_native_copy(process):
-    return CopyManager.stop_native_copy(process)
-
-
-def run_native_copy(source, target, job_id, total_bytes):
-    return copy_manager().run_native_copy(source, target, job_id, total_bytes)
-
-
-def remove_incomplete_copy(target):
-    return CopyManager.remove_incomplete(target)
-
-
-def copy_file_with_progress(source, target, job_id):
-    return copy_manager().copy_with_progress(source, target, job_id)
-
-
 def start_copy_job(source_path, destination_path):
     FILE_BROWSER.ensure_file_operations_enabled()
     source, target = FILE_BROWSER.resolve_copy_target(source_path, destination_path)
-    return copy_manager().start(source, target)
+    return COPY_MANAGER.start(source, target)
 
 
 def start_move_job(source_path, destination_path):
     FILE_BROWSER.ensure_file_operations_enabled()
     source, target = FILE_BROWSER.resolve_move_target(source_path, destination_path)
-    return copy_manager().start(source, target, operation="move")
-
-
-def copy_job_status(job_id):
-    return copy_manager().status(job_id)
-
-
-def cancel_copy_job(job_id):
-    return copy_manager().cancel(job_id)
+    return COPY_MANAGER.start(source, target, operation="move")
 
 
 def file_action(payload):
@@ -2571,7 +2511,7 @@ def file_action(payload):
     if action == "move_start":
         return start_move_job(payload.get("source", ""), payload.get("destination", ""))
     if action == "copy_cancel":
-        return cancel_copy_job(payload.get("job_id", ""))
+        return COPY_MANAGER.cancel(payload.get("job_id", ""))
     if action == "upload":
         return FILE_BROWSER.upload_file(payload.get("parent", ""), payload.get("name", ""), payload.get("content", ""))
     if action == "mount_readonly":
@@ -2782,29 +2722,13 @@ def docker_logs(name, tail=300):
     return {"ok": True, "name": name, "logs": run_docker_command(["logs", "--tail", str(tail), "--timestamps", name], timeout=15)}
 
 
-def backup_manager():
-    return BackupManager(
-        backup_dir=BACKUP_DIR, staging_dir=BACKUP_STAGING_DIR,
-        config_path=CONFIG_PATH, database_path=DB_PATH,
-        icon_dir=APP_ICON_DIR, icon_index=APP_ICON_INDEX,
-        auth_manager=auth_manager, save_config=save_config_file,
-        max_upload_size=MAX_BACKUP_UPLOAD_SIZE,
-        max_extracted_size=MAX_BACKUP_EXTRACTED_SIZE,
-        stage_ttl=BACKUP_STAGE_TTL_SECONDS,
-    )
-
-
-def create_backup(destination=None):
-    return backup_manager().create_backup(destination)
-
-
 def serve_backup_download(handler):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"homestart-backup-{stamp}.tar.gz"
     with tempfile.NamedTemporaryFile(prefix="homestart-backup-", suffix=".tar.gz", delete=False) as temporary:
         destination = Path(temporary.name)
     try:
-        create_backup(destination)
+        BACKUP_MANAGER.create_backup(destination)
         size = destination.stat().st_size
         handler.send_response(HTTPStatus.OK)
         handler.send_header("Content-Type", "application/gzip")
@@ -2818,53 +2742,21 @@ def serve_backup_download(handler):
         destination.unlink(missing_ok=True)
 
 
-def list_backups():
-    return backup_manager().list_backups()
-
-
-def backup_path(name):
-    return backup_manager().backup_path(name)
-
-
-def safe_extract_tar(archive, destination):
-    return backup_safe_extract_tar(archive, destination)
-
-
-def cleanup_staged_backups():
-    return backup_manager().cleanup_staged_backups()
-
-
-def inspect_backup_archive(source):
-    return backup_manager().inspect_backup_archive(source)
-
-
 def stage_backup_upload(handler):
-    return backup_manager().stage_backup_upload(handler.rfile, handler.headers.get("Content-Length", "0"))
-
-
-def staged_backup_path(token):
-    return backup_manager().staged_backup_path(token)
-
-
-def atomic_restore_file(source, destination, mode=None):
-    return backup_atomic_restore_file(source, destination, mode)
-
-
-def restore_backup_file(source, display_name=None):
-    return backup_manager().restore_backup_file(source, display_name)
+    return BACKUP_MANAGER.stage_backup_upload(handler.rfile, handler.headers.get("Content-Length", "0"))
 
 
 def restore_backup(name):
-    source = backup_path(name)
-    result = restore_backup_file(source)
+    source = BACKUP_MANAGER.backup_path(name)
+    result = BACKUP_MANAGER.restore_backup_file(source)
     restart_service_later()
     return result
 
 
 def restore_staged_backup(token):
-    source = staged_backup_path(token)
+    source = BACKUP_MANAGER.staged_backup_path(token)
     try:
-        result = restore_backup_file(source, "uploaded backup")
+        result = BACKUP_MANAGER.restore_backup_file(source, "uploaded backup")
     finally:
         source.unlink(missing_ok=True)
     restart_service_later()
@@ -4186,6 +4078,17 @@ STORAGE = storage.StorageManager(
 )
 TRASH_MANAGER = file_trash.TrashManager(
     TRASH_DIR, TRASH_INDEX, FILE_BROWSER, lambda: load_config_file(),
+)
+
+COPY_MANAGER = CopyManager(FILE_COPY_JOBS, FILE_COPY_JOBS_LOCK, file_browser.path_usage)
+BACKUP_MANAGER = BackupManager(
+    backup_dir=BACKUP_DIR, staging_dir=BACKUP_STAGING_DIR,
+    config_path=CONFIG_PATH, database_path=DB_PATH,
+    icon_dir=APP_ICON_DIR, icon_index=APP_ICON_INDEX,
+    auth_manager=lambda: auth_manager(), save_config=lambda config: save_config_file(config),
+    max_upload_size=MAX_BACKUP_UPLOAD_SIZE,
+    max_extracted_size=MAX_BACKUP_EXTRACTED_SIZE,
+    stage_ttl=BACKUP_STAGE_TTL_SECONDS,
 )
 
 API_ROUTER = ApiRouter(sys.modules[__name__])
