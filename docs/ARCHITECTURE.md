@@ -160,3 +160,9 @@ Compose paths live. The Apps API, Status API and host metrics call this instance
 directly. Native listener scanning continues to use its existing background cache;
 this extraction does not add another scanner or change app precedence. Docker port
 selection, icons and lifecycle actions remain in their existing server boundaries.
+
+Icon lookup, bounded HTTP downloads, cache and custom image persistence live in
+`homestart/apps/icons.py`. One `APP_ICONS` instance receives live storage paths
+and an HTTP transport. Discovery and icon upload routes call it directly;
+HTTP response headers and body streaming remain in the server. Network parsing
+helpers are imported directly instead of passing through forwarding functions.

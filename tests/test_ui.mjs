@@ -174,6 +174,9 @@ test('drive headings expand without opening files; volume rows provide one Open 
   assert.equal(opened.length, 0);
   assert.equal(context.renderDriveEntry(disk, volume).children[1].hidden, false);
   const browse = tree.children[1].children[0].querySelector('.drive-target');
+  assert.equal(browse.querySelector('.drive-status').textContent, 'Ready to browse');
+  assert.match(browse.title, /\/boot/);
+  assert.doesNotMatch(browse.querySelector('small').textContent, /\/dev/);
   browse.listeners.click();
   assert.deepEqual(opened, ['/boot']);
   const available = context.renderDriveNode({path: '/dev/sdc1', can_mount: true}, false, null);
