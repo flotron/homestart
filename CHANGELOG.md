@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3110
+
+- Separate App Store catalog caching, Docker/Compose installation jobs and
+  Docker Hub search/publisher verification from the HTTP server.
+- Preserve installation progress, validation, installed-image detection and
+  stale-catalog fallback with explicit module dependencies.
+- Add isolated regression tests for installation outcomes and Docker Hub behavior.
+
 ## 20261002-3100
 
 - Separate backup creation, validation and restoration into an independent module.

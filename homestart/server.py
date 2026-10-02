@@ -22,7 +22,6 @@ import urllib.request
 import uuid
 import zipfile
 import yaml
-from concurrent.futures import ThreadPoolExecutor
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +52,12 @@ from .config import (
     load_config as load_config_data,
     load_json_file,
     save_config as save_config_data,
+)
+from .docker.hub import DockerHubClient
+from .docker.catalog import CatalogClient, fetch_store_catalog as catalog_fetch
+from .docker.install import (
+    InstallManager, InstallServices, image_repository as install_image_repository,
+    compose_project_name as install_project_name,
 )
 from .docker.projects import ComposeProjectManager, compose_risk_report
 from .docker.store import (
@@ -3406,16 +3411,7 @@ def docker_container_exists(name):
 
 
 def image_repository(image):
-    value = str(image or "").strip().lower().split("@", 1)[0]
-    last_slash = value.rfind("/")
-    last_colon = value.rfind(":")
-    if last_colon > last_slash:
-        value = value[:last_colon]
-    if value.startswith("docker.io/"):
-        value = value[len("docker.io/"):]
-    if value.startswith("library/"):
-        value = value[len("library/"):]
-    return value
+    return install_image_repository(image)
 
 
 def installed_docker_images():
@@ -3453,63 +3449,43 @@ def store_catalog_url():
     return str(load_config_file().get("app_store", {}).get("catalog_url") or STORE_CATALOG_URL).strip()
 
 
+def catalog_client():
+    return CatalogClient(
+        STORE_CATALOG_CACHE, STORE_CATALOG_LOCK, STORE_CATALOG_TTL,
+        store_catalog_url, fetch_store_catalog,
+    )
+
+
+def install_manager():
+    services = InstallServices(
+        catalog_app=store_catalog_app,
+        require_catalog_architecture=require_catalog_architecture,
+        render_compose=render_catalog_compose,
+        verify_image=verify_docker_image_architecture,
+        projects=compose_project_manager,
+        run_docker=run_docker_command,
+        container_exists=docker_container_exists,
+        normalize_name=normalize_docker_name,
+        enabled=docker_app_store_enabled,
+        installed_images=installed_docker_images,
+    )
+    return InstallManager(services, COMPOSE_APP_DIR, INSTALL_JOBS, INSTALL_JOBS_LOCK)
+
+
 def read_store_catalog_cache():
-    wrapper = load_json_file(STORE_CATALOG_CACHE, {})
-    if not isinstance(wrapper.get("catalog"), dict):
-        return None, 0
-    try:
-        return validate_store_catalog(wrapper["catalog"]), int(wrapper.get("fetched_at") or 0)
-    except (TypeError, ValueError):
-        return None, 0
+    return catalog_client().read_store_catalog_cache()
 
 
 def save_store_catalog_cache(catalog):
-    STORE_CATALOG_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = STORE_CATALOG_CACHE.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps({"fetched_at": int(time.time()), "catalog": catalog}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(STORE_CATALOG_CACHE)
+    return catalog_client().save_store_catalog_cache(catalog)
 
 
 def fetch_store_catalog(url):
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise ValueError("The app catalog URL must use HTTPS")
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "HomeStart/1.0"})
-    with urllib.request.urlopen(request, timeout=8) as response:
-        if int(getattr(response, "status", 200)) != 200:
-            raise ValueError("The app catalog server returned an error")
-        payload = response.read(4_000_001)
-    if len(payload) > 4_000_000:
-        raise ValueError("The app catalog is too large")
-    return validate_store_catalog(json.loads(payload.decode("utf-8")))
+    return catalog_fetch(url)
 
 
 def load_store_catalog(refresh=False):
-    with STORE_CATALOG_LOCK:
-        cached, fetched_at = read_store_catalog_cache()
-        if cached and not refresh and time.time() - fetched_at < STORE_CATALOG_TTL:
-            return cached, {"source": "cache", "stale": False, "fetched_at": fetched_at}
-        url = store_catalog_url()
-        if url:
-            try:
-                catalog = fetch_store_catalog(url)
-                save_store_catalog_cache(catalog)
-                return catalog, {"source": "remote", "stale": False, "fetched_at": int(time.time())}
-            except (ValueError, OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as error:
-                if cached:
-                    return cached, {
-                        "source": "cache",
-                        "stale": True,
-                        "fetched_at": fetched_at,
-                        "warning": f"Using the last valid catalog: {error}",
-                    }
-                return None, {"source": "builtin", "stale": True, "warning": str(error)}
-        if cached:
-            return cached, {"source": "cache", "stale": True, "fetched_at": fetched_at}
-        return None, {"source": "builtin", "stale": True}
+    return catalog_client().load_store_catalog(refresh)
 
 
 def replace_store_placeholders(value, values):
@@ -3631,41 +3607,19 @@ def dockerhub_page_url(name, official=False):
     return store_dockerhub_page_url(name, official)
 
 
+def dockerhub_client(verifier=None):
+    return DockerHubClient(
+        docker_app_store_enabled, installed_docker_images, host_architecture_payload,
+        DOCKERHUB_VERIFICATION_CACHE, DOCKERHUB_VERIFICATION_LOCK, verifier=verifier,
+    )
+
+
 def dockerhub_verification(name, official=False):
-    if official:
-        return {"verified": True, "verification_label": "Docker Official Image", "trusted_rank": 3}
-    key = str(name or "").strip().lower()
-    now = time.time()
-    with DOCKERHUB_VERIFICATION_LOCK:
-        cached = DOCKERHUB_VERIFICATION_CACHE.get(key)
-        if cached and now - cached[0] < 21600:
-            return dict(cached[1])
-    result = {"verified": False, "verification_label": "", "trusted_rank": 0}
-    try:
-        request = urllib.request.Request(dockerhub_page_url(key), headers={"User-Agent": "HomeStart/1.0"})
-        with urllib.request.urlopen(request, timeout=6) as response:
-            page = response.read(1_500_000).decode("utf-8", errors="ignore")
-        if "Verified Publisher" in page:
-            result = {"verified": True, "verification_label": "Verified Publisher", "trusted_rank": 2}
-        elif "Docker-Sponsored Open Source" in page:
-            result = {"verified": True, "verification_label": "Docker-Sponsored Open Source", "trusted_rank": 1}
-    except (urllib.error.URLError, TimeoutError, OSError):
-        pass
-    with DOCKERHUB_VERIFICATION_LOCK:
-        DOCKERHUB_VERIFICATION_CACHE[key] = (now, result)
-    return dict(result)
+    return dockerhub_client().dockerhub_verification(name, official)
 
 
 def add_dockerhub_verification(results):
-    pending = [item for item in results if not item.get("official")]
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(pending)))) as executor:
-        checks = list(executor.map(lambda item: dockerhub_verification(item.get("name")), pending))
-    for item in results:
-        if item.get("official"):
-            item.update(dockerhub_verification(item.get("name"), True))
-    for item, verification in zip(pending, checks):
-        item.update(verification)
-    return results
+    return dockerhub_client(verifier=dockerhub_verification).add_dockerhub_verification(results)
 
 
 def docker_action(name, action):
@@ -3744,92 +3698,7 @@ def dockerhub_repository_from_url(value):
 
 
 def dockerhub_search(query, limit=12):
-    if not docker_app_store_enabled():
-        raise ValueError("Docker app store is disabled")
-
-    query = str(query or "").strip()
-    direct_repository = dockerhub_repository_from_url(query)
-    if len(query) < 2:
-        return {"ok": True, "results": []}
-    try:
-        limit = max(1, min(25, int(limit)))
-    except (TypeError, ValueError):
-        limit = 12
-
-    if direct_repository:
-        api_repository = direct_repository if "/" in direct_repository else f"library/{direct_repository}"
-        url = f"https://hub.docker.com/v2/repositories/{quote(api_repository, safe='/')}/"
-    else:
-        url = "https://hub.docker.com/v2/search/repositories/?" + urlencode(
-            {"query": query, "page_size": limit}
-        )
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "HomeStart/1.0",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        raise ValueError(f"Could not search Docker Hub: {error}") from error
-
-    if direct_repository:
-        payload = {"results": [{
-            "repo_name": direct_repository,
-            "short_description": payload.get("description") or payload.get("full_description") or "Docker Hub image",
-            "star_count": payload.get("star_count") or 0,
-            "pull_count": payload.get("pull_count") or 0,
-            "is_official": "/" not in direct_repository,
-            "is_automated": False,
-        }]}
-        query = direct_repository
-    query_tokens = [token for token in re.split(r"[^a-z0-9]+", query.lower()) if token]
-    compact_query = "".join(query_tokens)
-    results = []
-    installed = installed_docker_images()
-    for item in payload.get("results", []):
-        name = str(item.get("repo_name") or "").strip()
-        if not name:
-            continue
-        namespace, _, repo = name.rpartition("/")
-        if not repo:
-            namespace = "library" if item.get("is_official") else ""
-            repo = name
-        description = item.get("short_description") or ""
-        icon_slug = dockerhub_icon_slug(name)
-        results.append(
-            {
-                "name": name,
-                "image": name,
-                "namespace": namespace,
-                "repo": repo,
-                "page_url": dockerhub_page_url(name, bool(item.get("is_official"))),
-                "description": description,
-                "stars": item.get("star_count") or 0,
-                "pulls": item.get("pull_count") or 0,
-                "official": bool(item.get("is_official")),
-                "automated": bool(item.get("is_automated")),
-                "icon_url": f"https://cdn.simpleicons.org/{icon_slug}/38bdf8" if icon_slug else "",
-                "icon_label": repo[:1].upper(),
-                "relevance": dockerhub_result_score(name, description, query_tokens, compact_query, item),
-                "installed": image_repository(name) in installed,
-                "installed_containers": installed.get(image_repository(name), []),
-                "host_architecture": host_architecture_payload()["architecture"],
-                "architectures": [],
-                "architecture_status": "unknown",
-                "architecture_compatible": None,
-            }
-        )
-    add_dockerhub_verification(results)
-    results.sort(key=lambda item: (item.get("trusted_rank", 0), item["relevance"], item["pulls"], item["stars"]), reverse=True)
-    return {
-        "ok": True,
-        "results": results,
-        **host_architecture_payload(),
-    }
+    return dockerhub_client().dockerhub_search(query, limit)
 
 
 def dockerhub_icon_slug(image):
@@ -3923,38 +3792,11 @@ def safe_volume_mapping(value):
 
 
 def update_install_job(job_id, **values):
-    with INSTALL_JOBS_LOCK:
-        job = INSTALL_JOBS.get(job_id)
-        if job:
-            job.update(values)
-            job["updated_at"] = int(time.time())
+    return install_manager().update_install_job(job_id, **values)
 
 
 def docker_pull_with_progress(image, job_id):
-    process = subprocess.Popen(
-        ["docker", "pull", image],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    recent = []
-    completed_layers = set()
-    progress = 15
-    for raw_line in process.stdout or []:
-        line = raw_line.strip()
-        if not line:
-            continue
-        recent = (recent + [line])[-12:]
-        layer = line.split(":", 1)[0].strip()
-        if "Pull complete" in line or "Already exists" in line:
-            completed_layers.add(layer)
-        progress = max(progress, min(80, 15 + len(completed_layers) * 4))
-        update_install_job(job_id, stage="pulling", progress=progress, message=line, log=recent)
-    return_code = process.wait()
-    if return_code:
-        detail = recent[-1] if recent else f"docker pull exited with code {return_code}"
-        raise ValueError(detail)
+    return install_manager().docker_pull_with_progress(image, job_id)
 
 
 def catalog_install_values(app, supplied):
@@ -3974,200 +3816,31 @@ def render_catalog_compose(app, supplied):
 
 
 def compose_project_name(app_id, instance):
-    value = re.sub(r"[^a-z0-9_-]+", "-", f"homestart-{app_id}-{instance}".lower()).strip("-_")
-    return value[:63] or f"homestart-{uuid.uuid4().hex[:8]}"
+    return install_project_name(app_id, instance)
 
 
 def compose_command_with_progress(command, job_id, stage, start, end):
-    process = subprocess.Popen(
-        ["docker", "compose", *command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    recent = []
-    line_count = 0
-    for raw_line in process.stdout or []:
-        line = raw_line.strip()
-        if not line:
-            continue
-        line_count += 1
-        recent = (recent + [line])[-16:]
-        progress = min(end - 1, start + min(end - start - 1, line_count))
-        update_install_job(job_id, stage=stage, progress=progress, message=line, log=recent)
-    return_code = process.wait()
-    if return_code:
-        detail = recent[-1] if recent else f"docker compose exited with code {return_code}"
-        raise ValueError(detail)
-    return recent
+    return install_manager().compose_command_with_progress(command, job_id, stage, start, end)
 
 
 def compose_store_install(payload, job_id=None):
-    app = store_catalog_app(payload.get("template_id"))
-    require_catalog_architecture(app)
-    compose, values = render_catalog_compose(app, payload.get("values"))
-    for image in {
-        str(service.get("image") or "")
-        for service in compose["services"].values()
-        if service.get("image")
-    }:
-        verify_docker_image_architecture(image)
-    managed = [
-        record for record in compose_project_manager().projects().values()
-        if record.get("template_id") == app["id"]
-    ]
-    if managed:
-        raise ValueError(
-            f"{app['name']} is already managed as {managed[0].get('name') or managed[0]['project']}"
-        )
-    existing = run_docker_command(
-        ["ps", "-a", "--filter", f"label=com.homestart.template={app['id']}", "--format", "{{.Names}}"],
-        timeout=15,
-    )
-    if existing:
-        raise ValueError(f"{app['name']} is already installed as {', '.join(existing.splitlines())}")
-    container_names = [
-        str(service.get("container_name") or "")
-        for service in compose["services"].values()
-        if service.get("container_name")
-    ]
-    for name in container_names:
-        normalize_docker_name(name)
-        if docker_container_exists(name):
-            raise ValueError(f"A Docker container named {name} already exists")
-    try:
-        run_docker_command(["compose", "version"], timeout=15)
-    except ValueError as error:
-        raise ValueError("Docker Compose is required to install catalog apps") from error
-
-    instance = values.get("container_name") or app["id"]
-    project = compose_project_name(app["id"], instance)
-    compose["name"] = project
-    project_dir = COMPOSE_APP_DIR / f"{app['id']}--{project[-24:]}"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    compose_path = project_dir / "compose.yaml"
-    temporary = compose_path.with_suffix(".yaml.tmp")
-    temporary.write_text(yaml.safe_dump(compose, sort_keys=False), encoding="utf-8")
-    temporary.chmod(0o600)
-    temporary.replace(compose_path)
-
-    base = ["-f", str(compose_path), "-p", project]
-    if job_id:
-        update_install_job(job_id, stage="pulling", progress=10, message=f"Downloading images for {app['name']}…")
-        compose_command_with_progress([*base, "pull"], job_id, "pulling", 12, 78)
-        update_install_job(job_id, stage="creating", progress=82, message="Creating the Compose project…")
-        compose_command_with_progress([*base, "up", "-d"], job_id, "creating", 84, 97)
-    else:
-        run_docker_command(["compose", *base, "pull"], timeout=900)
-        run_docker_command(["compose", *base, "up", "-d"], timeout=180)
-    running = run_docker_command(["compose", *base, "ps", "--status", "running", "-q"], timeout=30)
-    state = "running" if running else "created"
-    compose_project_manager().record_install(
-        compose_path,
-        project,
-        app["id"],
-        app["name"],
-        compose,
-    )
-    return {
-        "ok": True,
-        "container": ", ".join(container_names) or app["name"],
-        "containers": container_names,
-        "image": next(iter(compose["services"].values()))["image"],
-        "template_id": app["id"],
-        "compose_file": str(compose_path),
-        "project": project,
-        "message": f"Installed {app['name']} with Docker Compose",
-        "state": state,
-    }
+    return install_manager().compose_store_install(payload, job_id)
 
 
 def docker_store_install(payload, job_id=None):
-    if not docker_app_store_enabled():
-        raise ValueError("Docker app store is disabled")
-    if payload.get("template_id"):
-        return compose_store_install(payload, job_id)
-
-    image = normalize_docker_image(payload.get("image", ""))
-    verify_docker_image_architecture(image)
-    installed = installed_docker_images()
-    if image_repository(image) in installed:
-        names = ", ".join(installed[image_repository(image)])
-        raise ValueError(f"This image is already installed as {names}")
-    container_name = normalize_docker_name(payload.get("name") or image.rsplit("/", 1)[-1].split(":", 1)[0])
-    host_port = normalize_container_port(payload.get("host_port"))
-    container_port = normalize_container_port(payload.get("container_port"))
-    restart_policy = str(payload.get("restart_policy") or "unless-stopped").strip()
-    if restart_policy not in {"no", "always", "unless-stopped", "on-failure"}:
-        raise ValueError("Invalid restart policy")
-    if docker_container_exists(container_name):
-        raise ValueError(f"A Docker container named {container_name} already exists")
-
-    env_values = [safe_env_assignment(item) for item in payload.get("env", []) if str(item or "").strip()]
-    volume_values = [safe_volume_mapping(item) for item in payload.get("volumes", []) if str(item or "").strip()]
-
-    if job_id:
-        update_install_job(job_id, stage="pulling", progress=10, message=f"Downloading {image}…")
-        docker_pull_with_progress(image, job_id)
-        update_install_job(job_id, stage="creating", progress=85, message="Creating container…")
-    else:
-        run_docker_command(["pull", image], timeout=600)
-
-    command = ["run", "-d", "--name", container_name, "--restart", restart_policy]
-    if host_port and container_port:
-        command.extend(["-p", f"{host_port}:{container_port}"])
-    for value in env_values:
-        command.extend(["-e", value])
-    for value in volume_values:
-        command.extend(["-v", value])
-    command.append(image)
-
-    container_id = run_docker_command(command, timeout=120).strip()
-    if job_id:
-        update_install_job(job_id, stage="starting", progress=95, message="Container created; checking status…")
-        try:
-            state = run_docker_command(["inspect", "--format", "{{.State.Status}}", container_name], timeout=15).strip()
-        except ValueError:
-            state = "created"
-    return {
-        "ok": True,
-        "container": container_name,
-        "container_id": container_id[:12],
-        "image": image,
-        "message": f"Installed {container_name} from {image}",
-        "state": state if job_id else "running",
-    }
+    return install_manager().docker_store_install(payload, job_id)
 
 
 def run_store_install_job(job_id, payload):
-    try:
-        result = docker_store_install(payload, job_id)
-        update_install_job(job_id, status="completed", stage="completed", progress=100,
-                           message=f"{result['container']} is {result.get('state', 'running')}", result=result)
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        update_install_job(job_id, status="failed", stage="failed", message=str(error), error=str(error))
+    return install_manager().run_store_install_job(job_id, payload)
 
 
 def start_store_install(payload):
-    job_id = uuid.uuid4().hex
-    now = int(time.time())
-    with INSTALL_JOBS_LOCK:
-        INSTALL_JOBS[job_id] = {"id": job_id, "status": "running", "stage": "validating", "progress": 3,
-                                "message": "Validating installation…", "log": [], "created_at": now, "updated_at": now}
-        expired = [key for key, job in INSTALL_JOBS.items() if now - job.get("updated_at", now) > 86400]
-        for key in expired:
-            INSTALL_JOBS.pop(key, None)
-    threading.Thread(target=run_store_install_job, args=(job_id, payload), name=f"install-{job_id[:8]}", daemon=True).start()
-    return {"ok": True, "job_id": job_id}
+    return install_manager().start_store_install(payload)
 
 
 def store_install_status(job_id):
-    with INSTALL_JOBS_LOCK:
-        job = INSTALL_JOBS.get(str(job_id or ""))
-        if not job:
-            raise ValueError("Installation job not found")
-        return {"ok": True, **job}
+    return install_manager().store_install_status(job_id)
 
 
 def configured_app(name):
