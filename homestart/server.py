@@ -3,7 +3,6 @@ import json
 import base64
 import binascii
 import gzip
-import hashlib
 import getpass
 import mimetypes
 import os
@@ -19,16 +18,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import uuid
 import zipfile
 import yaml
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from .apps.icons import AppIcons
 from .apps.discovery import AppDiscovery, DiscoveryServices
 from .backup.manager import BackupManager
 from .api.router import ApiRouter
@@ -86,11 +85,11 @@ from .samba.manager import (
     validate_share_name as validate_samba_name,
 )
 from .system.network import (
-    choose_monitor_interface as select_monitor_interface,
-    endpoint_address as parse_endpoint_address,
-    network_device_totals as parse_network_device_totals,
-    parse_ss_tcp_counters as parse_socket_tcp_counters,
-    parse_udev_properties as parse_network_udev_properties,
+    choose_monitor_interface,
+    endpoint_address,
+    network_device_totals,
+    parse_ss_tcp_counters,
+    parse_udev_properties,
 )
 from .system.network_config import (
     NetplanBackend,
@@ -191,7 +190,6 @@ DOCKERHUB_VERIFICATION_CACHE = {}
 DOCKERHUB_VERIFICATION_LOCK = threading.Lock()
 DOCKER_ARCHITECTURE_CACHE = {}
 STORE_CATALOG_LOCK = threading.Lock()
-ICON_CACHE = {}
 AUTH_COOKIE_NAME = "homestart_session"
 APP_NAME_ALIASES = {
     "openspeedtest": "openspeedtest",
@@ -733,159 +731,8 @@ def compose_project_manager():
     return ComposeProjectManager(COMPOSE_APP_DIR, COMPOSE_APP_DATA_DIR, run_docker_command)
 
 
-def with_icon(app):
-    key = app_icon_key(app)
-    app["icon_key"] = key
-    custom_icon = custom_app_icon_url(key)
-    if custom_icon:
-        app["icon_url"] = custom_icon
-        app["custom_icon"] = True
-        return app
-
-    if app.get("icon_url") or not app.get("url"):
-        return app
-    if urlparse(app.get("url", "")).scheme not in {"http", "https"}:
-        return app
-
-    app["icon_url"] = f"/api/icon?url={quote(app['url'], safe='')}"
-    return app
-
-
-def fetch_url(url):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "HomeStart/1.0",
-            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.8",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=2) as response:
-        content_type = response.headers.get_content_type()
-        if not content_type.startswith("image/"):
-            return None
-
-        body = response.read(512 * 1024 + 1)
-        if len(body) > 512 * 1024:
-            return None
-
-        return {
-            "content_type": content_type,
-            "body": body,
-        }
-
-
-def fetch_html_icon_urls(app_url):
-    request = urllib.request.Request(
-        app_url,
-        headers={
-            "User-Agent": "HomeStart/1.0",
-            "Accept": "text/html,application/xhtml+xml",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=2) as response:
-        content_type = response.headers.get_content_type()
-        if content_type not in {"text/html", "application/xhtml+xml"}:
-            return []
-
-        html = response.read(256 * 1024).decode("utf-8", errors="replace")
-
-    urls = []
-    for tag in re.findall(r"<link\b[^>]*>", html, flags=re.IGNORECASE):
-        rel = re.search(r"\brel=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
-        href = re.search(r"\bhref=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
-        if not rel or not href:
-            continue
-        if "icon" not in rel.group(1).lower():
-            continue
-        urls.append(urljoin(app_url, href.group(1)))
-    return urls
-
-
-def icon_candidates(app_url):
-    parsed = urlparse(app_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return []
-
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    candidates = [f"{base}{path}" for path in ICON_CANDIDATES]
-    if parsed.path and parsed.path != "/":
-        parent = parsed.path.rsplit("/", 1)[0] or ""
-        candidates.extend(f"{base}{parent}{path}" for path in ICON_CANDIDATES)
-
-    try:
-        candidates.extend(fetch_html_icon_urls(app_url))
-    except (urllib.error.URLError, TimeoutError, OSError):
-        pass
-
-    return candidates
-
-
-def get_icon(app_url):
-    if app_url in ICON_CACHE:
-        return ICON_CACHE[app_url]
-
-    for candidate in icon_candidates(app_url):
-        try:
-            icon = fetch_url(candidate)
-        except (urllib.error.URLError, TimeoutError, OSError):
-            continue
-
-        if icon:
-            ICON_CACHE[app_url] = icon
-            return icon
-
-    ICON_CACHE[app_url] = None
-    return None
-
-
-def app_icon_key(app):
-    identity = [
-        str(app.get("docker_name") or ""),
-        str(app.get("name") or ""),
-        str(app.get("url") or ""),
-        str(app.get("image") or ""),
-    ]
-    raw = "\n".join(identity).strip().lower()
-    if not raw:
-        raw = str(uuid.uuid4())
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-
-def load_app_icon_index():
-    try:
-        data = json.loads(APP_ICON_INDEX.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        data = {}
-    return data if isinstance(data, dict) else {}
-
-
-def save_app_icon_index(data):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    APP_ICON_INDEX.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def custom_app_icon(app_key):
-    item = load_app_icon_index().get(str(app_key or ""))
-    if not isinstance(item, dict):
-        return None
-    filename = item.get("filename", "")
-    if not re.fullmatch(r"[a-f0-9]{24}\.(png|jpg|jpeg|gif|webp|svg)", filename):
-        return None
-    path = APP_ICON_DIR / filename
-    if not path.is_file():
-        return None
-    return {
-        "path": path,
-        "content_type": item.get("content_type", "image/png"),
-    }
-
-
-def custom_app_icon_url(app_key):
-    return f"/api/apps/icon?key={quote(str(app_key), safe='')}" if custom_app_icon(app_key) else ""
-
-
 def serve_custom_app_icon(handler, app_key, include_body=True):
-    icon = custom_app_icon(app_key)
+    icon = APP_ICONS.custom_app_icon(app_key)
     if not icon:
         handler.send_response(HTTPStatus.NOT_FOUND)
         handler.end_headers()
@@ -903,79 +750,8 @@ def serve_custom_app_icon(handler, app_key, include_body=True):
         handler.wfile.write(body)
 
 
-def save_custom_app_icon(payload):
-    app_key = str(payload.get("app_key") or "").strip()
-    if not re.fullmatch(r"[a-f0-9]{24}", app_key):
-        raise ValueError("Invalid app icon key")
-
-    name = str(payload.get("filename") or "icon").lower()
-    content = str(payload.get("content") or "")
-    header = ""
-    if content.startswith("data:") and "," in content:
-        header, content = content.split(",", 1)
-
-    content_type = ""
-    match = re.match(r"data:([^;]+);base64", header)
-    if match:
-        content_type = match.group(1).lower()
-
-    extension_map = {
-        "image/png": "png",
-        "image/jpeg": "jpg",
-        "image/gif": "gif",
-        "image/webp": "webp",
-        "image/svg+xml": "svg",
-    }
-    extension = extension_map.get(content_type)
-    if extension is None:
-        suffix = Path(name).suffix.lower().lstrip(".")
-        if suffix in {"png", "jpg", "jpeg", "gif", "webp", "svg"}:
-            extension = "jpg" if suffix == "jpeg" else suffix
-            content_type = {
-                "png": "image/png",
-                "jpg": "image/jpeg",
-                "gif": "image/gif",
-                "webp": "image/webp",
-                "svg": "image/svg+xml",
-            }[extension]
-
-    if extension is None:
-        raise ValueError("Icon must be a PNG, JPG, GIF, WebP, or SVG image")
-
-    try:
-        body = base64.b64decode(content, validate=True)
-    except (ValueError, binascii.Error) as error:
-        raise ValueError("Invalid icon encoding") from error
-
-    if len(body) > 512 * 1024:
-        raise ValueError("Icon is too large")
-    if extension == "svg" and b"<script" in body.lower():
-        raise ValueError("SVG icons cannot contain scripts")
-
-    APP_ICON_DIR.mkdir(parents=True, exist_ok=True)
-    index = load_app_icon_index()
-    old = custom_app_icon(app_key)
-    if old:
-        old["path"].unlink(missing_ok=True)
-
-    filename = f"{app_key}.{extension}"
-    path = APP_ICON_DIR / filename
-    path.write_bytes(body)
-    index[app_key] = {
-        "filename": filename,
-        "content_type": content_type,
-        "original_name": name[:120],
-        "updated_at": int(time.time()),
-    }
-    save_app_icon_index(index)
-    return {
-        "ok": True,
-        "icon_url": custom_app_icon_url(app_key),
-    }
-
-
 def serve_icon(handler, app_url, include_body=True):
-    icon = get_icon(app_url)
+    icon = APP_ICONS.get_icon(app_url)
     if not icon:
         handler.send_response(HTTPStatus.NOT_FOUND)
         handler.end_headers()
@@ -1198,18 +974,6 @@ def overview_payload():
             "services_total": len(status["services"]),
         },
     }
-
-
-def network_device_totals(content):
-    return parse_network_device_totals(content)
-
-
-def parse_ss_tcp_counters(output):
-    return parse_socket_tcp_counters(output)
-
-
-def endpoint_address(endpoint):
-    return parse_endpoint_address(endpoint)
 
 
 def interface_ip_addresses(interface):
@@ -1532,10 +1296,6 @@ def read_sysfs_value(path, fallback=""):
         return fallback
 
 
-def parse_udev_properties(content):
-    return parse_network_udev_properties(content)
-
-
 def udev_network_properties(interface):
     try:
         result = subprocess.run(
@@ -1606,10 +1366,6 @@ def monitorable_network_interfaces(refresh=False):
         items.append(network_interface_metadata(name, address_map.get(name)))
     NETWORK_INTERFACE_CACHE = {"at": now, "items": sorted(items, key=lambda item: item["name"])}
     return NETWORK_INTERFACE_CACHE["items"]
-
-
-def choose_monitor_interface(items, configured="auto", route_names=None):
-    return select_monitor_interface(items, configured, route_names)
 
 
 def default_route_interfaces():
@@ -3399,13 +3155,21 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         self.wfile.flush()
 
 
+APP_ICONS = AppIcons(
+    icon_dir=lambda: APP_ICON_DIR,
+    index_path=lambda: APP_ICON_INDEX,
+    candidates=ICON_CANDIDATES,
+    urlopen=lambda *args, **kwargs: urllib.request.urlopen(*args, **kwargs),
+)
+
+
 APP_DISCOVERY = AppDiscovery(DiscoveryServices(
     docker_inspect=lambda *args, **kwargs: docker_inspect(*args, **kwargs),
     docker_port_mappings=lambda *args, **kwargs: docker_port_mappings(*args, **kwargs),
     select_docker_web_mapping=lambda *args, **kwargs: select_docker_web_mapping(*args, **kwargs),
     docker_ports_for_display=lambda *args, **kwargs: docker_ports_for_display(*args, **kwargs),
     docker_url_from_mapping=lambda *args, **kwargs: docker_url_from_mapping(*args, **kwargs),
-    with_icon=lambda *args, **kwargs: with_icon(*args, **kwargs),
+    with_icon=lambda *args, **kwargs: APP_ICONS.with_icon(*args, **kwargs),
     normalized_name=lambda *args, **kwargs: normalized_name(*args, **kwargs),
     compose_project_manager=lambda *args, **kwargs: compose_project_manager(*args, **kwargs),
     app_uninstall_enabled=lambda *args, **kwargs: app_uninstall_enabled(*args, **kwargs),

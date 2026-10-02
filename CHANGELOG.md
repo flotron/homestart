@@ -4,6 +4,12 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3180
+
+- Simplify sidebar labels by keeping filesystem and device paths in hover details.
+- Move icon lookup, download caching and custom icon storage into a persistent AppIcons service.
+- Replace redundant network parser forwarding functions with direct module imports.
+
 ## 20261002-3170
 
 - Expand physical drives to show their volumes, preserving expansion while browsing.

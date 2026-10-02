@@ -400,7 +400,7 @@ class ApiRouter:
 
     def _post_api_apps_icon(self, handler, query):
         b = self.backend
-        handler.send_json(b.save_custom_app_icon(self.json_body(handler)))
+        handler.send_json(b.APP_ICONS.save_custom_app_icon(self.json_body(handler)))
 
     def _post_api_store_install(self, handler, query):
         b = self.backend

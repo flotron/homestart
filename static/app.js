@@ -2492,8 +2492,8 @@ function renderRoots() {
     const icon = node.querySelector(".root-icon");
     icon.classList.add(rootEntry.kind || "folder");
     node.querySelector("strong").textContent = rootEntry.name || fileRootLabel(root);
-    const details = [rootEntry.size, rootEntry.filesystem, rootEntry.device].filter(Boolean).join(" · ");
-    node.querySelector("small").textContent = details || root;
+    const details = [rootEntry.size, rootEntry.filesystem].filter(Boolean).join(" · ");
+    node.querySelector("small").textContent = details || "Folder";
     node.title = root;
     if (root === activeRoot) {
       node.classList.add("active");
@@ -2590,7 +2590,7 @@ function renderDriveNode(entry, isDisk, activeEntry, toggleVolumes = null) {
   const filesystem = (entry.filesystem || "").toLowerCase();
   let status;
   if (toggleVolumes) status = "Physical drive · expand to see its volumes";
-  else if (mount) status = entry.can_unmount ? "Read-only access" : mount.path;
+  else if (mount) status = entry.can_unmount ? "Read-only access" : "Ready to browse";
   else if (entry.mountpoints?.length) status = "Outside allowed locations";
   else if (filesystem === "lvm2_member") status = "Volume group · open the volume below";
   else if (filesystem === "crypto_luks") status = "Encrypted volume · unlock in Linux first";
@@ -2599,7 +2599,7 @@ function renderDriveNode(entry, isDisk, activeEntry, toggleVolumes = null) {
   else if (entry.can_mount) status = mountingEnabled ? "Available to open" : "Opening volumes is disabled in Settings";
   else if (isDisk && /^0(?:[.,]0)?\s*[B]?$/i.test(entry.size || "")) status = "No media inserted";
   else status = "No browsable volume";
-  const details = [entry.size, entry.filesystem, entry.path].filter(Boolean).join(" · ");
+  const details = [entry.size, entry.filesystem].filter(Boolean).join(" · ");
   const target = document.createElement(interactive ? "button" : "div");
   target.className = "drive-target";
   if (interactive) target.type = "button";
@@ -2608,7 +2608,7 @@ function renderDriveNode(entry, isDisk, activeEntry, toggleVolumes = null) {
   target.querySelector("strong").textContent = title;
   target.querySelector("small").textContent = details;
   target.querySelector(".drive-status").textContent = status;
-  target.title = `${title} · ${details} · ${status}`;
+  target.title = [title, details, entry.path, mount?.path, status].filter(Boolean).join(" · ");
   if (interactive) {
     const label = document.createElement("span");
     label.className = "drive-open-label";
