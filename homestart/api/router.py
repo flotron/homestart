@@ -145,7 +145,7 @@ class ApiRouter:
 
     def _get_api_system(self, handler, query):
         b = self.backend
-        handler.send_json(b.system_payload(None))
+        handler.send_json(b.HOST_METRICS.system_payload(None))
 
     def _get_api_system_power(self, handler, query):
         b = self.backend
@@ -216,7 +216,7 @@ class ApiRouter:
 
     def _get_api_resources(self, handler, query):
         b = self.backend
-        handler.send_json(b.resources_payload())
+        handler.send_json(b.HOST_METRICS.resources_payload())
 
     def _get_api_speedtest_history(self, handler, query):
         b = self.backend

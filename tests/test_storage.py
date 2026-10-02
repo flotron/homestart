@@ -49,3 +49,24 @@ class StorageTests(unittest.TestCase):
         self.config['features']['file_operations'] = False
         partition = self.manager.physical_drive_entries()[0]['children'][0]
         self.assertFalse(partition['can_mount'])
+
+    def test_container_signatures_are_never_mounted(self):
+        node = self.devices['blockdevices'][0]['children'][0]
+        for filesystem in ('LVM2_member', 'crypto_LUKS', 'swap', 'linux_raid_member', 'zfs_member'):
+            with self.subTest(filesystem=filesystem):
+                node['fstype'] = filesystem
+                self.assertFalse(self.manager.physical_drive_entries()[0]['children'][0]['can_mount'])
+                with patch('homestart.system.storage.subprocess.check_output') as command:
+                    with self.assertRaisesRegex(ValueError, 'storage container'):
+                        self.manager.mount_block_device_readonly('/dev/sdb1')
+                    command.assert_not_called()
+
+    def test_lvm_child_volume_remains_browsable(self):
+        node = self.devices['blockdevices'][0]['children'][0]
+        node['fstype'] = 'LVM2_member'
+        node['children'] = [{'name': 'data', 'path': '/dev/mapper/data',
+                             'type': 'lvm', 'fstype': 'ext4',
+                             'mountpoints': [str(self.root)]}]
+        entry = self.manager.physical_drive_entries()[0]['children'][0]
+        self.assertFalse(entry['can_mount'])
+        self.assertTrue(entry['children'][0]['mountpoints'][0]['allowed'])

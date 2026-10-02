@@ -1,8 +1,16 @@
-﻿# Changelog
+# Changelog
 
 All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
+
+## 20261002-3150
+
+- Extract host CPU, memory, GPU, temperature, process and container resource collectors
+  into a persistent HostMetrics service with explicit dependencies and direct API calls.
+- Clarify Files drive navigation with native open buttons, hand cursors and readable volume states.
+- Explain read-only access and releasing a volume instead of bare Mount/Unmount labels.
+- Reject LVM, encrypted, RAID and swap signatures as directly browsable filesystems.
 
 ## 20261002-3140
 
