@@ -54,8 +54,18 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   lifecycle actions, protected data removal and template risk analysis.
 - `homestart/docker/store.py` owns declarative catalog validation, placeholder
   expansion, installer input normalization, Compose rendering and pure Docker
-  Hub result helpers. Remote fetches and long-running install orchestration
-  remain in the server boundary for now.
+  Hub result helpers.
+- `homestart/docker/catalog.py` handles remote catalog fetching, validated disk
+  caching and stale-cache fallback. Configuration, locking and fetch services
+  are explicit dependencies.
+- `homestart/docker/install.py` owns Docker/Compose installation orchestration,
+  progress and background jobs. An explicit `InstallServices` dependency set
+  supplies host validation, catalog rendering and Docker commands; job state and
+  its lock are shared with the server compatibility wrappers. Neither module
+  imports the server. Template presentation and image architecture orchestration
+  remain in the server boundary for a later extraction.
+- `homestart/docker/hub.py` owns Docker Hub search, publisher verification and
+  its shared cache, with injected host metadata and HTTP transport.
 - `homestart/updates/github.py` handles GitHub release metadata and asset
   downloads.
 - `homestart/updates/package.py` validates, stages, preflights, atomically
