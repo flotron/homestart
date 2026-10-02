@@ -2505,10 +2505,11 @@ function renderRoots() {
     return wrapper;
   });
 
+  const activeDrive = activeDriveEntry();
   const driveNodes = state.fileDriveEntries.length
     ? [
         sectionLabel("Physical drives"),
-        ...state.fileDriveEntries.map(renderDriveEntry),
+        ...state.fileDriveEntries.map((entry) => renderDriveEntry(entry, activeDrive)),
       ]
     : [];
   fileRoots.replaceChildren(sectionLabel("Locations"), ...locationNodes, ...driveNodes);
@@ -2521,24 +2522,40 @@ function sectionLabel(label) {
   return node;
 }
 
-function renderDriveEntry(entry) {
+function activeDriveEntry() {
+  let active = null;
+  let longest = -1;
+  function visit(entry) {
+    for (const mount of entry.mountpoints || []) {
+      if (mount.allowed && rootContainsPath(mount.path, state.filePath) && mount.path.length > longest) {
+        active = entry;
+        longest = mount.path.length;
+      }
+    }
+    (entry.children || []).forEach(visit);
+  }
+  state.fileDriveEntries.forEach(visit);
+  return active;
+}
+
+function renderDriveEntry(entry, activeEntry) {
   const wrapper = document.createElement("div");
   wrapper.className = "drive-tree";
-  wrapper.appendChild(renderDriveNode(entry, true));
-  (entry.children || []).forEach((child) => renderDriveChildren(wrapper, child));
+  wrapper.appendChild(renderDriveNode(entry, true, activeEntry));
+  (entry.children || []).forEach((child) => renderDriveChildren(wrapper, child, activeEntry));
   return wrapper;
 }
 
-function renderDriveChildren(parent, entry) {
-  parent.appendChild(renderDriveNode(entry, false));
-  (entry.children || []).forEach((child) => renderDriveChildren(parent, child));
+function renderDriveChildren(parent, entry, activeEntry) {
+  parent.appendChild(renderDriveNode(entry, false, activeEntry));
+  (entry.children || []).forEach((child) => renderDriveChildren(parent, child, activeEntry));
 }
 
 function firstAllowedMount(entry) {
   return (entry.mountpoints || []).find((mount) => mount.allowed && mount.path);
 }
 
-function renderDriveNode(entry, isDisk) {
+function renderDriveNode(entry, isDisk, activeEntry) {
   const mount = firstAllowedMount(entry);
   const node = document.createElement("div");
   node.className = `drive-entry ${isDisk ? "disk" : "partition"}`;
@@ -2568,7 +2585,10 @@ function renderDriveNode(entry, isDisk) {
   if (mount) {
     target.setAttribute("aria-label", `Open ${title}: ${mount.path}`);
     target.addEventListener("click", () => openFileLocation(mount.path));
-    if (rootContainsPath(mount.path, state.filePath)) node.classList.add("active");
+    if (entry === activeEntry) {
+      node.classList.add("active");
+      target.setAttribute("aria-current", "location");
+    }
   }
   const actionsNode = document.createElement("span");
   actionsNode.className = "drive-actions";
@@ -2925,9 +2945,13 @@ async function waitForHomeStartRestart(statusNode) {
   statusNode.textContent = "HomeStart did not return automatically. Reload this page to check the service.";
 }
 
+let fileNavigationRequest = 0;
+
 async function loadFiles(path = "") {
+  const request = ++fileNavigationRequest;
   const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" });
   const data = await response.json();
+  if (request !== fileNavigationRequest) return;
   if (!response.ok || data.error) {
     window.alert(data.error || "Could not open the folder");
     return;

@@ -103,3 +103,44 @@ test('malformed favorites do not prevent application startup', () => {
     assert.equal(vm.runInContext('state.favorites.size', context), 0);
   }
 });
+
+test('physical drives select one most-specific volume, including nested and duplicate mounts', () => {
+  const root = {mountpoints: [{allowed: true, path: '/'}]};
+  const boot = {mountpoints: [{allowed: true, path: '/boot'}]};
+  const duplicate = {mountpoints: [{allowed: true, path: '/boot'}]};
+  const hidden = {mountpoints: [{allowed: false, path: '/boot/private'}]};
+  const state = {filePath: '/boot/private/file', fileDriveEntries: [{children: [root, boot, duplicate, hidden]}]};
+  const context = vm.createContext({state});
+  vm.runInContext(appSource.slice(appSource.indexOf('function activeDriveEntry'), appSource.indexOf('function renderDriveEntry')), context);
+  vm.runInContext(appSource.slice(appSource.indexOf('function rootContainsPath'), appSource.indexOf('function setFileLocationsOpen')), context);
+  assert.equal(context.activeDriveEntry(), boot);
+  state.filePath = '/bootleg';
+  assert.equal(context.activeDriveEntry(), root);
+  state.filePath = '/';
+  assert.equal(context.activeDriveEntry(), root);
+  state.filePath = '';
+  assert.equal(context.activeDriveEntry(), null);
+});
+
+test('folder navigation ignores stale successes and stale errors after a newer click', async () => {
+  for (const staleError of [false, true]) {
+    const pending = [];
+    const state = {selectedFiles: new Set()};
+    let renders = 0;
+    const context = vm.createContext({state, encodeURIComponent,
+      fetch: () => new Promise(resolve => pending.push(resolve)),
+      window: {alert() { assert.fail('stale errors must not interrupt the new folder'); }},
+      filePathNode: {}, fileLocationName: {}, fileCount: {}, fileUp: {}, sambaUseCurrent: {},
+      currentFolderName: path => path, updateFileControls() {}, renderRoots() { renders++; }, renderSortedFiles() {},
+    });
+    vm.runInContext(appSource.slice(appSource.indexOf('let fileNavigationRequest'), appSource.indexOf('function sambaAccessLabel')), context);
+    const first = context.loadFiles('/old');
+    const last = context.loadFiles('/new');
+    pending[1]({ok: true, json: async () => ({path: '/new'})});
+    await last;
+    pending[0]({ok: !staleError, json: async () => staleError ? {error: 'old failure'} : {path: '/old'}});
+    await first;
+    assert.equal(state.filePath, '/new');
+    assert.equal(renders, 1);
+  }
+});

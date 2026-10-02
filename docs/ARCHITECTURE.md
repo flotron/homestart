@@ -151,3 +151,12 @@ the sampler and overview call it directly, with no forwarding wrappers.
 Network sampling and application discovery are live injected providers; the
 module does not import the server. Network attribution, sampling schedules and
 history orchestration remain in the server for a subsequent focused extraction.
+
+Application discovery lives in `homestart/apps/discovery.py`. One `APP_DISCOVERY`
+instance assembles configured entries, Docker containers, managed Compose projects,
+Apache/Nginx roots, cached native listeners and known native services. Explicit
+`DiscoveryServices` providers keep configuration, icons, lifecycle permissions and
+Compose paths live. The Apps API, Status API and host metrics call this instance
+directly. Native listener scanning continues to use its existing background cache;
+this extraction does not add another scanner or change app precedence. Docker port
+selection, icons and lifecycle actions remain in their existing server boundaries.
