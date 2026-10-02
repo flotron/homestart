@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3130
+
+- Dispatch API requests through separate GET, HEAD and POST route tables.
+- Preserve endpoint status codes, error bodies, binary uploads, streaming and
+  static-file fallback; authentication and CSRF remain enforced before dispatch.
+- Add router regression coverage for method separation, asynchronous actions,
+  backup restoration, invalid JSON and endpoint-specific errors.
+
 ## 20261002-3120
 
 - Reuse file browser and trash services while reading Settings changes live.
