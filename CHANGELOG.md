@@ -4,6 +4,12 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## Unreleased
+
+- Select only the most specific physical volume for the current folder, matching Locations.
+- Make drive browse buttons cover the row padding and remove empty action gaps.
+- Keep the latest folder navigation when requests finish out of order.
+
 ## 20261002-3150
 
 - Extract host CPU, memory, GPU, temperature, process and container resource collectors

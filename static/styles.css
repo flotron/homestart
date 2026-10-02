@@ -2000,7 +2000,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  padding: 8px 8px 8px calc(8px + (var(--depth) * 14px));
+  padding: 0;
   border-left: 1px solid transparent;
   color: var(--text);
   text-align: left;
@@ -2013,7 +2013,7 @@ button:disabled {
   align-items: center;
   width: 100%;
   min-height: 44px;
-  padding: 0;
+  padding: 8px 8px 8px calc(8px + (var(--depth) * 14px));
   border: 0;
   background: transparent;
   color: inherit;
@@ -2053,7 +2053,10 @@ button.drive-target .drive-status { color: var(--accent); }
   font-weight: 650;
 }
 
+.drive-actions:empty { display: none; }
+
 .drive-actions {
+  padding: 0 8px 8px;
   display: flex;
   justify-content: flex-end;
 }
