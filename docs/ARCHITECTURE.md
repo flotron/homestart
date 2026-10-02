@@ -138,3 +138,9 @@ The API router uses separate GET, HEAD and POST route tables. Endpoint methods
 retain their response status, error payload and streaming behavior. Unknown GET
 and HEAD paths still fall through to static handling; unknown POST paths return
 404. Authentication and CSRF stay in HomeStartHandler before route dispatch.
+
+Copy and backup services are initialized once per process as `COPY_MANAGER` and
+`BACKUP_MANAGER`. Routes and orchestration call the services directly. Backup
+authentication and configuration persistence use live providers; HTTP streaming,
+upload adaptation, path validation before copying and restart scheduling remain
+in the server. Tests explicitly configure temporary storage on their managers.

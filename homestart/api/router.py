@@ -194,7 +194,7 @@ class ApiRouter:
 
     def _get_api_backups(self, handler, query):
         b = self.backend
-        handler.send_json(b.list_backups())
+        handler.send_json(b.BACKUP_MANAGER.list_backups())
 
     def _get_api_backups_download(self, handler, query):
         b = self.backend
@@ -261,7 +261,7 @@ class ApiRouter:
     def _get_api_files_copy_status(self, handler, query):
         b = self.backend
         try:
-            handler.send_json(b.copy_job_status(query.get("job_id", [""])[0]))
+            handler.send_json(b.COPY_MANAGER.status(query.get("job_id", [""])[0]))
         except ValueError as error:
             handler.send_json({"ok": False, "error": str(error)}, HTTPStatus.NOT_FOUND)
 

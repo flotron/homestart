@@ -4,6 +4,15 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3140
+
+- Use persistent copy and backup services and remove redundant forwarding wrappers.
+- Keep copy progress/cancellation on shared job state and backup authentication
+  and configuration callbacks live across account/configuration changes.
+- Preserve download/upload HTTP handling and restart coordination after restores.
+- Add integration regression coverage for current-account backup downloads and
+  shared copy cancellation state.
+
 ## 20261002-3130
 
 - Dispatch API requests through separate GET, HEAD and POST route tables.

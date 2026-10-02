@@ -10,6 +10,7 @@ import threading
 import unittest
 from unittest import mock
 from pathlib import Path
+from homestart.backup.manager import safe_extract_tar
 
 
 class HomeStartSecurityHelperTests(unittest.TestCase):
@@ -290,6 +291,36 @@ class HomeStartSmokeTests(unittest.TestCase):
             browser_class.assert_not_called()
             trash_class.assert_not_called()
 
+    def test_backup_download_uses_current_auth_manager_and_valid_archive(self):
+        manager = self.app.BACKUP_MANAGER
+        replacement = self.app.AuthManager(Path(self.temp.name) / "replacement-auth")
+        replacement.users_path.parent.mkdir(parents=True, exist_ok=True)
+        replacement.users_path.write_text(json.dumps({"users": [{"id": "replacement"}]}))
+        self.app.AUTH_MANAGER = replacement
+        handler = mock.Mock(wfile=io.BytesIO())
+        with mock.patch.object(self.app, "BackupManager") as constructor:
+            self.app.serve_backup_download(handler)
+            constructor.assert_not_called()
+        self.assertIs(self.app.BACKUP_MANAGER, manager)
+        payload = handler.wfile.getvalue()
+        handler.send_header.assert_any_call("Content-Length", str(len(payload)))
+        handler.send_header.assert_any_call("Content-Type", "application/gzip")
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+            users = json.load(archive.extractfile("data/auth-users.json"))
+        self.assertEqual(users["users"][0]["id"], "replacement")
+
+    def test_copy_cancel_action_and_status_share_one_manager(self):
+        manager = self.app.COPY_MANAGER
+        self.app.FILE_COPY_JOBS["shared-job"] = {
+            "job_id": "shared-job", "status": "running", "cancel_requested": False,
+        }
+        with mock.patch.object(self.app, "CopyManager") as constructor:
+            self.app.file_action({"action": "copy_cancel", "job_id": "shared-job"})
+            self.assertTrue(manager.cancelled("shared-job"))
+            self.assertTrue(manager.status("shared-job")["cancel_requested"])
+            constructor.assert_not_called()
+        self.assertIs(self.app.COPY_MANAGER, manager)
+
     def test_config_merges_defaults(self):
         config = self.app.load_config_file()
         self.assertEqual(config["dashboard"]["title"], "TestStart")
@@ -353,7 +384,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             manager.ensure_setup_token(), "owner", "123456"
         )
         destination = Path(self.temp.name) / "backup.tar.gz"
-        self.app.create_backup(destination)
+        self.app.BACKUP_MANAGER.create_backup(destination)
         with tarfile.open(destination, "r:gz") as archive:
             names = set(archive.getnames())
         self.assertIn("data/auth-users.json", names)
@@ -432,7 +463,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         payload.seek(0)
         with tarfile.open(fileobj=payload, mode="r:gz") as archive:
             with self.assertRaises(ValueError):
-                self.app.safe_extract_tar(archive, Path(self.temp.name) / "restore")
+                safe_extract_tar(archive, Path(self.temp.name) / "restore")
 
     def test_uploaded_backup_is_inspected_staged_and_restored(self):
         source = Path(self.temp.name) / "uploaded-backup.tar.gz"
@@ -449,14 +480,16 @@ class HomeStartSmokeTests(unittest.TestCase):
             archive.addfile(config_info, io.BytesIO(config_bytes))
             archive.add(database, arcname="data/homestart.db")
 
-        inspection = self.app.inspect_backup_archive(source)
+        inspection = self.app.BACKUP_MANAGER.inspect_backup_archive(source)
         self.assertIn("HomeStart settings", inspection["components"])
         self.assertIn("Metrics and Speedtest history", inspection["components"])
 
         self.app.BACKUP_DIR = Path(self.temp.name) / "backups"
         self.app.DB_PATH = Path(self.temp.name) / "restored.db"
+        self.app.BACKUP_MANAGER.backup_dir = self.app.BACKUP_DIR
+        self.app.BACKUP_MANAGER.database_path = self.app.DB_PATH
         with mock.patch.object(self.app, "save_config_file") as save_config:
-            result = self.app.restore_backup_file(source, "test backup")
+            result = self.app.BACKUP_MANAGER.restore_backup_file(source, "test backup")
         self.assertTrue(result["ok"])
         self.assertTrue(result["restart"])
         self.assertTrue(self.app.DB_PATH.is_file())
@@ -471,7 +504,7 @@ class HomeStartSmokeTests(unittest.TestCase):
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
         with self.assertRaisesRegex(ValueError, "unsupported file"):
-            self.app.inspect_backup_archive(source)
+            self.app.BACKUP_MANAGER.inspect_backup_archive(source)
 
     def test_file_trash_can_be_restored(self):
         root = Path(self.temp.name) / "files"
@@ -540,8 +573,8 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_bytes": 0,
         }
         with mock.patch.object(self.app.time, "monotonic", return_value=11):
-            self.app.update_copy_job(job_id, copied_bytes=500)
-        status = self.app.copy_job_status(job_id)
+            self.app.COPY_MANAGER.update_job(job_id, copied_bytes=500)
+        status = self.app.COPY_MANAGER.status(job_id)
         self.assertEqual(status["speed_bps"], 500)
         self.assertEqual(status["eta_seconds"], 1)
         self.assertNotIn("_speed_last_at", status)
@@ -551,7 +584,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         source = root / "source folder"
         target = root / "target folder"
         source.mkdir(parents=True)
-        command = self.app.native_cp_command("/usr/bin/cp", source, target)
+        command = self.app.COPY_MANAGER.native_cp_command("/usr/bin/cp", source, target)
         self.assertIn("--reflink=auto", command)
         self.assertIn("--sparse=auto", command)
         self.assertIn("--recursive", command)
@@ -559,7 +592,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         self.assertEqual(command[-3:], ["--", str(source), str(target)])
 
     def test_native_cp_engine_copies_regular_file(self):
-        if not self.app.native_cp_path():
+        if not self.app.COPY_MANAGER.native_cp_path():
             self.skipTest("GNU cp is not available")
         root = Path(self.temp.name) / "native-copy"
         root.mkdir()
@@ -577,8 +610,8 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_at": __import__("time").monotonic(),
             "_speed_last_bytes": 0,
         }
-        self.app.copy_file_with_progress(source, target, job_id)
-        status = self.app.copy_job_status(job_id)
+        self.app.COPY_MANAGER.copy_with_progress(source, target, job_id)
+        status = self.app.COPY_MANAGER.status(job_id)
         self.assertEqual(status["status"], "completed")
         self.assertEqual(status["engine"], "native_cp")
         self.assertEqual(status["copied_bytes"], source.stat().st_size)
@@ -601,9 +634,9 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_at": __import__("time").monotonic(),
             "_speed_last_bytes": 0,
         }
-        with mock.patch.object(self.app.copy_manager(), "native_cp_path", return_value=None):
-            self.app.copy_file_with_progress(source, target, job_id)
-        status = self.app.copy_job_status(job_id)
+        with mock.patch.object(self.app.COPY_MANAGER, "native_cp_path", return_value=None):
+            self.app.COPY_MANAGER.copy_with_progress(source, target, job_id)
+        status = self.app.COPY_MANAGER.status(job_id)
         self.assertEqual(status["status"], "completed")
         self.assertEqual(status["engine"], "python")
         self.assertEqual(target.read_bytes(), source.read_bytes())
@@ -646,10 +679,10 @@ class HomeStartSmokeTests(unittest.TestCase):
             "_speed_last_bytes": 0,
         }
         process = FakeProcess()
-        with mock.patch.object(self.app.copy_manager(), "native_cp_path", return_value="/usr/bin/cp"), \
+        with mock.patch.object(self.app.COPY_MANAGER, "native_cp_path", return_value="/usr/bin/cp"), \
                 mock.patch("homestart.files.copy.subprocess.Popen", return_value=process):
             with self.assertRaises(self.app.CopyCancelled):
-                self.app.run_native_copy(source, target, job_id, 100)
+                self.app.COPY_MANAGER.run_native_copy(source, target, job_id, 100)
         self.assertEqual(process.signal, signal.SIGTERM)
 
     def test_cancelled_copy_removes_incomplete_destination(self):
@@ -668,8 +701,8 @@ class HomeStartSmokeTests(unittest.TestCase):
             "speed_bps": 0,
             "updated_at": 0,
         }
-        self.app.copy_file_with_progress(source, target, job_id)
-        status = self.app.copy_job_status(job_id)
+        self.app.COPY_MANAGER.copy_with_progress(source, target, job_id)
+        status = self.app.COPY_MANAGER.status(job_id)
         self.assertEqual(status["status"], "cancelled")
         self.assertFalse(target.exists())
 
@@ -699,7 +732,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         started = self.app.start_copy_job(str(source), str(root))
         deadline = __import__("time").time() + 3
         while __import__("time").time() < deadline:
-            status = self.app.copy_job_status(started["job_id"])
+            status = self.app.COPY_MANAGER.status(started["job_id"])
             if status["status"] in {"completed", "failed"}:
                 break
             __import__("time").sleep(.02)
@@ -723,7 +756,7 @@ class HomeStartSmokeTests(unittest.TestCase):
         started = self.app.start_move_job(str(source), str(destination))
         deadline = __import__("time").time() + 3
         while __import__("time").time() < deadline:
-            status = self.app.copy_job_status(started["job_id"])
+            status = self.app.COPY_MANAGER.status(started["job_id"])
             if status["status"] in {"completed", "failed"}:
                 break
             __import__("time").sleep(.02)
