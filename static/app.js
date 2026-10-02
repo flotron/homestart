@@ -1945,7 +1945,7 @@ async function postFileAction(payload) {
 
 async function mountDriveEntry(entry) {
   if (!state.features.file_operations || state.features.file_mounts === false) return;
-  if (!window.confirm(`Open ${entry.label || entry.name || entry.path} read-only?\n\nHomeStart will make its files accessible (mount). You can browse and copy files from it, but cannot change or delete them.`)) return;
+  if (!window.confirm(`Open ${entry.label || entry.name || entry.path} read-only?\n\nYou can view files and copy them to another location. You cannot create, change or delete files on this volume. This only affects this volume, not your other folders.`)) return;
   try {
     const result = await postFileAction({ action: "mount_readonly", device: entry.path });
     await loadFiles(result.path || state.filePath);
@@ -2538,11 +2538,34 @@ function activeDriveEntry() {
   return active;
 }
 
+const driveExpansion = new Map();
+
 function renderDriveEntry(entry, activeEntry) {
   const wrapper = document.createElement("div");
   wrapper.className = "drive-tree";
-  wrapper.appendChild(renderDriveNode(entry, true, activeEntry));
-  (entry.children || []).forEach((child) => renderDriveChildren(wrapper, child, activeEntry));
+  if (!entry.children?.length) {
+    wrapper.appendChild(renderDriveNode(entry, true, activeEntry));
+    return wrapper;
+  }
+  const key = entry.path || entry.name;
+  const children = document.createElement("div");
+  children.className = "drive-volumes";
+  // Some devices have both a directly browsable filesystem and child volumes.
+  if (firstAllowedMount(entry)) children.appendChild(renderDriveNode(entry, false, activeEntry));
+  entry.children.forEach((child) => renderDriveChildren(children, child, activeEntry));
+  const heading = renderDriveNode(entry, true, null, () => {
+    driveExpansion.set(key, !driveExpansion.get(key));
+    updateExpansion();
+  });
+  const toggle = heading.querySelector(".drive-target");
+  function updateExpansion() {
+    const expanded = driveExpansion.get(key) === true;
+    children.hidden = !expanded;
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.querySelector(".drive-open-label").textContent = expanded ? "Hide volumes ▴" : "Show volumes ▾";
+  }
+  updateExpansion();
+  wrapper.append(heading, children);
   return wrapper;
 }
 
@@ -2555,34 +2578,47 @@ function firstAllowedMount(entry) {
   return (entry.mountpoints || []).find((mount) => mount.allowed && mount.path);
 }
 
-function renderDriveNode(entry, isDisk, activeEntry) {
+function renderDriveNode(entry, isDisk, activeEntry, toggleVolumes = null) {
   const mount = firstAllowedMount(entry);
+  const mountingEnabled = state.features.file_operations && state.features.file_mounts !== false;
+  const canOpen = Boolean(mount || (entry.can_mount && mountingEnabled));
+  const interactive = Boolean(toggleVolumes || canOpen);
   const node = document.createElement("div");
   node.className = `drive-entry ${isDisk ? "disk" : "partition"}`;
   node.style.setProperty("--depth", entry.depth || 0);
   const title = entry.label || entry.model || entry.name || entry.path;
   const filesystem = (entry.filesystem || "").toLowerCase();
   let status;
-  if (mount) status = `Open files · ${mount.path}`;
+  if (toggleVolumes) status = "Physical drive · expand to see its volumes";
+  else if (mount) status = entry.can_unmount ? "Read-only access" : mount.path;
   else if (entry.mountpoints?.length) status = "Outside allowed locations";
   else if (filesystem === "lvm2_member") status = "Volume group · open the volume below";
   else if (filesystem === "crypto_luks") status = "Encrypted volume · unlock in Linux first";
   else if (filesystem === "swap") status = "System swap · no files to browse";
   else if (entry.children?.length) status = "Contains volumes listed below";
-  else if (entry.can_mount) status = "Available to open read-only";
+  else if (entry.can_mount) status = mountingEnabled ? "Available to open" : "Opening volumes is disabled in Settings";
   else if (isDisk && /^0(?:[.,]0)?\s*[B]?$/i.test(entry.size || "")) status = "No media inserted";
   else status = "No browsable volume";
   const details = [entry.size, entry.filesystem, entry.path].filter(Boolean).join(" · ");
-  const target = document.createElement(mount ? "button" : "div");
+  const target = document.createElement(interactive ? "button" : "div");
   target.className = "drive-target";
-  if (mount) target.type = "button";
+  if (interactive) target.type = "button";
   target.innerHTML = `<span class="drive-icon"></span><span class="drive-description"><strong></strong><small></small><span class="drive-status"></span></span>`;
   target.querySelector(".drive-icon").classList.add(entry.kind || "disk");
   target.querySelector("strong").textContent = title;
   target.querySelector("small").textContent = details;
   target.querySelector(".drive-status").textContent = status;
   target.title = `${title} · ${details} · ${status}`;
-  if (mount) {
+  if (interactive) {
+    const label = document.createElement("span");
+    label.className = "drive-open-label";
+    label.textContent = toggleVolumes ? "Show volumes ▾" : "Open";
+    target.appendChild(label);
+  }
+  if (toggleVolumes) {
+    target.setAttribute("aria-label", `Volumes on ${title}`);
+    target.addEventListener("click", toggleVolumes);
+  } else if (mount) {
     target.setAttribute("aria-label", `Open ${title}: ${mount.path}`);
     target.addEventListener("click", () => openFileLocation(mount.path));
     if (entry === activeEntry) {
@@ -2590,25 +2626,21 @@ function renderDriveNode(entry, isDisk, activeEntry) {
       target.setAttribute("aria-current", "location");
     }
   }
+  if (!toggleVolumes && !mount && canOpen) {
+    target.setAttribute("aria-label", `Open ${title}`);
+    target.addEventListener("click", async () => {
+      if (target.disabled) return;
+      target.disabled = true;
+      try { await mountDriveEntry(entry); }
+      finally { target.disabled = false; }
+    });
+  }
   const actionsNode = document.createElement("span");
   actionsNode.className = "drive-actions";
   node.append(target, actionsNode);
 
   const actions = node.querySelector(".drive-actions");
-  const mountingEnabled = state.features.file_operations && state.features.file_mounts !== false;
-  if (entry.can_mount && mountingEnabled) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "drive-action";
-    button.textContent = "Open read-only";
-    button.title = "Make this volume accessible without allowing file changes";
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      mountDriveEntry(entry).catch(console.error);
-    });
-    actions.appendChild(button);
-  }
-  if (entry.can_unmount && mountingEnabled) {
+  if (!toggleVolumes && entry.can_unmount && mountingEnabled) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "drive-action";

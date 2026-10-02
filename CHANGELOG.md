@@ -4,6 +4,12 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3170
+
+- Expand physical drives to show their volumes, preserving expansion while browsing.
+- Use one Open action for mounted and available volumes; explain read-only access when opening.
+- Keep non-browsable volumes descriptive and prevent duplicate open requests.
+
 ## 20261002-3160
 
 - Extract Docker, Compose, native web and service discovery into one persistent

@@ -3240,3 +3240,8 @@ button.drive-target .drive-status { color: var(--accent); }
     grid-template-columns: 1fr;
   }
 }
+
+.drive-volumes { display: grid; gap: 2px; }
+.drive-volumes[hidden] { display: none; }
+button.drive-target { grid-template-columns: 24px minmax(0, 1fr) auto; }
+.drive-open-label { font-size: 11px; color: var(--accent); white-space: nowrap; }

@@ -144,3 +144,46 @@ test('folder navigation ignores stale successes and stale errors after a newer c
     assert.equal(renders, 1);
   }
 });
+
+test('drive headings expand without opening files; volume rows provide one Open action', async () => {
+  class Node {
+    constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.listeners = {}; this.parts = {}; this.style = {setProperty() {}}; this.classList = {add() {}}; }
+    set innerHTML(value) {
+      for (const selector of ['.drive-icon', 'strong', 'small', '.drive-status']) this.parts[selector] = new Node('span');
+    }
+    appendChild(child) { this.children.push(child); return child; }
+    append(...children) { this.children.push(...children); }
+    querySelector(selector) { return this.parts[selector] || this.children.find(c => `.${c.className}` === selector); }
+    setAttribute(key, value) { this.attrs[key] = value; }
+    addEventListener(key, fn) { this.listeners[key] = fn; }
+  }
+  const opened = [], mounted = [];
+  const state = {features: {file_operations: true}, filePath: '/boot'};
+  const context = vm.createContext({state, document: {createElement: tag => new Node(tag)},
+    openFileLocation: path => opened.push(path), mountDriveEntry: async entry => mounted.push(entry.path), console});
+  vm.runInContext(appSource.slice(appSource.indexOf('const driveExpansion'), appSource.indexOf('function rootContainsPath')), context);
+  const volume = {path: '/dev/sdb1', name: 'sdb1', mountpoints: [{allowed: true, path: '/boot'}]};
+  const disk = {path: '/dev/sdb', children: [volume]};
+  const tree = context.renderDriveEntry(disk, volume);
+  const toggle = tree.children[0].querySelector('.drive-target');
+  assert.equal(toggle.tag, 'button');
+  assert.equal(tree.children[1].hidden, true);
+  toggle.listeners.click();
+  assert.equal(tree.children[1].hidden, false);
+  assert.equal(toggle.attrs['aria-expanded'], 'true');
+  assert.equal(opened.length, 0);
+  assert.equal(context.renderDriveEntry(disk, volume).children[1].hidden, false);
+  const browse = tree.children[1].children[0].querySelector('.drive-target');
+  browse.listeners.click();
+  assert.deepEqual(opened, ['/boot']);
+  const available = context.renderDriveNode({path: '/dev/sdc1', can_mount: true}, false, null);
+  const target = available.querySelector('.drive-target');
+  assert.equal(target.querySelector('.drive-open-label').textContent, 'Open');
+  const first = target.listeners.click();
+  await target.listeners.click();
+  await first;
+  assert.deepEqual(mounted, ['/dev/sdc1']);
+  assert.equal(target.disabled, false);
+  state.features.file_mounts = false;
+  assert.equal(context.renderDriveNode({can_mount: true}, false, null).querySelector('.drive-target').tag, 'div');
+});
