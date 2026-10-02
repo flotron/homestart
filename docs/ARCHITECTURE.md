@@ -19,7 +19,7 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 - `homestart/backup/manager.py`: backup creation, archive validation, upload
   staging and restoration. Paths, configuration persistence and authentication
   are injected explicitly; the module does not import the server or depend on
-  HTTP handlers. Server compatibility wrappers retain downloads and restart
+  HTTP handlers. The server retains HTTP downloads and restart
   orchestration. The package is singular `backup` because release validation
   excludes runtime `backups/` directories.
 - `homestart/system/power.py`: validated host reboot/shutdown scheduling.
@@ -66,7 +66,7 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 - `homestart/docker/install.py` owns Docker/Compose installation orchestration,
   progress and background jobs. An explicit `InstallServices` dependency set
   supplies host validation, catalog rendering and Docker commands; job state and
-  its lock are shared with the server compatibility wrappers. Neither module
+  its lock belong to a persistent service called directly by routes. Neither module
   imports the server. Template presentation and image architecture orchestration
   remain in the server boundary for a later extraction.
 - `homestart/docker/hub.py` owns Docker Hub search, publisher verification and
@@ -97,11 +97,10 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 
 ## Compatibility boundary
 
-The refactor is deliberately incremental. `homestart.server` keeps compatibility
-wrappers for functions that moved into domain modules, which lets existing
-tests and integrations continue to use the current names. New work should put
-domain logic in the closest package and leave only orchestration in
-`server.py`.
+The refactor is deliberately incremental. Extracted domain services are called
+directly; pure helpers retain their established names through direct imports.
+Tests target the same domain boundaries as production routes. New work should
+put domain logic in the closest package and keep orchestration in `server.py`.
 
 No framework migration is required by this structure. HomeStart continues to
 use `ThreadingHTTPServer`, `SimpleHTTPRequestHandler`, the Python standard
@@ -131,7 +130,7 @@ restart and restores `transaction.json` automatically if startup fails.
 
 File-domain forwarding wrappers have been removed. Tests call the domain services
 directly and explicitly construct temporary trash storage when needed. Remaining
-server compatibility wrappers are migrated by domain, not removed indiscriminately.
+server adapters bind configuration, HTTP transport or lifecycle dependencies.
 The server source is UTF-8 without a byte-order mark.
 
 The API router uses separate GET, HEAD and POST route tables. Endpoint methods
@@ -166,3 +165,20 @@ Icon lookup, bounded HTTP downloads, cache and custom image persistence live in
 and an HTTP transport. Discovery and icon upload routes call it directly;
 HTTP response headers and body streaming remain in the server. Network parsing
 helpers are imported directly instead of passing through forwarding functions.
+
+## Cleanup milestone (3190)
+
+The scheduled cleanup of redundant adapters around extracted modules is complete:
+24 forwarding helpers became direct imports and 22 operations now target domain
+services. `SAMBA_MANAGER`, `CATALOG_CLIENT`, `INSTALL_MANAGER` and
+`DOCKERHUB_CLIENT` are process-level instances. Storage providers resolve paths
+at use time and callbacks resolve current configuration and feature flags.
+Samba actions no longer replace methods on temporary instances for test seams.
+
+This milestone does not mean all domain code has left the server. The remaining
+network sampling/history coordination, network configuration adapters, app lifecycle
+policy, template/architecture presentation, Speedtest persistence, authentication
+HTTP flows and update/restart coordination are explicitly retained. Extracting
+those domains further is separate work, rather than a requirement to proceed to
+the scheduled interface/dashboard improvements. No routes or stored data formats
+change in this cleanup.

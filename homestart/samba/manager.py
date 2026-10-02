@@ -108,11 +108,27 @@ def config_with_include(content, managed_path):
 
 class SambaManager:
     def __init__(self, config_path, managed_path, state_path, enabled, resolve_path):
-        self.config_path = Path(config_path)
-        self.managed_path = Path(managed_path)
-        self.state_path = Path(state_path)
+        self._config_path = config_path
+        self._managed_path = managed_path
+        self._state_path = state_path
         self.enabled = enabled
         self.resolve_path = resolve_path
+
+    @property
+    def config_path(self):
+        value = self._config_path
+        return Path(value() if callable(value) else value)
+
+    @property
+    def managed_path(self):
+        value = self._managed_path
+        return Path(value() if callable(value) else value)
+
+    @property
+    def state_path(self):
+        value = self._state_path
+        return Path(value() if callable(value) else value)
+
 
     def ensure_enabled(self):
         if not self.enabled():

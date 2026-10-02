@@ -50,26 +50,26 @@ from .config import (
     save_config as save_config_data,
 )
 from .docker.hub import DockerHubClient
-from .docker.catalog import CatalogClient, fetch_store_catalog as catalog_fetch
+from .docker.catalog import CatalogClient, fetch_store_catalog
 from .docker.install import (
-    InstallManager, InstallServices, image_repository as install_image_repository,
-    compose_project_name as install_project_name,
+    InstallManager, InstallServices, image_repository,
+    compose_project_name,
 )
 from .docker.projects import ComposeProjectManager, compose_risk_report
 from .docker.store import (
-    dockerhub_icon_slug as store_dockerhub_icon_slug,
-    dockerhub_page_url as store_dockerhub_page_url,
-    dockerhub_repository_from_url as parse_dockerhub_repository_url,
-    dockerhub_result_score as score_dockerhub_result,
+    dockerhub_icon_slug,
+    dockerhub_page_url,
+    dockerhub_repository_from_url,
+    dockerhub_result_score,
     install_values as validate_catalog_install_values,
-    normalize_image as validate_docker_image,
-    normalize_port as validate_container_port,
-    placeholders as catalog_placeholders,
+    normalize_image as normalize_docker_image,
+    normalize_port as normalize_container_port,
+    placeholders as store_placeholders,
     render_compose as render_store_compose,
-    replace_placeholders as fill_catalog_placeholders,
-    safe_environment_assignment as validate_environment_assignment,
-    safe_volume_mapping as validate_volume_mapping,
-    validate_catalog as validate_declarative_catalog,
+    replace_placeholders as replace_store_placeholders,
+    safe_environment_assignment as safe_env_assignment,
+    safe_volume_mapping,
+    validate_catalog as validate_store_catalog,
 )
 from .files import browser as file_browser, trash as file_trash
 from .files.copy import CopyCancelled, CopyManager
@@ -78,11 +78,11 @@ from .metrics.host import HostMetrics
 from .samba.manager import (
     SambaManager,
     config_with_include as add_samba_include,
-    parse_config as parse_samba_config_data,
-    render_config as render_samba_config,
-    share_payload as build_samba_share_payload,
-    user_tokens as parse_samba_user_tokens,
-    validate_share_name as validate_samba_name,
+    parse_config as parse_samba_config,
+    render_config as render_homestart_samba_config,
+    share_payload as samba_share_payload,
+    user_tokens as samba_user_tokens,
+    validate_share_name as validate_samba_share_name,
 )
 from .system.network import (
     choose_monitor_interface,
@@ -95,10 +95,10 @@ from .system.network_config import (
     NetplanBackend,
     NetworkManagerBackend,
     SUPPORTED_ARCHITECTURES,
-    host_architecture as detect_host_architecture,
+    host_architecture as host_architecture_payload,
     normalize_architecture,
     parse_nmcli_rows,
-    validate_ipv4_settings as validate_network_ipv4_settings,
+    validate_ipv4_settings,
 )
 from .system import storage
 from .system.disks import SmartHealthMonitor
@@ -108,9 +108,9 @@ from .system.webapps import NativeWebAppDiscovery
 from .updates.github import GitHubReleaseClient, update_asset_version
 from .updates.package import (
     TransactionalPackageUpdater,
-    member_parts as package_member_parts,
-    member_path as package_member_path,
-    validate_manifest as validate_package_manifest,
+    member_parts as update_member_parts,
+    member_path as update_member_path,
+    validate_manifest as validate_update_manifest,
 )
 
 
@@ -1430,76 +1430,8 @@ def samba_manager_enabled():
     return load_config_file().get("features", {}).get("samba_manager", True)
 
 
-def samba_manager():
-    return SambaManager(
-        SAMBA_CONFIG_PATH,
-        SAMBA_MANAGED_PATH,
-        SAMBA_STATE_PATH,
-        samba_manager_enabled,
-        FILE_BROWSER.resolve_file_path,
-    )
-
-
-def ensure_samba_manager_enabled():
-    return samba_manager().ensure_enabled()
-
-
-def parse_samba_config(content):
-    return parse_samba_config_data(content)
-
-
-def samba_user_tokens(value):
-    return parse_samba_user_tokens(value)
-
-
-def samba_users():
-    return samba_manager().users()
-
-
-def samba_testparm(config_path=None):
-    return samba_manager().testparm(config_path)
-
-
-def samba_state():
-    return samba_manager().state()
-
-
-def samba_share_payload(name, values, state):
-    return build_samba_share_payload(name, values, state)
-
-
-def samba_shares_payload():
-    return samba_manager().shares_payload()
-
-
-def validate_samba_share_name(name):
-    return validate_samba_name(name)
-
-
-def render_homestart_samba_config(state):
-    return render_samba_config(state)
-
-
 def samba_config_with_include(content):
     return add_samba_include(content, SAMBA_MANAGED_PATH)
-
-
-def reload_samba():
-    return samba_manager().reload()
-
-
-def save_samba_state(new_state):
-    return samba_manager().save_state(new_state)
-
-
-def samba_share_action(payload):
-    manager = samba_manager()
-    # Preserve the long-standing server-level seams used by integrations and tests.
-    manager.state = samba_state
-    manager.users = samba_users
-    manager.shares_payload = samba_shares_payload
-    manager.save_state = save_samba_state
-    return manager.action(payload)
 
 
 def cleanup_expired_trash(force=False):
@@ -1709,10 +1641,6 @@ def docker_container_exists(name):
         return False
 
 
-def image_repository(image):
-    return install_image_repository(image)
-
-
 def installed_docker_images():
     try:
         output = run_docker_command(["ps", "-a", "--format", "{{.Image}}\t{{.Names}}"], timeout=15)
@@ -1736,59 +1664,8 @@ def curated_store_apps():
     ]
 
 
-def store_placeholders(value):
-    return catalog_placeholders(value)
-
-
-def validate_store_catalog(catalog):
-    return validate_declarative_catalog(catalog)
-
-
 def store_catalog_url():
     return str(load_config_file().get("app_store", {}).get("catalog_url") or STORE_CATALOG_URL).strip()
-
-
-def catalog_client():
-    return CatalogClient(
-        STORE_CATALOG_CACHE, STORE_CATALOG_LOCK, STORE_CATALOG_TTL,
-        store_catalog_url, fetch_store_catalog,
-    )
-
-
-def install_manager():
-    services = InstallServices(
-        catalog_app=store_catalog_app,
-        require_catalog_architecture=require_catalog_architecture,
-        render_compose=render_catalog_compose,
-        verify_image=verify_docker_image_architecture,
-        projects=compose_project_manager,
-        run_docker=run_docker_command,
-        container_exists=docker_container_exists,
-        normalize_name=normalize_docker_name,
-        enabled=docker_app_store_enabled,
-        installed_images=installed_docker_images,
-    )
-    return InstallManager(services, COMPOSE_APP_DIR, INSTALL_JOBS, INSTALL_JOBS_LOCK)
-
-
-def read_store_catalog_cache():
-    return catalog_client().read_store_catalog_cache()
-
-
-def save_store_catalog_cache(catalog):
-    return catalog_client().save_store_catalog_cache(catalog)
-
-
-def fetch_store_catalog(url):
-    return catalog_fetch(url)
-
-
-def load_store_catalog(refresh=False):
-    return catalog_client().load_store_catalog(refresh)
-
-
-def replace_store_placeholders(value, values):
-    return fill_catalog_placeholders(value, values)
 
 
 def catalog_defaults(app):
@@ -1802,10 +1679,6 @@ def catalog_defaults(app):
         clean["default"] = replace_store_placeholders(item["default"], reserved)
         result.append(clean)
     return result
-
-
-def host_architecture_payload():
-    return detect_host_architecture()
 
 
 def catalog_architecture_payload(app):
@@ -1837,7 +1710,7 @@ def require_catalog_architecture(app):
 
 
 def store_templates_payload(refresh=False):
-    catalog, metadata = load_store_catalog(refresh)
+    catalog, metadata = CATALOG_CLIENT.load_store_catalog(refresh)
     if catalog is None:
         return {
             "ok": True,
@@ -1893,32 +1766,13 @@ def store_catalog_app(template_id):
     template_id = str(template_id or "")
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", template_id):
         raise ValueError("Invalid app template")
-    catalog, _ = load_store_catalog()
+    catalog, _ = CATALOG_CLIENT.load_store_catalog()
     if catalog is None:
         raise ValueError("The declarative app catalog is not available")
     for app in catalog["apps"]:
         if app["id"] == template_id:
             return app
     raise ValueError("App template not found")
-
-
-def dockerhub_page_url(name, official=False):
-    return store_dockerhub_page_url(name, official)
-
-
-def dockerhub_client(verifier=None):
-    return DockerHubClient(
-        docker_app_store_enabled, installed_docker_images, host_architecture_payload,
-        DOCKERHUB_VERIFICATION_CACHE, DOCKERHUB_VERIFICATION_LOCK, verifier=verifier,
-    )
-
-
-def dockerhub_verification(name, official=False):
-    return dockerhub_client().dockerhub_verification(name, official)
-
-
-def add_dockerhub_verification(results):
-    return dockerhub_client(verifier=dockerhub_verification).add_dockerhub_verification(results)
 
 
 def docker_action(name, action):
@@ -1992,26 +1846,6 @@ def docker_app_store_enabled():
     return features.get("docker_app_store", True) and features.get("docker_actions", True)
 
 
-def dockerhub_repository_from_url(value):
-    return parse_dockerhub_repository_url(value)
-
-
-def dockerhub_search(query, limit=12):
-    return dockerhub_client().dockerhub_search(query, limit)
-
-
-def dockerhub_icon_slug(image):
-    return store_dockerhub_icon_slug(image)
-
-
-def dockerhub_result_score(name, description, tokens, compact_query, item):
-    return score_dockerhub_result(name, description, tokens, compact_query, item)
-
-
-def normalize_docker_image(image):
-    return validate_docker_image(image)
-
-
 def docker_manifest_architectures(image):
     image = normalize_docker_image(image)
     cached = DOCKER_ARCHITECTURE_CACHE.get(image)
@@ -2078,26 +1912,6 @@ def verify_docker_image_architecture(image):
     }
 
 
-def normalize_container_port(value):
-    return validate_container_port(value)
-
-
-def safe_env_assignment(value):
-    return validate_environment_assignment(value)
-
-
-def safe_volume_mapping(value):
-    return validate_volume_mapping(value)
-
-
-def update_install_job(job_id, **values):
-    return install_manager().update_install_job(job_id, **values)
-
-
-def docker_pull_with_progress(image, job_id):
-    return install_manager().docker_pull_with_progress(image, job_id)
-
-
 def catalog_install_values(app, supplied):
     reserved = {
         "homestart_data": str(COMPOSE_APP_DATA_DIR),
@@ -2112,34 +1926,6 @@ def render_catalog_compose(app, supplied):
         "server_timezone": system_timezone(),
     }
     return render_store_compose(app, supplied, reserved)
-
-
-def compose_project_name(app_id, instance):
-    return install_project_name(app_id, instance)
-
-
-def compose_command_with_progress(command, job_id, stage, start, end):
-    return install_manager().compose_command_with_progress(command, job_id, stage, start, end)
-
-
-def compose_store_install(payload, job_id=None):
-    return install_manager().compose_store_install(payload, job_id)
-
-
-def docker_store_install(payload, job_id=None):
-    return install_manager().docker_store_install(payload, job_id)
-
-
-def run_store_install_job(job_id, payload):
-    return install_manager().run_store_install_job(job_id, payload)
-
-
-def start_store_install(payload):
-    return install_manager().start_store_install(payload)
-
-
-def store_install_status(job_id):
-    return install_manager().store_install_status(job_id)
 
 
 def configured_app(name):
@@ -2514,10 +2300,6 @@ def validate_interface_name(name):
         raise ValueError("Unknown or unsupported network interface")
 
 
-def validate_ipv4_settings(mode, address, gateway, dns):
-    return validate_network_ipv4_settings(mode, address, gateway, dns)
-
-
 def update_netplan_interface(interface, mode, address, gateway, dns):
     validate_interface_name(interface)
     return NetplanBackend(Path("/etc/netplan"), run_netplan_command).apply(
@@ -2545,18 +2327,6 @@ def update_network_interface(interface, mode, address, gateway, dns):
     if device and str(device.get("state") or "").lower() != "unmanaged":
         return update_network_manager_interface(interface, mode, address, gateway, dns)
     raise ValueError("No supported network configuration backend manages this interface")
-
-
-def update_member_path(name):
-    return package_member_path(name)
-
-
-def update_member_parts(name):
-    return package_member_parts(name)
-
-
-def validate_update_manifest(archive):
-    return validate_package_manifest(archive)
 
 
 def restart_service_later():
@@ -3153,6 +2923,34 @@ class HomeStartHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
+
+
+SAMBA_MANAGER = SambaManager(
+    lambda: SAMBA_CONFIG_PATH, lambda: SAMBA_MANAGED_PATH, lambda: SAMBA_STATE_PATH,
+    lambda: samba_manager_enabled(), lambda path: FILE_BROWSER.resolve_file_path(path),
+)
+CATALOG_CLIENT = CatalogClient(
+    lambda: STORE_CATALOG_CACHE, STORE_CATALOG_LOCK, STORE_CATALOG_TTL,
+    lambda: store_catalog_url(), lambda url: fetch_store_catalog(url),
+)
+INSTALL_MANAGER = InstallManager(InstallServices(
+    catalog_app=lambda *a, **k: store_catalog_app(*a, **k),
+    require_catalog_architecture=lambda *a, **k: require_catalog_architecture(*a, **k),
+    render_compose=lambda *a, **k: render_catalog_compose(*a, **k),
+    verify_image=lambda *a, **k: verify_docker_image_architecture(*a, **k),
+    projects=lambda: compose_project_manager(),
+    run_docker=lambda *a, **k: run_docker_command(*a, **k),
+    container_exists=lambda *a, **k: docker_container_exists(*a, **k),
+    normalize_name=lambda *a, **k: normalize_docker_name(*a, **k),
+    enabled=lambda: docker_app_store_enabled(),
+    installed_images=lambda: installed_docker_images(),
+), lambda: COMPOSE_APP_DIR, INSTALL_JOBS, INSTALL_JOBS_LOCK)
+DOCKERHUB_CLIENT = DockerHubClient(
+    lambda: docker_app_store_enabled(), lambda: installed_docker_images(),
+    lambda: host_architecture_payload(), DOCKERHUB_VERIFICATION_CACHE, DOCKERHUB_VERIFICATION_LOCK,
+    opener=lambda *a, **k: urllib.request.urlopen(*a, **k),
+    verifier=lambda *a, **k: DOCKERHUB_CLIENT.dockerhub_verification(*a, **k),
+)
 
 
 APP_ICONS = AppIcons(

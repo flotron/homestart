@@ -181,7 +181,7 @@ class ApiRouter:
     def _get_api_store_install_status(self, handler, query):
         b = self.backend
         try:
-            handler.send_json(b.store_install_status(query.get("job_id", [""])[0]))
+            handler.send_json(b.INSTALL_MANAGER.store_install_status(query.get("job_id", [""])[0]))
         except ValueError as error:
             handler.send_json({"ok": False, "error": str(error)}, HTTPStatus.NOT_FOUND)
 
@@ -236,7 +236,7 @@ class ApiRouter:
     def _get_api_store_search(self, handler, query):
         b = self.backend
         try:
-            handler.send_json(b.dockerhub_search(query.get("query", [""])[0], query.get("limit", ["12"])[0]))
+            handler.send_json(b.DOCKERHUB_CLIENT.dockerhub_search(query.get("query", [""])[0], query.get("limit", ["12"])[0]))
         except ValueError as error:
             handler.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
 
@@ -268,7 +268,7 @@ class ApiRouter:
     def _get_api_samba_shares(self, handler, query):
         b = self.backend
         try:
-            handler.send_json(b.samba_shares_payload())
+            handler.send_json(b.SAMBA_MANAGER.shares_payload())
         except (ValueError, OSError, PermissionError) as error:
             handler.send_json({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
 
@@ -396,7 +396,7 @@ class ApiRouter:
 
     def _post_api_samba_shares(self, handler, query):
         b = self.backend
-        handler.send_json(b.samba_share_action(self.json_body(handler)))
+        handler.send_json(b.SAMBA_MANAGER.action(self.json_body(handler)))
 
     def _post_api_apps_icon(self, handler, query):
         b = self.backend
@@ -404,7 +404,7 @@ class ApiRouter:
 
     def _post_api_store_install(self, handler, query):
         b = self.backend
-        handler.send_json(b.start_store_install(self.json_body(handler)), HTTPStatus.ACCEPTED)
+        handler.send_json(b.INSTALL_MANAGER.start_store_install(self.json_body(handler)), HTTPStatus.ACCEPTED)
 
     def _post_api_apps_action(self, handler, query):
         b = self.backend

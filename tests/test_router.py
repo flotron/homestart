@@ -33,7 +33,7 @@ class RouterTests(unittest.TestCase):
 
     def test_accepted_status_for_background_actions(self):
         for path, action in [('/api/system/power', self.backend.POWER_MANAGER.request),
-                             ('/api/store/install', self.backend.start_store_install)]:
+                             ('/api/store/install', self.backend.INSTALL_MANAGER.start_store_install)]:
             with self.subTest(path=path):
                 self.handler.reset_mock()
                 self.router.post(self.request(path, {'action': 'reboot'}))

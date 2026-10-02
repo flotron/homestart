@@ -25,11 +25,17 @@ def fetch_store_catalog(url):
 
 class CatalogClient:
     def __init__(self, cache_path, lock, ttl, catalog_url, fetch=fetch_store_catalog):
-        self.cache_path = Path(cache_path)
+        self._cache_path = cache_path
         self.lock = lock
         self.ttl = ttl
         self.catalog_url = catalog_url
         self.fetch = fetch
+
+    @property
+    def cache_path(self):
+        value = self._cache_path
+        return Path(value() if callable(value) else value)
+
 
     def read_store_catalog_cache(self):
         wrapper = load_json_file(self.cache_path, {})

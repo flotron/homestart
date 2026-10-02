@@ -56,9 +56,15 @@ class InstallServices:
 class InstallManager:
     def __init__(self, services, project_dir, jobs, lock):
         self.services = services
-        self.project_dir = Path(project_dir)
+        self._project_dir = project_dir
         self.jobs = jobs
         self.lock = lock
+
+    @property
+    def project_dir(self):
+        value = self._project_dir
+        return Path(value() if callable(value) else value)
+
 
     def update_install_job(self, job_id, **values):
         with self.lock:
