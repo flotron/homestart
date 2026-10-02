@@ -4,6 +4,14 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261002-3120
+
+- Reuse file browser and trash services while reading Settings changes live.
+- Remove redundant file-domain forwarding functions and use domain services directly.
+- Extract disk discovery, usage reporting and managed read-only mounts into storage.
+- Remove the server source byte-order mark and add regression tests for live
+  configuration, instance reuse and mount restrictions.
+
 ## 20261002-3110
 
 - Separate App Store catalog caching, Docker/Compose installation jobs and

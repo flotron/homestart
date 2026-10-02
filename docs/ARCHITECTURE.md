@@ -26,11 +26,13 @@ HomeStart is a self-contained HTTP service for a trusted local network.
 - `homestart/config.py` owns defaults, recursive config merging and JSON
   persistence.
 - `homestart/files/browser.py`: allowed-root validation, directory listings,
-  properties and synchronous file operations. Receives configuration and drive
-  providers explicitly; copy jobs reuse its path validation through server wrappers.
+  properties and synchronous file operations. One process-level `FILE_BROWSER`
+  instance receives live configuration and drive providers. Routes, copy jobs and
+  Samba use its methods directly; pure helpers are called through the module.
 - `homestart/files/trash.py`: trash index, deletion, restoration and retention.
-  Uses the browser access policy. The server schedules retention checks and keeps
-  HTTP streaming, action dispatch and disk mounting orchestration.
+  One process-level `TRASH_MANAGER` shares the browser access policy. The server
+  schedules retention checks and keeps
+  HTTP streaming and action dispatch.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
   supervision, progress, speed, ETA and cancellation.
 - `homestart/metrics/store.py` owns SQLite schemas, retention, metric history,
@@ -41,6 +43,9 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   interface selection.
 - `homestart/system/network_config.py` contains NetworkManager terse-output
   parsing, architecture normalization and portable configuration helpers.
+- `homestart/system/storage.py`: block-device discovery, mount metadata, read-only
+  managed mounting/unmounting and disk usage presentation. A process-level
+  instance reads the current file access policy; SMART monitoring remains separate.
 - `homestart/system/disks.py` performs optional SMART overall-health checks in
   a bounded background worker pool. HTTP requests read cache only, and
   `smartctl -n standby,3` prevents supported sleeping disks from being spun up.
@@ -123,3 +128,8 @@ directory and its Python package is compiled and imported. A write failure
 restores already replaced files in-process. On systemd installations, a
 separate transient verifier checks the expected version and `/health` after
 restart and restores `transaction.json` automatically if startup fails.
+
+File-domain forwarding wrappers have been removed. Tests call the domain services
+directly and explicitly construct temporary trash storage when needed. Remaining
+server compatibility wrappers are migrated by domain, not removed indiscriminately.
+The server source is UTF-8 without a byte-order mark.
