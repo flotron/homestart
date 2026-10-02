@@ -14,7 +14,6 @@ import ssl
 import sqlite3
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import time
@@ -31,6 +30,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from .backup.manager import (
+    BackupManager,
+    safe_extract_tar as backup_safe_extract_tar,
+    atomic_restore_file as backup_atomic_restore_file,
+)
 from .api.router import ApiRouter
 from .auth import (
     AuthManager,
@@ -66,6 +70,7 @@ from .docker.store import (
     safe_volume_mapping as validate_volume_mapping,
     validate_catalog as validate_declarative_catalog,
 )
+from .files import browser as file_browser, trash as file_trash
 from .files.copy import CopyCancelled, CopyManager
 from .metrics.store import MetricStore
 from .samba.manager import (
@@ -2478,52 +2483,33 @@ def resources_payload():
     }
 
 
+def file_browser_manager():
+    return file_browser.FileBrowser(
+        load_config_file, DEFAULT_CONFIG["file_roots"],
+        file_sidebar_items, physical_drive_entries,
+    )
+
+
+def trash_manager():
+    return file_trash.TrashManager(
+        TRASH_DIR, TRASH_INDEX, file_browser_manager(), load_config_file,
+    )
+
+
 def format_bytes(size):
-    units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    value = float(size)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
-        value /= 1024
-    return f"{size} B"
+    return file_browser.format_bytes(size)
 
 
 def file_kind(path):
-    if path.is_dir():
-        return "directory"
-
-    suffix = path.suffix.lower()
-    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}:
-        return "image"
-    if suffix in {".mp4", ".webm", ".mkv", ".avi", ".mov"}:
-        return "video"
-    if suffix in {".mp3", ".wav", ".ogg", ".flac", ".m4a"}:
-        return "audio"
-    if suffix in {".pdf"}:
-        return "pdf"
-    if suffix in {".zip", ".rar", ".7z", ".tar", ".gz"}:
-        return "archive"
-    if suffix in {".txt", ".md", ".log", ".json", ".xml", ".csv", ".js", ".css", ".html"}:
-        return "text"
-    return "file"
+    return file_browser.file_kind(path)
 
 
 def allowed_roots():
-    config = load_config_file()
-    roots = []
-    candidates = config.get("file_roots", []) or DEFAULT_CONFIG["file_roots"]
-    for item in candidates:
-        try:
-            root = Path(item).expanduser().resolve()
-        except OSError:
-            continue
-        if root.exists():
-            roots.append(root)
-    return roots
+    return file_browser_manager().allowed_roots()
 
 
 def path_is_allowed(path, roots):
-    return any(path == root or root in path.parents for root in roots)
+    return file_browser.path_is_allowed(path, roots)
 
 
 def discovered_mount_roots(roots):
@@ -2824,101 +2810,19 @@ def file_sidebar_items():
 
 
 def resolve_file_path(raw_path):
-    roots = allowed_roots()
-    if not roots:
-        raise FileNotFoundError("No file browser roots are available")
-
-    if not raw_path:
-        return None
-
-    candidate = Path(raw_path).expanduser().resolve()
-    for root in roots:
-        if path_is_allowed(candidate, [root]):
-            return candidate
-    raise PermissionError("Path is outside the allowed roots")
+    return file_browser_manager().resolve_file_path(raw_path)
 
 
 def file_listing(raw_path):
-    roots = allowed_roots()
-    sidebar_items = file_sidebar_items()
-    target = resolve_file_path(raw_path)
-
-    if target is None:
-        return {
-            "path": "",
-            "parent": "",
-            "roots": [item["path"] for item in sidebar_items],
-            "root_entries": sidebar_items,
-            "drive_entries": physical_drive_entries(),
-            "entries": [
-                {
-                    "name": item["path"],
-                    "path": item["path"],
-                    "type": "directory",
-                    "kind": item["kind"],
-                    "size": item.get("size", ""),
-                    "size_bytes": 0,
-                    "modified": int(Path(item["path"]).stat().st_mtime),
-                }
-                for item in sidebar_items
-            ],
-        }
-
-    try:
-        if not target.exists():
-            raise FileNotFoundError("The path does not exist or its mount is no longer available")
-        if not target.is_dir():
-            raise NotADirectoryError("The path is not a folder")
-        target_items = list(target.iterdir())
-    except PermissionError as error:
-        raise PermissionError(
-            f"HomeStart cannot read {target}. Check the mount owner and permissions; "
-            "desktop/devmon mounts under /media may need to be remounted for the "
-            "account running HomeStart or mounted persistently under /mnt."
-        ) from error
-
-    entries = []
-    for item in sorted(target_items, key=lambda path: (not path.is_dir(), path.name.lower())):
-        try:
-            stat = item.stat()
-        except OSError:
-            continue
-
-        entries.append(
-            {
-                "name": item.name,
-                "path": str(item),
-                "type": "directory" if item.is_dir() else "file",
-                "kind": file_kind(item),
-                "size": "" if item.is_dir() else format_bytes(stat.st_size),
-                "size_bytes": 0 if item.is_dir() else stat.st_size,
-                "modified": int(stat.st_mtime),
-            }
-        )
-
-    parent = ""
-    for root in roots:
-        if target != root and (target == root or root in target.parents):
-            parent = str(target.parent)
-            break
-
-    return {
-        "path": str(target),
-        "parent": parent,
-        "roots": [item["path"] for item in sidebar_items],
-        "root_entries": sidebar_items,
-        "drive_entries": physical_drive_entries(),
-        "entries": entries,
-    }
+    return file_browser_manager().file_listing(raw_path)
 
 
 def file_operations_enabled():
-    return load_config_file().get("features", {}).get("file_operations", True)
+    return file_browser_manager().file_operations_enabled()
 
 
 def ensure_file_operations_enabled():
-    if not file_operations_enabled():
-        raise PermissionError("File operations are disabled")
+    return file_browser_manager().ensure_file_operations_enabled()
 
 
 def file_mounts_enabled():
@@ -2932,175 +2836,39 @@ def ensure_file_mounts_enabled():
 
 
 def resolve_new_child(parent_path, name):
-    parent = resolve_file_path(parent_path)
-    if parent is None:
-        raise FileNotFoundError("Select a folder first")
-    if not parent.exists() or not parent.is_dir():
-        raise NotADirectoryError("Parent path is not a folder")
-
-    clean_name = str(name or "").strip()
-    if not clean_name or clean_name in {".", ".."}:
-        raise ValueError("Name is required")
-    if any(separator in clean_name for separator in {"/", "\\"}):
-        raise ValueError("Name cannot contain path separators")
-
-    target = (parent / clean_name).resolve()
-    resolve_file_path(str(target))
-    return target
+    return file_browser_manager().resolve_new_child(parent_path, name)
 
 
 def create_folder(parent_path, name):
-    ensure_file_operations_enabled()
-    target = resolve_new_child(parent_path, name)
-    if target.exists():
-        raise FileExistsError("A file or folder with that name already exists")
-    target.mkdir()
-    inherit_parent_ownership(target)
-    return {"ok": True, "path": str(target), "action": "mkdir"}
+    return file_browser_manager().create_folder(parent_path, name)
 
 
 def inherit_parent_ownership(path):
-    """Avoid root-owned browser content when HomeStart runs as a system service."""
-    try:
-        parent_stat = path.parent.stat()
-        os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
-    except (OSError, PermissionError):
-        pass
+    return file_browser.inherit_parent_ownership(path)
 
 
 def delete_file_path(raw_path):
-    ensure_file_operations_enabled()
-    target = resolve_file_path(raw_path)
-    if target is None:
-        raise ValueError("Path is required")
-    roots = allowed_roots()
-    if any(target == root for root in roots):
-        raise PermissionError("Allowed roots cannot be deleted")
-    if not target.exists():
-        raise FileNotFoundError("The path does not exist")
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
-    return {"ok": True, "path": str(target), "action": "delete"}
+    return file_browser_manager().delete_file_path(raw_path)
 
 
 def path_usage(path, cancelled=None):
-    total_bytes = 0
-    file_count = 0
-    folder_count = 0
-    if cancelled and cancelled():
-        raise CopyCancelled()
-    if path.is_file():
-        return path.stat().st_size, 1, 0
-    for root, directories, files in os.walk(path, followlinks=False):
-        if cancelled and cancelled():
-            raise CopyCancelled()
-        folder_count += 1
-        for name in files:
-            if cancelled and cancelled():
-                raise CopyCancelled()
-            item = Path(root) / name
-            try:
-                total_bytes += item.stat().st_size
-                file_count += 1
-            except OSError:
-                continue
-        for name in list(directories):
-            item = Path(root) / name
-            if item.is_symlink():
-                try:
-                    total_bytes += item.stat().st_size
-                    file_count += 1
-                except OSError:
-                    pass
-    return total_bytes, file_count, folder_count
+    return file_browser.path_usage(path, cancelled)
 
 
 def file_properties(raw_path):
-    target = resolve_file_path(raw_path)
-    if target is None:
-        raise ValueError("Path is required")
-    if not target.exists():
-        raise FileNotFoundError("The path does not exist")
-    stat = target.stat()
-    total_bytes, file_count, folder_count = path_usage(target)
-    return {
-        "ok": True,
-        "name": target.name or str(target),
-        "path": str(target),
-        "type": "directory" if target.is_dir() else "file",
-        "kind": file_kind(target),
-        "size_bytes": total_bytes,
-        "size": format_bytes(total_bytes),
-        "file_count": file_count,
-        "folder_count": folder_count,
-        "modified": int(stat.st_mtime),
-        "permissions": oct(stat.st_mode & 0o777),
-        "owner_uid": stat.st_uid,
-        "group_gid": stat.st_gid,
-    }
+    return file_browser_manager().file_properties(raw_path)
 
 
 def resolve_copy_target(source_path, destination_path):
-    source = resolve_file_path(source_path)
-    destination = resolve_file_path(destination_path)
-    if source is None or destination is None:
-        raise ValueError("Source and destination are required")
-    if not source.exists():
-        raise FileNotFoundError("The source path does not exist")
-
-    target = destination / source.name if destination.exists() and destination.is_dir() else destination
-    if target.exists():
-        stem = source.stem if source.is_file() else source.name
-        suffix = source.suffix if source.is_file() else ""
-        counter = 1
-        while target.exists():
-            label = "copy" if counter == 1 else f"copy {counter}"
-            target = target.with_name(f"{stem} - {label}{suffix}")
-            counter += 1
-    resolve_file_path(str(target))
-    if source.resolve() == target.resolve():
-        raise ValueError("Source and destination are the same")
-    if source.is_dir() and (target == source or source in target.parents):
-        raise ValueError("A folder cannot be copied into itself")
-    if target.exists():
-        raise FileExistsError("The destination already exists")
-    if not target.parent.exists() or not target.parent.is_dir():
-        raise NotADirectoryError("Destination parent folder does not exist")
-    return source, target
+    return file_browser_manager().resolve_copy_target(source_path, destination_path)
 
 
 def resolve_move_target(source_path, destination_path):
-    source = resolve_file_path(source_path)
-    destination = resolve_file_path(destination_path)
-    if source is None or destination is None:
-        raise ValueError("Source and destination are required")
-    if not source.exists():
-        raise FileNotFoundError("The source path does not exist")
-    if not destination.exists() or not destination.is_dir():
-        raise NotADirectoryError("Destination folder does not exist")
-
-    target = destination / source.name
-    if source.resolve() == target.resolve():
-        raise ValueError("Source and destination are the same")
-    if source.is_dir() and source in target.parents:
-        raise ValueError("A folder cannot be moved into itself")
-    if target.exists():
-        raise FileExistsError("A file or folder with that name already exists")
-    resolve_file_path(str(target))
-    return source, target
+    return file_browser_manager().resolve_move_target(source_path, destination_path)
 
 
 def copy_file_path(source_path, destination_path):
-    ensure_file_operations_enabled()
-    source, target = resolve_copy_target(source_path, destination_path)
-
-    if source.is_dir():
-        shutil.copytree(source, target)
-    else:
-        shutil.copy2(source, target)
-    return {"ok": True, "path": str(target), "action": "copy", "message": f"Pasted as {target.name}"}
+    return file_browser_manager().copy_file_path(source_path, destination_path)
 
 
 def copy_manager():
@@ -3171,31 +2939,11 @@ def cancel_copy_job(job_id):
 
 
 def decode_data_url(content):
-    value = str(content or "")
-    if "," in value and value.startswith("data:"):
-        value = value.split(",", 1)[1]
-    try:
-        return base64.b64decode(value, validate=True)
-    except (ValueError, binascii.Error) as error:
-        raise ValueError("Invalid upload encoding") from error
+    return file_browser.decode_data_url(content)
 
 
 def upload_file(parent_path, name, content):
-    ensure_file_operations_enabled()
-    target = resolve_new_child(parent_path, name)
-    if target.exists():
-        raise FileExistsError("A file or folder with that name already exists")
-    payload = decode_data_url(content)
-    if len(payload) > 100 * 1024 * 1024:
-        raise ValueError("Uploaded file is too large")
-    target.write_bytes(payload)
-    inherit_parent_ownership(target)
-    return {
-        "ok": True,
-        "path": str(target),
-        "action": "upload",
-        "size": len(payload),
-    }
+    return file_browser_manager().upload_file(parent_path, name, content)
 
 
 def file_action(payload):
@@ -3300,81 +3048,27 @@ def samba_share_action(payload):
 
 
 def trash_file_path(raw_path):
-    ensure_file_operations_enabled()
-    target = resolve_file_path(raw_path)
-    if target is None or not target.exists():
-        raise FileNotFoundError("The file does not exist")
-    if any(target == root for root in allowed_roots()):
-        raise PermissionError("Allowed roots cannot be moved to trash")
-    TRASH_DIR.mkdir(parents=True, exist_ok=True)
-    destination = TRASH_DIR / f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{target.name}"
-    index = load_json_file(TRASH_INDEX, {})
-    index[destination.name] = {"original": str(target), "name": target.name, "deleted_at": int(time.time())}
-    shutil.move(str(target), destination)
-    save_trash_index(index)
-    return {"ok": True, "message": f"Moved {target.name} to HomeStart trash", "trash_path": str(destination)}
+    return trash_manager().trash_file_path(raw_path)
 
 
 def trash_path_size(path):
-    try:
-        if path.is_file() or path.is_symlink():
-            return path.lstat().st_size
-        total = 0
-        for root, _directories, files in os.walk(path):
-            for name in files:
-                try:
-                    total += (Path(root) / name).lstat().st_size
-                except OSError:
-                    continue
-        return total
-    except OSError:
-        return 0
+    return file_trash.trash_path_size(path)
 
 
 def save_trash_index(index):
-    TRASH_INDEX.parent.mkdir(parents=True, exist_ok=True)
-    temporary = TRASH_INDEX.with_suffix(".tmp")
-    temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(TRASH_INDEX)
+    return trash_manager().save_trash_index(index)
 
 
 def resolve_trash_item(key):
-    raw_key = str(key or "")
-    clean_key = Path(raw_key).name
-    if clean_key != raw_key or clean_key in {"", ".", ".."}:
-        raise ValueError("Invalid trash item")
-    root = TRASH_DIR.resolve()
-    path = root / clean_key
-    if path.parent != root:
-        raise ValueError("Invalid trash item")
-    return clean_key, path
+    return trash_manager().resolve_trash_item(key)
 
 
 def delete_trash_item(key):
-    key, path = resolve_trash_item(key)
-    index = load_json_file(TRASH_INDEX, {})
-    if key not in index or not path.exists():
-        raise FileNotFoundError("Trash item not found")
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-    index.pop(key, None)
-    save_trash_index(index)
-    return {"ok": True, "deleted": key}
+    return trash_manager().delete_trash_item(key)
 
 
 def empty_trash():
-    index = load_json_file(TRASH_INDEX, {})
-    deleted = 0
-    for key in list(index):
-        try:
-            delete_trash_item(key)
-            deleted += 1
-        except FileNotFoundError:
-            index.pop(key, None)
-    save_trash_index({})
-    return {"ok": True, "deleted": deleted}
+    return trash_manager().empty_trash()
 
 
 def cleanup_expired_trash(force=False):
@@ -3383,69 +3077,20 @@ def cleanup_expired_trash(force=False):
     if not force and now - TRASH_LAST_CLEANUP < 3600:
         return 0
     TRASH_LAST_CLEANUP = now
-    retention = int(load_config_file().get("trash", {}).get("retention_days", 0) or 0)
-    if retention <= 0:
-        return 0
-    cutoff = now - retention * 86400
-    index = load_json_file(TRASH_INDEX, {})
-    expired = [key for key, item in index.items() if float(item.get("deleted_at", 0)) < cutoff]
-    deleted = 0
-    for key in expired:
-        try:
-            delete_trash_item(key)
-            deleted += 1
-        except FileNotFoundError:
-            continue
-    return deleted
+    return trash_manager().cleanup_expired_trash()
 
 
 def trash_listing():
     cleanup_expired_trash(force=True)
-    index = load_json_file(TRASH_INDEX, {})
-    items = []
-    total_size = 0
-    for key, metadata in index.items():
-        path = TRASH_DIR / key
-        if path.exists():
-            size = trash_path_size(path)
-            total_size += size
-            items.append({"key": key, **metadata, "size": size, "type": "directory" if path.is_dir() else "file"})
-    return {
-        "ok": True,
-        "items": sorted(items, key=lambda item: item.get("deleted_at", 0), reverse=True),
-        "total_size": total_size,
-        "retention_days": int(load_config_file().get("trash", {}).get("retention_days", 0) or 0),
-    }
+    return trash_manager().trash_listing()
 
 
 def restore_trash_item(key):
-    key, source = resolve_trash_item(key)
-    index = load_json_file(TRASH_INDEX, {})
-    metadata = index.get(key)
-    if not metadata or not source.exists():
-        raise FileNotFoundError("Trash item not found")
-    destination = resolve_file_path(metadata["original"])
-    if destination.exists():
-        destination = destination.with_name(f"{destination.stem}-restored{destination.suffix}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), destination)
-    index.pop(key, None)
-    save_trash_index(index)
-    return {"ok": True, "path": str(destination)}
+    return trash_manager().restore_trash_item(key)
 
 
 def rename_file_path(raw_path, raw_name):
-    ensure_file_operations_enabled()
-    target = resolve_file_path(raw_path)
-    name = Path(str(raw_name or "")).name.strip()
-    if not name or name in {".", ".."}:
-        raise ValueError("Invalid name")
-    destination = target.with_name(name)
-    resolve_file_path(str(destination))
-    if destination.exists():
-        raise FileExistsError("A file with that name already exists")
-    target.rename(destination)
-    return {"ok": True, "path": str(destination)}
+    return file_browser_manager().rename_file_path(raw_path, raw_name)
 
 
 def serve_file(handler, raw_path, include_body=True):
@@ -3630,29 +3275,20 @@ def docker_logs(name, tail=300):
     return {"ok": True, "name": name, "logs": run_docker_command(["logs", "--tail", str(tail), "--timestamps", name], timeout=15)}
 
 
+def backup_manager():
+    return BackupManager(
+        backup_dir=BACKUP_DIR, staging_dir=BACKUP_STAGING_DIR,
+        config_path=CONFIG_PATH, database_path=DB_PATH,
+        icon_dir=APP_ICON_DIR, icon_index=APP_ICON_INDEX,
+        auth_manager=auth_manager, save_config=save_config_file,
+        max_upload_size=MAX_BACKUP_UPLOAD_SIZE,
+        max_extracted_size=MAX_BACKUP_EXTRACTED_SIZE,
+        stage_ttl=BACKUP_STAGE_TTL_SECONDS,
+    )
+
+
 def create_backup(destination=None):
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    if destination is None:
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        destination = BACKUP_DIR / f"homestart-backup-{stamp}.tar.gz"
-    else:
-        destination = Path(destination)
-    # Metrics history can make this archive large. Level 1 keeps the portable
-    # .tar.gz format while avoiding long CPU-bound waits on homelab hardware.
-    with tarfile.open(destination, "w:gz", compresslevel=1) as archive:
-        if CONFIG_PATH.exists():
-            archive.add(CONFIG_PATH, arcname="config.json")
-        if DB_PATH.exists():
-            archive.add(DB_PATH, arcname="data/homestart.db")
-        users_path = auth_manager().users_path
-        if users_path.exists():
-            archive.add(users_path, arcname="data/auth-users.json")
-        if APP_ICON_DIR.exists():
-            archive.add(APP_ICON_DIR, arcname="data/app-icons")
-        if APP_ICON_INDEX.exists():
-            archive.add(APP_ICON_INDEX, arcname="data/app-icons.json")
-    destination.chmod(0o600)
-    return {"ok": True, "name": destination.name, "size": destination.stat().st_size, "created_at": int(destination.stat().st_mtime)}
+    return backup_manager().create_backup(destination)
 
 
 def serve_backup_download(handler):
@@ -3676,227 +3312,39 @@ def serve_backup_download(handler):
 
 
 def list_backups():
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    items = [{"name": item.name, "size": item.stat().st_size, "created_at": int(item.stat().st_mtime)} for item in BACKUP_DIR.glob("homestart-backup-*.tar.gz")]
-    return {"ok": True, "backups": sorted(items, key=lambda item: item["created_at"], reverse=True)}
+    return backup_manager().list_backups()
 
 
 def backup_path(name):
-    clean = Path(str(name or "")).name
-    target = BACKUP_DIR / clean
-    if not clean.startswith("homestart-backup-") or not clean.endswith(".tar.gz") or not target.is_file():
-        raise FileNotFoundError("Backup not found")
-    return target
+    return backup_manager().backup_path(name)
 
 
 def safe_extract_tar(archive, destination):
-    destination = destination.resolve()
-    for member in archive.getmembers():
-        member_path = (destination / member.name).resolve()
-        if destination != member_path and destination not in member_path.parents:
-            raise ValueError("Backup contains an invalid path")
-        if member.issym() or member.islnk() or member.isdev():
-            raise ValueError("Backup contains an unsupported entry")
-    archive.extractall(destination)
+    return backup_safe_extract_tar(archive, destination)
 
 
 def cleanup_staged_backups():
-    BACKUP_STAGING_DIR.mkdir(parents=True, exist_ok=True)
-    cutoff = time.time() - BACKUP_STAGE_TTL_SECONDS
-    for item in BACKUP_STAGING_DIR.glob("*.tar.gz"):
-        try:
-            if item.stat().st_mtime < cutoff:
-                item.unlink(missing_ok=True)
-        except OSError:
-            continue
+    return backup_manager().cleanup_staged_backups()
 
 
 def inspect_backup_archive(source):
-    source = Path(source)
-    if not source.is_file():
-        raise FileNotFoundError("Backup not found")
-    if source.stat().st_size > MAX_BACKUP_UPLOAD_SIZE:
-        raise ValueError("Backup is larger than the 1 GB upload limit")
-
-    allowed_files = {
-        "config.json": "HomeStart settings",
-        "data/homestart.db": "Metrics and Speedtest history",
-        "data/auth-users.json": "Owner account",
-        "data/app-icons.json": "Custom app icon index",
-    }
-    components = []
-    seen_components = set()
-    extracted_size = 0
-    member_count = 0
-    with tarfile.open(source, "r:gz") as archive:
-        members = archive.getmembers()
-        for member in members:
-            member_count += 1
-            if member_count > 10000:
-                raise ValueError("Backup contains too many entries")
-            path = Path(member.name)
-            if path.is_absolute() or ".." in path.parts:
-                raise ValueError("Backup contains an invalid path")
-            if member.issym() or member.islnk() or member.isdev():
-                raise ValueError("Backup contains an unsupported entry")
-            if member.isfile():
-                extracted_size += max(0, member.size)
-                if extracted_size > MAX_BACKUP_EXTRACTED_SIZE:
-                    raise ValueError("Backup expands beyond the 4 GB safety limit")
-                name = path.as_posix()
-                if name in allowed_files:
-                    component = allowed_files[name]
-                elif name.startswith("data/app-icons/"):
-                    component = "Custom app icons"
-                else:
-                    raise ValueError(f"Backup contains an unsupported file: {name}")
-                if component not in seen_components:
-                    seen_components.add(component)
-                    components.append(component)
-
-        if not components:
-            raise ValueError("The archive does not contain a HomeStart backup")
-
-        for name in ("config.json", "data/auth-users.json", "data/app-icons.json"):
-            try:
-                member = archive.getmember(name)
-            except KeyError:
-                continue
-            stream = archive.extractfile(member)
-            if stream is None:
-                raise ValueError(f"Backup entry cannot be read: {name}")
-            try:
-                payload = json.load(stream)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise ValueError(f"Backup contains invalid JSON in {name}") from error
-            if not isinstance(payload, dict):
-                raise ValueError(f"Backup contains invalid data in {name}")
-            if name == "data/auth-users.json":
-                users = payload.get("users")
-                if not isinstance(users, list) or not users:
-                    raise ValueError("Backup does not contain a valid owner account")
-                owner = users[0]
-                if (
-                    not isinstance(owner, dict)
-                    or not str(owner.get("id") or "").strip()
-                    or not str(owner.get("username") or "").strip()
-                    or not str(owner.get("password") or "").startswith("scrypt$")
-                ):
-                    raise ValueError("Backup does not contain a valid owner account")
-
-        try:
-            database_member = archive.getmember("data/homestart.db")
-        except KeyError:
-            database_member = None
-        if database_member is not None:
-            stream = archive.extractfile(database_member)
-            if stream is None or stream.read(16) != b"SQLite format 3\x00":
-                raise ValueError("Backup contains an invalid HomeStart database")
-
-    return {
-        "ok": True,
-        "size": source.stat().st_size,
-        "extracted_size": extracted_size,
-        "components": components,
-    }
+    return backup_manager().inspect_backup_archive(source)
 
 
 def stage_backup_upload(handler):
-    try:
-        length = int(handler.headers.get("Content-Length", "0"))
-    except ValueError as error:
-        raise ValueError("Invalid backup upload size") from error
-    if length <= 0:
-        raise ValueError("Choose a HomeStart backup file")
-    if length > MAX_BACKUP_UPLOAD_SIZE:
-        raise ValueError("Backup is larger than the 1 GB upload limit")
-
-    cleanup_staged_backups()
-    token = uuid.uuid4().hex
-    destination = BACKUP_STAGING_DIR / f"{token}.tar.gz"
-    remaining = length
-    try:
-        with destination.open("wb") as output:
-            destination.chmod(0o600)
-            while remaining:
-                chunk = handler.rfile.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    raise ValueError("Backup upload ended unexpectedly")
-                output.write(chunk)
-                remaining -= len(chunk)
-        inspection = inspect_backup_archive(destination)
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
-    return {**inspection, "token": token}
+    return backup_manager().stage_backup_upload(handler.rfile, handler.headers.get("Content-Length", "0"))
 
 
 def staged_backup_path(token):
-    clean = str(token or "").strip()
-    if not re.fullmatch(r"[0-9a-f]{32}", clean):
-        raise ValueError("Invalid or expired restore request")
-    cleanup_staged_backups()
-    target = BACKUP_STAGING_DIR / f"{clean}.tar.gz"
-    if not target.is_file():
-        raise FileNotFoundError("The inspected backup expired; choose it again")
-    return target
+    return backup_manager().staged_backup_path(token)
 
 
 def atomic_restore_file(source, destination, mode=None):
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.restore-{uuid.uuid4().hex}")
-    try:
-        shutil.copy2(source, temporary)
-        if mode is not None:
-            temporary.chmod(mode)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    return backup_atomic_restore_file(source, destination, mode)
 
 
 def restore_backup_file(source, display_name=None):
-    source = Path(source)
-    inspection = inspect_backup_archive(source)
-    safety_backup = create_backup()
-    with tempfile.TemporaryDirectory(prefix="homestart-restore-") as directory:
-        target = Path(directory)
-        with tarfile.open(source, "r:gz") as archive:
-            safe_extract_tar(archive, target)
-        restored = []
-        config = target / "config.json"
-        if config.exists():
-            save_config_file(json.loads(config.read_text(encoding="utf-8")))
-            restored.append("config.json")
-        database = target / "data/homestart.db"
-        if database.exists():
-            atomic_restore_file(database, DB_PATH)
-            restored.append("data/homestart.db")
-        users = target / "data/auth-users.json"
-        if users.exists():
-            manager = auth_manager()
-            atomic_restore_file(users, manager.users_path, 0o600)
-            manager.setup_token_path.unlink(missing_ok=True)
-            manager.revoke_all_sessions()
-            restored.append("data/auth-users.json")
-        icons = target / "data/app-icons"
-        if icons.exists():
-            if APP_ICON_DIR.exists():
-                shutil.rmtree(APP_ICON_DIR)
-            shutil.copytree(icons, APP_ICON_DIR)
-            restored.append("data/app-icons")
-        index = target / "data/app-icons.json"
-        if index.exists():
-            atomic_restore_file(index, APP_ICON_INDEX)
-            restored.append("data/app-icons.json")
-    return {
-        "ok": True,
-        "restored": restored,
-        "components": inspection["components"],
-        "safety_backup": safety_backup["name"],
-        "session_revoked": "data/auth-users.json" in restored,
-        "restart": True,
-        "message": f"Restored {display_name or source.name}",
-    }
+    return backup_manager().restore_backup_file(source, display_name)
 
 
 def restore_backup(name):

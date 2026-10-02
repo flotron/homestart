@@ -16,8 +16,21 @@ HomeStart is a self-contained HTTP service for a trusted local network.
   identities intentionally do not map to Linux or Samba users.
 - `homestart/auth/security.py` owns bounded progressive sign-in throttling,
   trusted proxy/CIDR validation and reverse-proxy request interpretation.
+- `homestart/backup/manager.py`: backup creation, archive validation, upload
+  staging and restoration. Paths, configuration persistence and authentication
+  are injected explicitly; the module does not import the server or depend on
+  HTTP handlers. Server compatibility wrappers retain downloads and restart
+  orchestration. The package is singular `backup` because release validation
+  excludes runtime `backups/` directories.
+- `homestart/system/power.py`: validated host reboot/shutdown scheduling.
 - `homestart/config.py` owns defaults, recursive config merging and JSON
   persistence.
+- `homestart/files/browser.py`: allowed-root validation, directory listings,
+  properties and synchronous file operations. Receives configuration and drive
+  providers explicitly; copy jobs reuse its path validation through server wrappers.
+- `homestart/files/trash.py`: trash index, deletion, restoration and retention.
+  Uses the browser access policy. The server schedules retention checks and keeps
+  HTTP streaming, action dispatch and disk mounting orchestration.
 - `homestart/files/copy.py` owns background copy jobs, native GNU `cp`
   supervision, progress, speed, ETA and cancellation.
 - `homestart/metrics/store.py` owns SQLite schemas, retention, metric history,
