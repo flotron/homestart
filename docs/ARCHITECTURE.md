@@ -133,3 +133,8 @@ File-domain forwarding wrappers have been removed. Tests call the domain service
 directly and explicitly construct temporary trash storage when needed. Remaining
 server compatibility wrappers are migrated by domain, not removed indiscriminately.
 The server source is UTF-8 without a byte-order mark.
+
+The API router uses separate GET, HEAD and POST route tables. Endpoint methods
+retain their response status, error payload and streaming behavior. Unknown GET
+and HEAD paths still fall through to static handling; unknown POST paths return
+404. Authentication and CSRF stay in HomeStartHandler before route dispatch.
