@@ -4,6 +4,13 @@ All notable HomeStart changes should be recorded here before building a new
 installer or update package. Keep entries focused on user-visible behavior,
 packaging, security, and migration notes.
 
+## 20261006-3200
+
+- Refresh the dashboard with clean theme-aware surfaces, rounded cards, larger metrics and more breathing room.
+- Improve chart sizing and responsive spacing across desktop and mobile.
+- Group the computer name with its power controls; align actions on desktop and stack them clearly on mobile.
+- Keep shutdown visually distinct while preserving the existing explicit confirmation flow.
+
 ## 20261002-3190
 
 - Complete the forwarding-wrapper cleanup: 24 helpers are direct imports and 22 service operations call their domain objects directly.
