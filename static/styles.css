@@ -34,8 +34,8 @@
   --glass-strong: rgb(32 39 49 / 0.9);
   --glass-line: rgb(148 163 184 / 0.2);
   --glow: color-mix(in srgb, var(--accent) 18%, transparent);
-  --radius-panel: 10px;
-  --radius-control: 7px;
+  --radius-panel: 18px;
+  --radius-control: 10px;
   --shadow-panel: 0 14px 32px rgb(0 0 0 / .16);
 }
 

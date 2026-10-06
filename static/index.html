@@ -535,10 +535,15 @@
             <div class="section-head">
               <div><h2>Host power</h2><p>Restart or shut down the entire Linux computer.</p></div>
             </div>
-            <p id="power-host" class="power-host">Checking host…</p>
-            <div class="power-actions">
-              <button type="button" data-host-power="reboot" disabled>Restart computer</button>
-              <button type="button" data-host-power="poweroff" class="danger" disabled>Shut down computer</button>
+            <div class="power-layout">
+              <div class="power-computer">
+                <span class="power-computer-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
+                <div class="power-computer-copy"><span>Computer</span><p id="power-host" class="power-host">Checking host…</p></div>
+              </div>
+              <div class="power-actions">
+                <button type="button" data-host-power="reboot" disabled>Restart computer</button>
+                <button type="button" data-host-power="poweroff" class="danger" disabled>Shut down computer</button>
+              </div>
             </div>
             <p id="power-availability" class="form-note" role="status">Checking power controls…</p>
           </section>
